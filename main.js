@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.4.0';
+  const GAME_VERSION = '1.5.0';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -291,7 +291,7 @@
   }
 
   const UPGRADE_POOL = [
-    { id: 'damage', title: 'ダメージ強化', desc: '攻撃ダメージ +30%', apply: p => p.damage = Math.round(p.damage * 1.3) },
+    { id: 'damage', title: 'ダメージ強化', desc: '攻撃ダメージ +50%', apply: p => p.damage = Math.round(p.damage * 1.5) },
     { id: 'atkspeed', title: '攻撃速度アップ', desc: '攻撃間隔 -15%', apply: p => p.atkCooldown = Math.max(0.15, p.atkCooldown * 0.85) },
     { id: 'speed', title: '移動速度アップ', desc: '移動速度 +12%', apply: p => p.speedMult *= 1.12 },
     { id: 'maxhp', title: '最大HPアップ', desc: '最大HP +25、HP回復', apply: p => { p.maxHp += 25; p.hp = Math.min(p.maxHp, p.hp + 25); } },
@@ -300,6 +300,16 @@
     { id: 'pierce', title: '貫通強化', desc: '弾の貫通数 +1', apply: p => p.pierce += 1 },
     { id: 'regen', title: 'リジェネ', desc: '毎秒HP自然回復 +1', apply: p => p.regen += 1 },
   ];
+
+  // Not part of the random pool: always offered as an extra choice so the
+  // player can decline a bad draw. No stat changes, but banks a chunk of
+  // progress toward the next level instead of leaving XP near empty.
+  const SKIP_UPGRADE = {
+    id: 'skip',
+    title: 'スキップ',
+    desc: '強化なし。次のレベルアップまでのXPを30%獲得した状態にする',
+    apply: p => { p.xp = p.xpNext * 0.3; },
+  };
 
   // ---------- Game controller ----------
   class Game {
@@ -337,6 +347,11 @@
         card.addEventListener('click', () => this.pickUpgrade(up));
         upgradeChoicesEl.appendChild(card);
       }
+      const skipCard = document.createElement('div');
+      skipCard.className = 'upgrade-card skip-card';
+      skipCard.innerHTML = `<div class="u-title">${SKIP_UPGRADE.title}</div><div class="u-desc">${SKIP_UPGRADE.desc}</div>`;
+      skipCard.addEventListener('click', () => this.pickUpgrade(SKIP_UPGRADE));
+      upgradeChoicesEl.appendChild(skipCard);
       levelupScreen.classList.remove('hidden');
     }
 
@@ -350,6 +365,10 @@
       // uncontrollable while enemies keep closing in.
       this.awaitingResume = true;
       resumeHint.classList.remove('hidden');
+      // update() (and its HUD refresh) is skipped while awaitingResume, so
+      // refresh once here - otherwise picking Skip wouldn't show its XP
+      // top-up on the bar until the player taps to resume.
+      this.updateHud();
     }
 
     onPlayerDeath() {

@@ -189,6 +189,20 @@ html, body {
   background: #33333f;
 }
 
+.upgrade-card.skip-card {
+  background: transparent;
+  border: 2px dashed #444;
+  margin-top: 4px;
+}
+
+.upgrade-card.skip-card .u-title {
+  color: #999;
+}
+
+.upgrade-card.skip-card:active {
+  background: #23232e;
+}
+
 .upgrade-card .u-title {
   font-size: 16px;
   font-weight: 700;
