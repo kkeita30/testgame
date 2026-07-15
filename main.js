@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.3.1';
+  const GAME_VERSION = '1.4.0';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -216,8 +216,28 @@
     tank:   { hp: 70, speed: 48,  radius: 20, color: '#a15aff', dmg: 14, xp: 10, score: 2 },
   };
 
+  // Player stat values at game start, used as the "no upgrades taken" yardstick
+  // for the build-aware difficulty scaling below.
+  const BASELINE_STATS = { damage: 10, atkCooldown: 0.7, projCount: 1, pierce: 0, maxHp: 100 };
+
+  // These three convert "how far past baseline has the player pushed this
+  // stat" into a multiplier (1 = no upgrades in that direction yet). Difficulty
+  // scaling only kicks in on an axis once the player has actually invested in
+  // the matching upgrades, so e.g. skipping damage/attack-speed the whole run
+  // keeps enemy HP on the slow time-based curve instead of also compounding
+  // with a build that never got stronger.
+  function offensePowerMult(p) {
+    return (p.damage / BASELINE_STATS.damage) * (BASELINE_STATS.atkCooldown / p.atkCooldown);
+  }
+  function crowdPowerMult(p) {
+    return 1 + Math.max(0, p.projCount - BASELINE_STATS.projCount) * 0.18 + p.pierce * 0.15;
+  }
+  function survivalPowerMult(p) {
+    return p.maxHp / BASELINE_STATS.maxHp;
+  }
+
   class Enemy {
-    constructor(type, x, y, waveMult) {
+    constructor(type, x, y, hpMult, dmgMult) {
       const def = ENEMY_TYPES[type];
       this.type = type;
       this.x = x;
@@ -225,9 +245,9 @@
       this.radius = def.radius;
       this.color = def.color;
       this.speed = def.speed;
-      this.maxHp = Math.round(def.hp * waveMult);
+      this.maxHp = Math.round(def.hp * hpMult);
       this.hp = this.maxHp;
-      this.dmg = def.dmg;
+      this.dmg = Math.round(def.dmg * dmgMult);
       this.xpValue = def.xp;
       this.scoreValue = def.score;
       this.hitFlash = 0;
@@ -351,11 +371,25 @@
       let type = 'grunt';
       const r = Math.random();
       const t = this.time;
-      if (t > 90 && r < 0.22) type = 'tank';
-      else if (t > 30 && r < 0.5) type = 'fast';
+      if (t > 180 && r < 0.22) type = 'tank';
+      else if (t > 60 && r < 0.5) type = 'fast';
 
-      const waveMult = 1 + this.time / 45;
-      this.enemies.push(new Enemy(type, x, y, waveMult));
+      // Slow time-based baseline, plus a build-aware top-up: enemy HP tracks
+      // how much dps the player has stacked (damage x attack speed) beyond
+      // the starting weapon, and enemy contact damage tracks how tanky the
+      // player has made themselves via max HP. A run that skips those
+      // upgrades never sees the extra factor kick in, so it stays on the
+      // gentle time curve instead of getting hard-countered by a stat the
+      // player never invested in.
+      const timeHpMult = 1 + t / 180;
+      const offenseExtra = Math.max(0, offensePowerMult(p) - 1);
+      const hpMult = timeHpMult * (1 + offenseExtra * 0.6);
+
+      const timeDmgMult = 1 + t / 240;
+      const survivalExtra = Math.max(0, survivalPowerMult(p) - 1);
+      const dmgMult = timeDmgMult * (1 + survivalExtra * 0.7);
+
+      this.enemies.push(new Enemy(type, x, y, hpMult, dmgMult));
     }
 
     fireWeapon(dt) {
@@ -405,10 +439,16 @@
 
       // spawn
       this.spawnTimer -= dt;
-      const curInterval = Math.max(0.18, this.spawnInterval - this.time * 0.01);
+      const timeInterval = Math.max(0.22, this.spawnInterval - this.time * 0.004);
+      // Multishot/pierce make a player good at handling crowds, so a build
+      // that stacks those sees extra enemies on top of the slow time-based
+      // ramp; a build that never picks them up keeps the gentle baseline.
+      const crowdExtra = Math.max(0, crowdPowerMult(p) - 1);
+      const curInterval = Math.max(0.15, timeInterval / (1 + crowdExtra * 0.5));
       if (this.spawnTimer <= 0) {
         this.spawnTimer = curInterval;
-        const burst = 1 + Math.floor(this.time / 60);
+        const timeBurst = 1 + Math.floor(this.time / 150);
+        const burst = timeBurst + Math.round(crowdExtra * 2);
         for (let i = 0; i < burst; i++) this.spawnEnemy();
       }
 
