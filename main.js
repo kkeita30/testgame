@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.3.0';
+  const GAME_VERSION = '1.3.1';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -640,7 +640,17 @@
 
   pauseBtn.addEventListener('click', () => {
     if (!game || game.over) return;
-    paused = !paused;
+    if (paused) {
+      // Resuming: the tap that hit this button isn't a movement gesture,
+      // so gate play behind the same "tap the screen to resume" flow used
+      // after a level-up pick, instead of letting enemies act on an
+      // uncontrolled player the instant the button is released.
+      paused = false;
+      game.awaitingResume = true;
+      resumeHint.classList.remove('hidden');
+    } else {
+      paused = true;
+    }
     pauseBtn.textContent = paused ? '>' : 'II';
   });
 
