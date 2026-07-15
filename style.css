@@ -228,34 +228,3 @@ html, body {
   display: none;
 }
 
-/* Joystick */
-#joystick-zone {
-  position: absolute;
-  left: 0;
-  bottom: 0;
-  width: 45vw;
-  height: 55vh;
-  z-index: 20;
-  touch-action: none;
-}
-
-#joystick-base {
-  position: absolute;
-  width: 110px;
-  height: 110px;
-  border-radius: 50%;
-  background: rgba(255,255,255,0.08);
-  border: 2px solid rgba(255,255,255,0.25);
-  display: none;
-}
-
-#joystick-stick {
-  position: absolute;
-  width: 46px;
-  height: 46px;
-  top: 32px;
-  left: 32px;
-  border-radius: 50%;
-  background: rgba(255,255,255,0.35);
-  border: 2px solid rgba(255,255,255,0.6);
-}

@@ -28,78 +28,78 @@
   function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
   function choice(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 
-  // ---------- Input: Virtual Joystick + Keyboard ----------
+  // ---------- Input: touch-drag-anywhere (no visible stick) + Keyboard ----------
   const input = { dx: 0, dy: 0 };
 
-  const joyZone = document.getElementById('joystick-zone');
-  const joyBase = document.getElementById('joystick-base');
-  const joyStick = document.getElementById('joystick-stick');
-  let joyTouchId = null;
-  let joyOrigin = { x: 0, y: 0 };
-  const JOY_RADIUS = 55;
+  // Drag surface is the canvas itself. No on-screen widget is drawn; the
+  // player just presses anywhere on the game area and drags to steer.
+  // Touch capture guarantees move/end events keep targeting this element
+  // even if the finger leaves the canvas bounds, so this is safe to use
+  // for the full play area without losing tracking.
+  const dragSurface = canvas;
+  let dragTouchId = null;
+  let dragOrigin = { x: 0, y: 0 };
+  const DRAG_RADIUS = 42; // px of drag needed to reach full speed
 
-  function joyStart(id, x, y) {
-    joyTouchId = id;
-    joyOrigin.x = x;
-    joyOrigin.y = y;
-    joyBase.style.display = 'block';
-    joyBase.style.left = (x - 55) + 'px';
-    joyBase.style.top = (y - 55) + 'px';
-    joyStick.style.left = '32px';
-    joyStick.style.top = '32px';
-  }
-  function joyMove(x, y) {
-    let dx = x - joyOrigin.x;
-    let dy = y - joyOrigin.y;
+  function dragSet(x, y) {
+    let dx = x - dragOrigin.x;
+    let dy = y - dragOrigin.y;
     const d = Math.sqrt(dx * dx + dy * dy);
-    if (d > JOY_RADIUS) { dx = dx / d * JOY_RADIUS; dy = dy / d * JOY_RADIUS; }
-    joyStick.style.left = (32 + dx) + 'px';
-    joyStick.style.top = (32 + dy) + 'px';
-    const mag = clamp(d / JOY_RADIUS, 0, 1);
-    const ang = Math.atan2(dy, dx);
-    input.dx = Math.cos(ang) * mag;
-    input.dy = Math.sin(ang) * mag;
+    const mag = clamp(d / DRAG_RADIUS, 0, 1);
+    if (d > 0.0001) {
+      input.dx = (dx / d) * mag;
+      input.dy = (dy / d) * mag;
+    } else {
+      input.dx = 0;
+      input.dy = 0;
+    }
   }
-  function joyEnd() {
-    joyTouchId = null;
-    joyBase.style.display = 'none';
+  function dragStart(id, x, y) {
+    dragTouchId = id;
+    dragOrigin.x = x;
+    dragOrigin.y = y;
+    input.dx = 0;
+    input.dy = 0;
+  }
+  function dragEnd() {
+    dragTouchId = null;
     input.dx = 0;
     input.dy = 0;
   }
 
-  joyZone.addEventListener('touchstart', (e) => {
+  dragSurface.addEventListener('touchstart', (e) => {
     e.preventDefault();
-    if (joyTouchId !== null) return;
+    if (dragTouchId !== null) return;
     const t = e.changedTouches[0];
-    joyStart(t.identifier, t.clientX, t.clientY);
+    dragStart(t.identifier, t.clientX, t.clientY);
   }, { passive: false });
 
-  joyZone.addEventListener('touchmove', (e) => {
+  dragSurface.addEventListener('touchmove', (e) => {
     e.preventDefault();
     for (const t of e.changedTouches) {
-      if (t.identifier === joyTouchId) joyMove(t.clientX, t.clientY);
+      if (t.identifier === dragTouchId) dragSet(t.clientX, t.clientY);
     }
   }, { passive: false });
 
   function touchEndHandler(e) {
     for (const t of e.changedTouches) {
-      if (t.identifier === joyTouchId) joyEnd();
+      if (t.identifier === dragTouchId) dragEnd();
     }
   }
-  joyZone.addEventListener('touchend', touchEndHandler);
-  joyZone.addEventListener('touchcancel', touchEndHandler);
+  dragSurface.addEventListener('touchend', touchEndHandler);
+  dragSurface.addEventListener('touchcancel', touchEndHandler);
 
-  // Mouse support for desktop testing (drag within zone)
+  // Mouse support for desktop testing (drag anywhere on canvas)
   let mouseDown = false;
-  joyZone.addEventListener('mousedown', (e) => {
+  dragSurface.addEventListener('mousedown', (e) => {
     mouseDown = true;
-    joyStart('mouse', e.clientX, e.clientY);
+    dragStart('mouse', e.clientX, e.clientY);
   });
   window.addEventListener('mousemove', (e) => {
-    if (mouseDown) joyMove(e.clientX, e.clientY);
+    if (mouseDown) dragSet(e.clientX, e.clientY);
   });
   window.addEventListener('mouseup', () => {
-    if (mouseDown) { mouseDown = false; joyEnd(); }
+    if (mouseDown) { mouseDown = false; dragEnd(); }
   });
 
   // Keyboard (desktop convenience)
@@ -363,8 +363,10 @@
       if (kb) { mx = kb.dx; my = kb.dy; }
       const mag = Math.sqrt(mx * mx + my * my);
       if (mag > 0.02) {
-        p.x += (mx / Math.max(mag, 1)) * p.speed * dt * Math.min(mag, 1);
-        p.y += (my / Math.max(mag, 1)) * p.speed * dt * Math.min(mag, 1);
+        // mx/my already encode direction * magnitude (0-1), so scale by
+        // speed directly - do not re-normalize/re-multiply by mag here.
+        p.x += mx * p.speed * dt;
+        p.y += my * p.speed * dt;
         if (mx !== 0) p.facing = mx > 0 ? 1 : -1;
       }
 
