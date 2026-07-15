@@ -1,6 +1,10 @@
 (() => {
   'use strict';
 
+  const GAME_VERSION = '1.2.0';
+  const versionTag = document.getElementById('version-tag');
+  if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
+
   // ---------- Canvas setup ----------
   const canvas = document.getElementById('game');
   const ctx = canvas.getContext('2d');
