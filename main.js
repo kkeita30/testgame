@@ -503,7 +503,7 @@
       ctx.clearRect(0, 0, W, H);
 
       let shakeX = 0, shakeY = 0;
-      if (this.shakeTime > 0) {
+      if (this.shakeTime > 0 && !paused) {
         shakeX = rand(-4, 4);
         shakeY = rand(-4, 4);
       }
