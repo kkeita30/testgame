@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.2.1';
+  const GAME_VERSION = '1.3.0';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -64,6 +64,10 @@
     dragOrigin.y = y;
     input.dx = 0;
     input.dy = 0;
+    if (game && game.awaitingResume) {
+      game.awaitingResume = false;
+      resumeHint.classList.add('hidden');
+    }
   }
   function dragEnd() {
     dragTouchId = null;
@@ -152,6 +156,7 @@
   const startScreen = document.getElementById('start-screen');
   const levelupScreen = document.getElementById('levelup-screen');
   const gameoverScreen = document.getElementById('gameover-screen');
+  const resumeHint = document.getElementById('resume-hint');
   const upgradeChoicesEl = document.getElementById('upgrade-choices');
   const finalStatsEl = document.getElementById('final-stats');
   const startBtn = document.getElementById('start-btn');
@@ -292,6 +297,7 @@
       this.spawnInterval = 1.1;
       this.over = false;
       this.levelingUp = false;
+      this.awaitingResume = false;
       this.shakeTime = 0;
     }
 
@@ -318,6 +324,12 @@
       up.apply(this.player);
       levelupScreen.classList.add('hidden');
       this.levelingUp = false;
+      // The player's finger just lifted off the upgrade card, so there is
+      // no active drag. Keep gameplay stopped until they deliberately
+      // touch the screen again, instead of leaving them briefly
+      // uncontrollable while enemies keep closing in.
+      this.awaitingResume = true;
+      resumeHint.classList.remove('hidden');
     }
 
     onPlayerDeath() {
@@ -371,7 +383,7 @@
     }
 
     update(dt) {
-      if (this.over || this.levelingUp || paused) return;
+      if (this.over || this.levelingUp || this.awaitingResume || paused) return;
       this.time += dt;
       const p = this.player;
 
@@ -616,6 +628,7 @@
     startScreen.classList.add('hidden');
     gameoverScreen.classList.add('hidden');
     levelupScreen.classList.add('hidden');
+    resumeHint.classList.add('hidden');
     pauseBtn.classList.remove('hidden');
     pauseBtn.textContent = 'II';
     if (rafId) cancelAnimationFrame(rafId);
