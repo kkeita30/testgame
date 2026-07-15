@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.5.0';
+  const GAME_VERSION = '1.5.1';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -390,8 +390,8 @@
       let type = 'grunt';
       const r = Math.random();
       const t = this.time;
-      if (t > 180 && r < 0.22) type = 'tank';
-      else if (t > 60 && r < 0.5) type = 'fast';
+      if (t > 300 && r < 0.22) type = 'tank';
+      else if (t > 100 && r < 0.5) type = 'fast';
 
       // Slow time-based baseline, plus a build-aware top-up: enemy HP tracks
       // how much dps the player has stacked (damage x attack speed) beyond
@@ -400,11 +400,11 @@
       // upgrades never sees the extra factor kick in, so it stays on the
       // gentle time curve instead of getting hard-countered by a stat the
       // player never invested in.
-      const timeHpMult = 1 + t / 180;
+      const timeHpMult = 1 + t / 320;
       const offenseExtra = Math.max(0, offensePowerMult(p) - 1);
       const hpMult = timeHpMult * (1 + offenseExtra * 0.6);
 
-      const timeDmgMult = 1 + t / 240;
+      const timeDmgMult = 1 + t / 420;
       const survivalExtra = Math.max(0, survivalPowerMult(p) - 1);
       const dmgMult = timeDmgMult * (1 + survivalExtra * 0.7);
 
@@ -458,7 +458,7 @@
 
       // spawn
       this.spawnTimer -= dt;
-      const timeInterval = Math.max(0.22, this.spawnInterval - this.time * 0.004);
+      const timeInterval = Math.max(0.22, this.spawnInterval - this.time * 0.002);
       // Multishot/pierce make a player good at handling crowds, so a build
       // that stacks those sees extra enemies on top of the slow time-based
       // ramp; a build that never picks them up keeps the gentle baseline.
@@ -466,7 +466,7 @@
       const curInterval = Math.max(0.15, timeInterval / (1 + crowdExtra * 0.5));
       if (this.spawnTimer <= 0) {
         this.spawnTimer = curInterval;
-        const timeBurst = 1 + Math.floor(this.time / 150);
+        const timeBurst = 1 + Math.floor(this.time / 280);
         const burst = timeBurst + Math.round(crowdExtra * 2);
         for (let i = 0; i < burst; i++) this.spawnEnemy();
       }
