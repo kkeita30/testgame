@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Survivor Bites</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="game-container">
+  <canvas id="game"></canvas>
+
+  <!-- HUD -->
+  <div id="hud">
+    <div id="hp-bar-wrap">
+      <div id="hp-bar"></div>
+      <div id="hp-text">100/100</div>
+    </div>
+    <div id="xp-bar-wrap">
+      <div id="xp-bar"></div>
+    </div>
+    <div id="top-right-info">
+      <div id="timer">00:00</div>
+      <div id="level">Lv.1</div>
+      <div id="kills">0 kills</div>
+    </div>
+  </div>
+
+  <!-- Start Screen -->
+  <div id="start-screen" class="overlay">
+    <h1>SURVIVOR BITES</h1>
+    <p>仮想スティックで移動。攻撃は自動。</p>
+    <p class="sub">敵を倒してレベルアップ、生き残れ！</p>
+    <button id="start-btn">ゲーム開始</button>
+  </div>
+
+  <!-- Level Up Screen -->
+  <div id="levelup-screen" class="overlay hidden">
+    <h2>LEVEL UP!</h2>
+    <div id="upgrade-choices"></div>
+  </div>
+
+  <!-- Game Over Screen -->
+  <div id="gameover-screen" class="overlay hidden">
+    <h2>GAME OVER</h2>
+    <p id="final-stats"></p>
+    <button id="restart-btn">もう一度</button>
+  </div>
+
+  <!-- Pause button -->
+  <button id="pause-btn" class="hidden">II</button>
+
+  <!-- Virtual Joystick -->
+  <div id="joystick-zone">
+    <div id="joystick-base">
+      <div id="joystick-stick"></div>
+    </div>
+  </div>
+</div>
+
+<script src="main.js"></script>
+</body>
+</html>
