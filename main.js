@@ -69,13 +69,27 @@
 
   dragSurface.addEventListener('touchstart', (e) => {
     e.preventDefault();
-    if (dragTouchId !== null) return;
+    // Always (re)claim the newest touch as the drag anchor. If the finger
+    // previously slid off the screen edge, the OS can swallow the
+    // touchend/touchcancel for that old touch (e.g. edge-swipe gestures),
+    // leaving dragTouchId stuck pointing at a touch that will never end.
+    // Gating on "no active drag" would then ignore every future touch, so
+    // a fresh touchstart always wins instead of being dropped.
     const t = e.changedTouches[0];
     dragStart(t.identifier, t.clientX, t.clientY);
   }, { passive: false });
 
   dragSurface.addEventListener('touchmove', (e) => {
     e.preventDefault();
+    let stillTracked = false;
+    for (const t of e.touches) {
+      if (t.identifier === dragTouchId) stillTracked = true;
+    }
+    // Safety net for the same stuck-touch scenario: if the browser stopped
+    // reporting our tracked touch as active without ever sending an
+    // end/cancel event, drop it so the player stops drifting in a stale
+    // direction instead of waiting forever for an event that won't come.
+    if (!stillTracked) { dragEnd(); return; }
     for (const t of e.changedTouches) {
       if (t.identifier === dragTouchId) dragSet(t.clientX, t.clientY);
     }
