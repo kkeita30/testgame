@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.8.1';
+  const GAME_VERSION = '1.9.0';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -165,6 +165,15 @@
   const restartBtn = document.getElementById('restart-btn');
   const pauseBtn = document.getElementById('pause-btn');
 
+  // Required XP grows with level^1.5 rather than compounding multiplicatively
+  // (the old `xpNext * 1.35 + 5` recurrence), so it stays a smooth, roughly
+  // steady climb instead of snowballing into a wall by level ~15. A hard
+  // cap keeps very long runs from ever facing an unbounded requirement.
+  const XP_NEXT_CAP = 1000;
+  function xpNextForLevel(level) {
+    return Math.min(XP_NEXT_CAP, Math.round(10 + 8 * Math.pow(level, 1.5)));
+  }
+
   // ---------- Entity classes ----------
   class Player {
     constructor() {
@@ -177,7 +186,7 @@
       this.hp = 100;
       this.level = 1;
       this.xp = 0;
-      this.xpNext = 10;
+      this.xpNext = xpNextForLevel(this.level);
       this.invulnTimer = 0;
       this.facing = 1;
 
@@ -206,7 +215,7 @@
       while (this.xp >= this.xpNext) {
         this.xp -= this.xpNext;
         this.level++;
-        this.xpNext = Math.round(this.xpNext * 1.35 + 5);
+        this.xpNext = xpNextForLevel(this.level);
         game.onLevelUp();
       }
     }
