@@ -178,7 +178,19 @@ html, body {
   transform: scale(0.96);
 }
 
-#upgrade-choices {
+.overlay button:disabled {
+  background: #333;
+  color: #777;
+  box-shadow: none;
+  cursor: default;
+}
+
+.overlay button:disabled:active {
+  transform: none;
+}
+
+#upgrade-choices,
+#character-choices {
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -223,6 +235,11 @@ html, body {
   font-size: 13px;
   color: #bbb;
   margin-top: 4px;
+}
+
+.character-card.selected {
+  border-color: #7fffd4;
+  box-shadow: 0 0 0 2px rgba(127,255,212,0.3);
 }
 
 #final-stats {

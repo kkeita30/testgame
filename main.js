@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.9.0';
+  const GAME_VERSION = '1.10.0';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -156,6 +156,9 @@
   const killRateEl = document.getElementById('kill-rate');
   const killsEl = document.getElementById('kills');
   const startScreen = document.getElementById('start-screen');
+  const characterSelectScreen = document.getElementById('character-select-screen');
+  const characterChoicesEl = document.getElementById('character-choices');
+  const confirmCharacterBtn = document.getElementById('confirm-character-btn');
   const levelupScreen = document.getElementById('levelup-screen');
   const gameoverScreen = document.getElementById('gameover-screen');
   const resumeHint = document.getElementById('resume-hint');
@@ -164,6 +167,19 @@
   const startBtn = document.getElementById('start-btn');
   const restartBtn = document.getElementById('restart-btn');
   const pauseBtn = document.getElementById('pause-btn');
+
+  // Placeholder roster: only one entry today since weapon variety, double-tap
+  // abilities, and passives don't exist yet. New characters slot in later by
+  // adding entries here - each just needs an `apply(player)` that tweaks
+  // starting stats or (once built) assigns a weapon/ability loadout.
+  const CHARACTERS = [
+    {
+      id: 'standard',
+      name: 'スタンダード',
+      desc: 'バランス型。今後ここに武器・特殊能力の異なるキャラクターが追加されます。',
+      apply: (p) => {},
+    },
+  ];
 
   // Required XP grows with level^1.5 rather than compounding multiplicatively
   // (the old `xpNext * 1.35 + 5` recurrence), so it stays a smooth, roughly
@@ -176,7 +192,7 @@
 
   // ---------- Entity classes ----------
   class Player {
-    constructor() {
+    constructor(character) {
       this.x = 0;
       this.y = 0;
       this.radius = 16;
@@ -199,6 +215,8 @@
       this.pierce = 0;
       this.pickupRadius = 70;
       this.regen = 0;
+
+      if (character) character.apply(this);
     }
 
     get speed() { return this.baseSpeed * this.speedMult; }
@@ -324,8 +342,8 @@
 
   // ---------- Game controller ----------
   class Game {
-    constructor() {
-      this.player = new Player();
+    constructor(character) {
+      this.player = new Player(character);
       this.enemies = [];
       this.projectiles = [];
       this.gems = [];
@@ -733,10 +751,34 @@
   }
 
   // ---------- Screen management ----------
-  function startGame() {
-    game = new Game();
+  let selectedCharacter = null;
+
+  function showCharacterSelect() {
+    startScreen.classList.add('hidden');
+    gameoverScreen.classList.add('hidden');
+    selectedCharacter = null;
+    confirmCharacterBtn.disabled = true;
+    characterChoicesEl.innerHTML = '';
+    for (const ch of CHARACTERS) {
+      const card = document.createElement('div');
+      card.className = 'upgrade-card character-card';
+      card.innerHTML = `<div class="u-title">${ch.name}</div><div class="u-desc">${ch.desc}</div>`;
+      card.addEventListener('click', () => {
+        selectedCharacter = ch;
+        for (const el of characterChoicesEl.children) el.classList.remove('selected');
+        card.classList.add('selected');
+        confirmCharacterBtn.disabled = false;
+      });
+      characterChoicesEl.appendChild(card);
+    }
+    characterSelectScreen.classList.remove('hidden');
+  }
+
+  function startGame(character) {
+    game = new Game(character || CHARACTERS[0]);
     paused = false;
     lastTime = 0;
+    characterSelectScreen.classList.add('hidden');
     startScreen.classList.add('hidden');
     gameoverScreen.classList.add('hidden');
     levelupScreen.classList.add('hidden');
@@ -747,8 +789,12 @@
     rafId = requestAnimationFrame(loop);
   }
 
-  startBtn.addEventListener('click', startGame);
-  restartBtn.addEventListener('click', startGame);
+  startBtn.addEventListener('click', showCharacterSelect);
+  restartBtn.addEventListener('click', showCharacterSelect);
+  confirmCharacterBtn.addEventListener('click', () => {
+    if (!selectedCharacter) return;
+    startGame(selectedCharacter);
+  });
 
   pauseBtn.addEventListener('click', () => {
     if (!game || game.over) return;
