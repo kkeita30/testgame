@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.14.0';
+  const GAME_VERSION = '1.14.1';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -286,7 +286,12 @@
 
       if (character) character.apply(this);
       if (weapon) weapon.apply(this);
-      if (character && character.special) this.special = character.special;
+      if (character && character.special) {
+        this.special = character.special;
+        // Start on cooldown rather than immediately usable, so the
+        // ability reads as an earned comeback tool, not a free opener.
+        this.specialCooldownRemaining = this.special.cooldown;
+      }
     }
 
     get speed() { return this.baseSpeed * this.speedMult; }
@@ -662,8 +667,10 @@
     tryActivateSpecial() {
       if (this.over || this.levelingUp || this.awaitingResume || paused) return;
       const p = this.player;
-      if (!p.special || p.specialCooldownRemaining > 0) return;
-      p.specialCooldownRemaining = p.special.cooldown;
+      if (!p.special || p.specialCooldownRemaining > 0 || p.specialBuffTimer > 0) return;
+      // Cooldown doesn't start here - it starts once the buff itself runs
+      // out (see update()), so the full cycle is buff duration + cooldown
+      // back to back, not the two running in parallel.
       p.special.activate(p, this);
     }
 
@@ -777,8 +784,15 @@
 
       if (p.invulnTimer > 0) p.invulnTimer -= dt;
       if (p.regen > 0) p.hp = Math.min(p.maxHp, p.hp + p.regen * dt);
-      if (p.specialCooldownRemaining > 0) p.specialCooldownRemaining -= dt;
-      if (p.specialBuffTimer > 0) p.specialBuffTimer -= dt;
+      // Cooldown only ticks once the buff itself has fully ended, so a run
+      // is buff-duration-then-cooldown back to back rather than the two
+      // counting down at the same time.
+      if (p.specialBuffTimer > 0) {
+        p.specialBuffTimer -= dt;
+        if (p.specialBuffTimer <= 0 && p.special) p.specialCooldownRemaining = p.special.cooldown;
+      } else if (p.specialCooldownRemaining > 0) {
+        p.specialCooldownRemaining -= dt;
+      }
 
       // spawn
       this.spawnTimer -= dt;
@@ -947,11 +961,17 @@
         specialIndicatorEl.classList.add('hidden');
       } else {
         specialIndicatorEl.classList.remove('hidden');
-        const ready = p.specialCooldownRemaining <= 0;
+        const buffActive = p.specialBuffTimer > 0;
+        const ready = !buffActive && p.specialCooldownRemaining <= 0;
         specialIndicatorEl.classList.toggle('ready', ready);
-        specialIndicatorEl.textContent = ready
-          ? `${p.special.name} 準備完了(ダブルタップ)`
-          : `${p.special.name} ${Math.ceil(p.specialCooldownRemaining)}s`;
+        specialIndicatorEl.classList.toggle('buff-active', buffActive);
+        if (buffActive) {
+          specialIndicatorEl.textContent = `${p.special.name}バフ有効中 ${Math.ceil(p.specialBuffTimer)}秒`;
+        } else if (ready) {
+          specialIndicatorEl.textContent = `${p.special.name} 準備完了(ダブルタップ)`;
+        } else {
+          specialIndicatorEl.textContent = `${p.special.name} ${Math.ceil(p.specialCooldownRemaining)}s`;
+        }
       }
     }
 
