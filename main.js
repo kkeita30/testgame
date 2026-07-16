@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.17.1';
+  const GAME_VERSION = '1.18.0';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -278,6 +278,7 @@
       this.explosionLevel = 0;
       this.chainLevel = 0;
       this.slowLevel = 0;
+      this.interceptLevel = 0;
 
       // Combo: consecutive hits on the SAME enemy ramp up damage, resetting
       // if the target changes or too long passes between hits. Rewards
@@ -371,10 +372,14 @@
     return base * (1 + p.chainLevel * 0.15);
   }
   function survivalPowerMult(p) {
-    const base = p.maxHp / BASELINE_STATS.maxHp;
-    // Slow reduces how much contact damage the player actually takes (fewer
-    // enemies get an attack in), so it counts toward survivability like HP.
-    return base * (1 + p.slowLevel * 0.15);
+    // Max HP's own contribution is dampened (only half the overshoot
+    // counts) - at full weight, stacking HP mostly just fed back into
+    // harder-hitting enemies and cancelled out its own survivability gain.
+    // Slow/intercept count at full weight since they reduce how often the
+    // player actually gets hit at all, not just how tanky a hit is.
+    const hpExtra = Math.max(0, p.maxHp / BASELINE_STATS.maxHp - 1) * 0.5;
+    const base = 1 + hpExtra;
+    return base * (1 + p.slowLevel * 0.15) * (1 + p.interceptLevel * 0.15);
   }
 
   class Enemy {
@@ -519,8 +524,21 @@
   const CHAIN_DAMAGE_PCT = 0.3;
   const CHAIN_RADIUS = 150;
   const SLOW_MULT = 0.5;
+  const SLOWED_DMG_MULT = 0.5; // a slowed enemy's contact damage is also halved
   function explosionRadiusForLevel(level) { return 50 + 20 * (level - 1); }
   function slowDurationForLevel(level) { return 1.0 + 0.5 * (level - 1); }
+
+  // Intercept: a passive aura around the player, independent of any bullet
+  // hit, that slows enemies which get too close. Level raises how many
+  // enemies it can affect at once (nearest-first); its duration piggybacks
+  // on the slow bullet effect's rank if the player has it (same scaling),
+  // else falls back to a short base duration that's really just meant to
+  // survive one frame - it re-applies continuously while an enemy stays
+  // within range anyway.
+  const INTERCEPT_RADIUS = 60;
+  const INTERCEPT_BASE_DURATION = 0.4;
+  function interceptDuration(p) { return p.slowLevel > 0 ? slowDurationForLevel(p.slowLevel) : INTERCEPT_BASE_DURATION; }
+  function interceptTargetCount(level) { return level; }
 
   const COMBO_PER_STACK_BONUS = 0.08;
   const COMBO_RESET_WINDOW = 1.5; // seconds since the last hit on the same target
@@ -562,6 +580,15 @@
       levelUp: p => { p.slowLevel++; },
       introDesc: '着弾した敵を一時的に減速させるようになる',
       upgradeDesc: level => `減速時間が増加する(${slowDurationForLevel(level).toFixed(1)}秒 → ${slowDurationForLevel(level + 1).toFixed(1)}秒)`,
+    },
+    {
+      id: 'intercept',
+      name: '迎撃',
+      maxLevel: 5,
+      getLevel: p => p.interceptLevel,
+      levelUp: p => { p.interceptLevel++; },
+      introDesc: '自機のごく至近距離に入った敵を自動で低速化するようになる(低速を取得済みならその減速時間がそのまま適用される)',
+      upgradeDesc: level => `迎撃で同時に低速化できる敵の数が増加する(${interceptTargetCount(level)}体 → ${interceptTargetCount(level + 1)}体)`,
     },
     {
       id: 'pierce',
@@ -863,6 +890,22 @@
 
       this.fireWeapon(dt);
 
+      // Intercept: slow whatever wanders inside the tiny aura radius,
+      // regardless of whether any shot has actually hit it. Capped to the
+      // nearest N enemies (N = intercept level) so a full swarm doesn't get
+      // slowed for free - only the immediate threats pressing right up
+      // against the player do.
+      if (p.interceptLevel > 0) {
+        const nearby = this.enemies
+          .filter(e => dist2(e.x, e.y, p.x, p.y) <= INTERCEPT_RADIUS * INTERCEPT_RADIUS)
+          .sort((a, b) => dist2(a.x, a.y, p.x, p.y) - dist2(b.x, b.y, p.x, p.y));
+        const duration = interceptDuration(p);
+        const maxTargets = interceptTargetCount(p.interceptLevel);
+        for (let i = 0; i < Math.min(maxTargets, nearby.length); i++) {
+          nearby[i].slowTimer = Math.max(nearby[i].slowTimer, duration);
+        }
+      }
+
       // enemies
       for (const e of this.enemies) {
         const d = dist(e.x, e.y, p.x, p.y) || 1;
@@ -874,7 +917,10 @@
         if (e.slowTimer > 0) e.slowTimer -= dt;
 
         if (d < e.radius + p.radius && e.contactCd <= 0) {
-          p.takeDamage(e.dmg);
+          // Slowed enemies also hit softer - the status should meaningfully
+          // blunt an enemy, not just its approach speed.
+          const dmg = e.slowTimer > 0 ? e.dmg * SLOWED_DMG_MULT : e.dmg;
+          p.takeDamage(dmg);
           e.contactCd = 0.5;
           this.shakeTime = 0.15;
         }
