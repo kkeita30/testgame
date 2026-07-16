@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.13.0';
+  const GAME_VERSION = '1.13.1';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -274,6 +274,12 @@
   // for the build-aware difficulty scaling below.
   const BASELINE_STATS = { damage: 10, atkCooldown: 0.7, projCount: 1, pierce: 0, maxHp: 100 };
 
+  // How often (in seconds) the kill-rate rubber-band re-evaluates difficulty.
+  // Shortened from 60s to let a well-performing run's natural difficulty
+  // climb move a bit faster, now that the XP curve (v1.9.0) caps out and
+  // stops slowing leveling down at high player levels.
+  const DIFFICULTY_CHECK_INTERVAL = 50;
+
   // These three convert "how far past baseline has the player pushed this
   // stat" into a multiplier (1 = no upgrades in that direction yet). Difficulty
   // scaling only kicks in on an axis once the player has actually invested in
@@ -281,13 +287,22 @@
   // keeps enemy HP on the slow time-based curve instead of also compounding
   // with a build that never got stronger.
   function offensePowerMult(p) {
-    return (p.damage / BASELINE_STATS.damage) * (BASELINE_STATS.atkCooldown / p.atkCooldown);
+    const base = (p.damage / BASELINE_STATS.damage) * (BASELINE_STATS.atkCooldown / p.atkCooldown);
+    // Explosion is effectively bonus AoE damage, so it counts toward
+    // offense power the same way raw damage/attack-speed does.
+    return base * (1 + p.explosionLevel * 0.15);
   }
   function crowdPowerMult(p) {
-    return 1 + Math.max(0, p.projCount - BASELINE_STATS.projCount) * 0.18 + p.pierce * 0.15;
+    const base = 1 + Math.max(0, p.projCount - BASELINE_STATS.projCount) * 0.18 + p.pierce * 0.15;
+    // Chain is effectively "hit more enemies per shot", the same crowd-
+    // clearing role multishot/pierce play, so it feeds the same multiplier.
+    return base * (1 + p.chainLevel * 0.15);
   }
   function survivalPowerMult(p) {
-    return p.maxHp / BASELINE_STATS.maxHp;
+    const base = p.maxHp / BASELINE_STATS.maxHp;
+    // Slow reduces how much contact damage the player actually takes (fewer
+    // enemies get an attack in), so it counts toward survivability like HP.
+    return base * (1 + p.slowLevel * 0.15);
   }
 
   class Enemy {
@@ -527,12 +542,13 @@
       this.shakeTime = 0;
 
       // Kill-rate rubber-band: difficulty is no longer a pure function of
-      // elapsed time. Every 60s it is re-evaluated against how much of the
-      // last window's spawns actually got killed, so a player who is
-      // falling behind gets the ramp held (or walked back) instead of
-      // ratcheting up regardless of how the fight is actually going.
+      // elapsed time. Every DIFFICULTY_CHECK_INTERVAL seconds it is
+      // re-evaluated against how much of the last window's spawns actually
+      // got killed, so a player who is falling behind gets the ramp held
+      // (or walked back) instead of ratcheting up regardless of how the
+      // fight is actually going.
       this.difficulty = 1;
-      this.levelCheckTimer = 60;
+      this.levelCheckTimer = DIFFICULTY_CHECK_INTERVAL;
       this.totalSpawned = 0;
       this.spawnedAtCheckpoint = 0;
       this.killsAtCheckpoint = 0;
@@ -674,15 +690,16 @@
       this.time += dt;
       const p = this.player;
 
-      // Kill-rate rubber-band, checked once per 60s window: a single
-      // discrete "difficulty" tier replaced the old continuous time-based
-      // curves so difficulty reads as legible steps. This is the step
-      // rule - normally +1 per window, but if the player killed 70% or
-      // less of what spawned last window the tier holds instead of
-      // advancing, and at 50% or less it steps back down (never below 1).
+      // Kill-rate rubber-band, checked once per DIFFICULTY_CHECK_INTERVAL
+      // window: a single discrete "difficulty" tier replaced the old
+      // continuous time-based curves so difficulty reads as legible steps.
+      // This is the step rule - normally +1 per window, but if the player
+      // killed 70% or less of what spawned last window the tier holds
+      // instead of advancing, and at 50% or less it steps back down
+      // (never below 1).
       this.levelCheckTimer -= dt;
       if (this.levelCheckTimer <= 0) {
-        this.levelCheckTimer += 60;
+        this.levelCheckTimer += DIFFICULTY_CHECK_INTERVAL;
         const spawnedThisWindow = this.totalSpawned - this.spawnedAtCheckpoint;
         const killsThisWindow = this.kills - this.killsAtCheckpoint;
         const killRate = spawnedThisWindow > 0 ? killsThisWindow / spawnedThisWindow : 1;
