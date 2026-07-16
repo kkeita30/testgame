@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.13.2';
+  const GAME_VERSION = '1.13.3';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -927,7 +927,26 @@
         ctx.restore();
       }
 
-      // particles
+      // enemies
+      for (const e of this.enemies) {
+        const sx = e.x + offX, sy = e.y + offY;
+        if (sx < -40 || sx > W + 40 || sy < -40 || sy > H + 40) continue;
+        ctx.beginPath();
+        ctx.fillStyle = e.hitFlash > 0 ? '#ffffff' : (e.slowTimer > 0 ? '#7ec8ff' : e.color);
+        ctx.arc(sx, sy, e.radius, 0, TAU);
+        ctx.fill();
+        // hp bar for tougher enemies
+        if (e.maxHp > 15) {
+          const w = e.radius * 2;
+          ctx.fillStyle = 'rgba(0,0,0,0.5)';
+          ctx.fillRect(sx - w / 2, sy - e.radius - 8, w, 4);
+          ctx.fillStyle = '#5aff7a';
+          ctx.fillRect(sx - w / 2, sy - e.radius - 8, w * clamp(e.hp / e.maxHp, 0, 1), 4);
+        }
+      }
+
+      // particles - drawn above enemies so death/explosion bursts read
+      // clearly instead of being hidden underneath enemy graphics
       for (const pt of this.particles) {
         const sx = pt.x + offX, sy = pt.y + offY;
         ctx.globalAlpha = clamp(pt.life / pt.maxLife, 0, 1);
@@ -948,24 +967,6 @@
         ctx.lineTo(zap.x2 + offX, zap.y2 + offY);
         ctx.stroke();
         ctx.globalAlpha = 1;
-      }
-
-      // enemies
-      for (const e of this.enemies) {
-        const sx = e.x + offX, sy = e.y + offY;
-        if (sx < -40 || sx > W + 40 || sy < -40 || sy > H + 40) continue;
-        ctx.beginPath();
-        ctx.fillStyle = e.hitFlash > 0 ? '#ffffff' : (e.slowTimer > 0 ? '#7ec8ff' : e.color);
-        ctx.arc(sx, sy, e.radius, 0, TAU);
-        ctx.fill();
-        // hp bar for tougher enemies
-        if (e.maxHp > 15) {
-          const w = e.radius * 2;
-          ctx.fillStyle = 'rgba(0,0,0,0.5)';
-          ctx.fillRect(sx - w / 2, sy - e.radius - 8, w, 4);
-          ctx.fillStyle = '#5aff7a';
-          ctx.fillRect(sx - w / 2, sy - e.radius - 8, w * clamp(e.hp / e.maxHp, 0, 1), 4);
-        }
       }
 
       // projectiles
