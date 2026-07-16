@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.16.1';
+  const GAME_VERSION = '1.17.0';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -177,6 +177,7 @@
   const levelEl = document.getElementById('level');
   const difficultyEl = document.getElementById('difficulty');
   const killRateEl = document.getElementById('kill-rate');
+  const comboIndicatorEl = document.getElementById('combo-indicator');
   const specialIndicatorEl = document.getElementById('special-indicator');
   const killsEl = document.getElementById('kills');
   const startScreen = document.getElementById('start-screen');
@@ -278,6 +279,16 @@
       this.chainLevel = 0;
       this.slowLevel = 0;
 
+      // Combo: consecutive hits on the SAME enemy ramp up damage, resetting
+      // if the target changes or too long passes between hits. Rewards
+      // sustained single-target focus (attack speed/damage synergy), which
+      // multishot tends to work against since it usually spreads shots
+      // across different enemies in a swarm.
+      this.comboLevel = 0;
+      this.comboTarget = null;
+      this.comboCount = 0;
+      this.comboResetTimer = 0;
+
       // Double-tap special ability, defined per character (§ CHARACTERS).
       // null until a character with one is applied below.
       this.special = null;
@@ -315,10 +326,21 @@
   }
 
   const ENEMY_TYPES = {
-    grunt:  { hp: 18, speed: 78,  radius: 13, color: '#ff5a5a', dmg: 8,  xp: 3,  score: 1 },
-    fast:   { hp: 10, speed: 140, radius: 10, color: '#ffd23a', dmg: 6,  xp: 4,  score: 1 },
-    tank:   { hp: 70, speed: 48,  radius: 20, color: '#a15aff', dmg: 14, xp: 10, score: 2 },
+    grunt:  { hp: 18,  speed: 78,  radius: 13, color: '#ff5a5a', dmg: 8,  xp: 3,  score: 1 },
+    fast:   { hp: 10,  speed: 140, radius: 10, color: '#ffd23a', dmg: 6,  xp: 4,  score: 1 },
+    tank:   { hp: 70,  speed: 48,  radius: 20, color: '#a15aff', dmg: 14, xp: 10, score: 2 },
+    // Deliberately huge single-target HP pool: a pure multishot build
+    // spreads its damage across many enemies and struggles to burn this
+    // down alone, so surviving bosses well pushes toward also investing in
+    // single-target-friendly upgrades (combo, raw damage, explosion/chain).
+    boss:   { hp: 500, speed: 35,  radius: 32, color: '#c81e3a', dmg: 20, xp: 50, score: 5 },
   };
+
+  // Bosses don't roll into the normal per-spawn type dice - they arrive on
+  // their own clock once difficulty is high enough, as a rare, singular
+  // event rather than blending into the regular swarm composition.
+  const BOSS_MIN_DIFFICULTY = 8;
+  const BOSS_SPAWN_INTERVAL = 90;
 
   // Player stat values at game start, used as the "no upgrades taken" yardstick
   // for the build-aware difficulty scaling below.
@@ -500,7 +522,20 @@
   function explosionRadiusForLevel(level) { return 50 + 20 * (level - 1); }
   function slowDurationForLevel(level) { return 1.0 + 0.5 * (level - 1); }
 
+  const COMBO_PER_STACK_BONUS = 0.08;
+  const COMBO_RESET_WINDOW = 1.5; // seconds since the last hit on the same target
+  function comboMaxStacks(level) { return level * 4; }
+
   const BULLET_EFFECTS = [
+    {
+      id: 'combo',
+      name: '連撃',
+      maxLevel: 5,
+      getLevel: p => p.comboLevel,
+      levelUp: p => { p.comboLevel++; },
+      introDesc: '同じ敵に連続ヒットさせるほどダメージが上昇するようになる',
+      upgradeDesc: level => `連撃の上限段数が増加する(+${Math.round(comboMaxStacks(level) * COMBO_PER_STACK_BONUS * 100)}% → +${Math.round(comboMaxStacks(level + 1) * COMBO_PER_STACK_BONUS * 100)}%)`,
+    },
     {
       id: 'explosion',
       name: '爆発',
@@ -605,6 +640,8 @@
       this.totalSpawned = 0;
       this.spawnedAtCheckpoint = 0;
       this.killsAtCheckpoint = 0;
+
+      this.bossSpawnTimer = BOSS_SPAWN_INTERVAL;
     }
 
     onLevelUp() {
@@ -686,7 +723,7 @@
       pauseBtn.classList.add('hidden');
     }
 
-    spawnEnemy() {
+    spawnEnemy(forceType) {
       const p = this.player;
       const angle = rand(0, TAU);
       const spawnDist = Math.max(W, H) * 0.65 + 60;
@@ -695,10 +732,12 @@
       const D = this.difficulty;
       this.totalSpawned++;
 
-      let type = 'grunt';
-      const r = Math.random();
-      if (D >= 5 && r < 0.22) type = 'tank';
-      else if (D >= 2 && r < 0.5) type = 'fast';
+      let type = forceType || 'grunt';
+      if (!forceType) {
+        const r = Math.random();
+        if (D >= 5 && r < 0.22) type = 'tank';
+        else if (D >= 2 && r < 0.5) type = 'fast';
+      }
 
       // Stepped time-based baseline, plus a build-aware top-up: enemy HP
       // tracks how much dps the player has stacked (damage x attack speed)
@@ -796,6 +835,7 @@
       } else if (p.specialCooldownRemaining > 0) {
         p.specialCooldownRemaining -= dt;
       }
+      if (p.comboResetTimer > 0) p.comboResetTimer -= dt;
 
       // spawn
       this.spawnTimer -= dt;
@@ -811,6 +851,14 @@
         const tierBurst = 1 + Math.floor((D - 1) / 5);
         const burst = tierBurst + Math.round(crowdExtra * 2);
         for (let i = 0; i < burst; i++) this.spawnEnemy();
+      }
+
+      // Boss: a periodic, singular arrival rather than a dice roll mixed
+      // into the regular spawn burst above, once difficulty is high enough.
+      this.bossSpawnTimer -= dt;
+      if (this.bossSpawnTimer <= 0) {
+        this.bossSpawnTimer = BOSS_SPAWN_INTERVAL;
+        if (D >= BOSS_MIN_DIFFICULTY) this.spawnEnemy('boss');
       }
 
       this.fireWeapon(dt);
@@ -845,7 +893,19 @@
         for (const e of this.enemies) {
           if (proj.hitSet.has(e)) continue;
           if (dist2(proj.x, proj.y, e.x, e.y) < (proj.radius + e.radius) * (proj.radius + e.radius)) {
-            e.hp -= proj.damage;
+            let hitDamage = proj.damage;
+            if (p.comboLevel > 0) {
+              // A hit on a different target (or one that arrives after the
+              // reset window has lapsed) starts a fresh combo instead of
+              // continuing the old one.
+              if (p.comboTarget !== e || p.comboResetTimer <= 0) p.comboCount = 0;
+              const maxStacks = comboMaxStacks(p.comboLevel);
+              hitDamage = proj.damage * (1 + Math.min(p.comboCount, maxStacks) * COMBO_PER_STACK_BONUS);
+              p.comboTarget = e;
+              p.comboCount += 1;
+              p.comboResetTimer = COMBO_RESET_WINDOW;
+            }
+            e.hp -= hitDamage;
             e.hitFlash = 0.12;
             proj.hitSet.add(e);
             if (proj.slowDuration > 0) e.slowTimer = Math.max(e.slowTimer, proj.slowDuration);
@@ -985,6 +1045,15 @@
         ? `撃破率 ${Math.round((killsThisWindow / spawnedThisWindow) * 100)}%`
         : '撃破率 --';
       killsEl.textContent = `${this.kills} kills`;
+
+      const comboActive = p.comboLevel > 0 && p.comboResetTimer > 0 && p.comboCount > 1;
+      comboIndicatorEl.classList.toggle('hidden', !comboActive);
+      if (comboActive) {
+        const maxStacks = comboMaxStacks(p.comboLevel);
+        const bonusPct = Math.round(Math.min(p.comboCount - 1, maxStacks) * COMBO_PER_STACK_BONUS * 100);
+        comboIndicatorEl.textContent = `連撃 x${p.comboCount} (+${bonusPct}%)`;
+      }
+
       const mm = String(Math.floor(this.time / 60)).padStart(2, '0');
       const ss = String(Math.floor(this.time % 60)).padStart(2, '0');
       timerEl.textContent = `${mm}:${ss}`;

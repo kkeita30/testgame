@@ -118,6 +118,14 @@ html, body {
   color: #ff8a8a;
 }
 
+#combo-indicator {
+  color: #ffd23a;
+}
+
+#combo-indicator.hidden {
+  display: none;
+}
+
 /* Overlays */
 .overlay {
   position: absolute;
