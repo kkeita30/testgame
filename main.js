@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.17.0';
+  const GAME_VERSION = '1.17.1';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -451,7 +451,7 @@
 
   const UPGRADE_POOL = [
     { id: 'damage', title: 'ダメージ強化', desc: '攻撃ダメージ +50%', apply: p => p.damage = Math.round(p.damage * 1.5) },
-    { id: 'atkspeed', title: '攻撃速度アップ', desc: '攻撃間隔 -15%', apply: p => p.atkCooldown = Math.max(0.15, p.atkCooldown * 0.85) },
+    { id: 'atkspeed', title: '攻撃速度アップ', desc: '攻撃間隔 -20%', apply: p => p.atkCooldown = Math.max(0.15, p.atkCooldown * 0.8) },
     { id: 'speed', title: '移動速度アップ', desc: '移動速度 +12%', apply: p => p.speedMult *= 1.12 },
     { id: 'maxhp', title: '最大HPアップ', desc: '最大HP +25、HP回復', apply: p => { p.maxHp += 25; p.hp = Math.min(p.maxHp, p.hp + 25); } },
     { id: 'pickup', title: '回収範囲アップ', desc: 'XP回収範囲 +30', apply: p => p.pickupRadius += 30 },
@@ -480,9 +480,9 @@
     {
       id: 'trade-atkspeed',
       title: '速射特化',
-      desc: '攻撃間隔 -23%(発射速度アップ) / ダメージ -20%',
+      desc: '攻撃間隔 -31%(発射速度アップ) / ダメージ -20%',
       apply: p => {
-        p.atkCooldown = Math.max(STAT_LIMITS.minAtkCooldown, p.atkCooldown / 1.3);
+        p.atkCooldown = Math.max(STAT_LIMITS.minAtkCooldown, p.atkCooldown / 1.45);
         p.damage = Math.max(STAT_LIMITS.minDamage, Math.round(p.damage * 0.8));
       },
     },
