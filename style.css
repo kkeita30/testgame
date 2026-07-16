@@ -190,11 +190,31 @@ html, body {
 }
 
 #upgrade-choices,
-#character-choices {
+#character-choices,
+#weapon-choices {
   display: flex;
   flex-direction: column;
   gap: 12px;
   width: min(360px, 88vw);
+}
+
+#select-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  width: min(360px, 88vw);
+  max-height: 58vh;
+  overflow-y: auto;
+  padding: 2px;
+}
+
+.select-group h3 {
+  font-size: 13px;
+  font-weight: 700;
+  color: #888;
+  text-align: left;
+  letter-spacing: 1px;
+  margin-bottom: 8px;
 }
 
 .upgrade-card {

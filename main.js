@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.10.0';
+  const GAME_VERSION = '1.11.0';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -158,6 +158,7 @@
   const startScreen = document.getElementById('start-screen');
   const characterSelectScreen = document.getElementById('character-select-screen');
   const characterChoicesEl = document.getElementById('character-choices');
+  const weaponChoicesEl = document.getElementById('weapon-choices');
   const confirmCharacterBtn = document.getElementById('confirm-character-btn');
   const levelupScreen = document.getElementById('levelup-screen');
   const gameoverScreen = document.getElementById('gameover-screen');
@@ -168,15 +169,29 @@
   const restartBtn = document.getElementById('restart-btn');
   const pauseBtn = document.getElementById('pause-btn');
 
-  // Placeholder roster: only one entry today since weapon variety, double-tap
-  // abilities, and passives don't exist yet. New characters slot in later by
-  // adding entries here - each just needs an `apply(player)` that tweaks
-  // starting stats or (once built) assigns a weapon/ability loadout.
+  // Two independent rosters, picked separately before a run:
+  // - CHARACTERS differentiate on survivability/utility stats (HP, move
+  //   speed, regen, pickup range) and, later, on double-tap special
+  //   abilities/passives.
+  // - WEAPONS differentiate on offense stats (damage, fire rate, pierce,
+  //   multishot).
+  // Only one placeholder entry exists in each today; new options slot in by
+  // adding array entries, each with an `apply(player)` that tweaks starting
+  // stats (or, once built, assigns the actual weapon/ability behavior).
   const CHARACTERS = [
     {
       id: 'standard',
       name: 'スタンダード',
-      desc: 'バランス型。今後ここに武器・特殊能力の異なるキャラクターが追加されます。',
+      desc: 'バランス型。今後HP・移動速度・リジェネ・回収範囲や特殊能力が異なるキャラクターが追加されます。',
+      apply: (p) => {},
+    },
+  ];
+
+  const WEAPONS = [
+    {
+      id: 'standard',
+      name: 'スタンダード',
+      desc: '標準武器。今後ダメージ・発射速度・貫通・マルチショットが異なる武器が追加されます。',
       apply: (p) => {},
     },
   ];
@@ -192,7 +207,7 @@
 
   // ---------- Entity classes ----------
   class Player {
-    constructor(character) {
+    constructor(character, weapon) {
       this.x = 0;
       this.y = 0;
       this.radius = 16;
@@ -217,6 +232,7 @@
       this.regen = 0;
 
       if (character) character.apply(this);
+      if (weapon) weapon.apply(this);
     }
 
     get speed() { return this.baseSpeed * this.speedMult; }
@@ -342,8 +358,8 @@
 
   // ---------- Game controller ----------
   class Game {
-    constructor(character) {
-      this.player = new Player(character);
+    constructor(character, weapon) {
+      this.player = new Player(character, weapon);
       this.enemies = [];
       this.projectiles = [];
       this.gems = [];
@@ -752,30 +768,44 @@
 
   // ---------- Screen management ----------
   let selectedCharacter = null;
+  let selectedWeapon = null;
+
+  function updateConfirmState() {
+    confirmCharacterBtn.disabled = !(selectedCharacter && selectedWeapon);
+  }
+
+  // Shared by both the character and weapon groups: renders `roster` as
+  // cards into `containerEl`, wiring each card to set `onPick(entry)` and
+  // toggle its own "selected" highlight when tapped.
+  function renderSelectCards(containerEl, roster, onPick) {
+    containerEl.innerHTML = '';
+    for (const entry of roster) {
+      const card = document.createElement('div');
+      card.className = 'upgrade-card character-card';
+      card.innerHTML = `<div class="u-title">${entry.name}</div><div class="u-desc">${entry.desc}</div>`;
+      card.addEventListener('click', () => {
+        onPick(entry);
+        for (const el of containerEl.children) el.classList.remove('selected');
+        card.classList.add('selected');
+        updateConfirmState();
+      });
+      containerEl.appendChild(card);
+    }
+  }
 
   function showCharacterSelect() {
     startScreen.classList.add('hidden');
     gameoverScreen.classList.add('hidden');
     selectedCharacter = null;
-    confirmCharacterBtn.disabled = true;
-    characterChoicesEl.innerHTML = '';
-    for (const ch of CHARACTERS) {
-      const card = document.createElement('div');
-      card.className = 'upgrade-card character-card';
-      card.innerHTML = `<div class="u-title">${ch.name}</div><div class="u-desc">${ch.desc}</div>`;
-      card.addEventListener('click', () => {
-        selectedCharacter = ch;
-        for (const el of characterChoicesEl.children) el.classList.remove('selected');
-        card.classList.add('selected');
-        confirmCharacterBtn.disabled = false;
-      });
-      characterChoicesEl.appendChild(card);
-    }
+    selectedWeapon = null;
+    updateConfirmState();
+    renderSelectCards(characterChoicesEl, CHARACTERS, (ch) => { selectedCharacter = ch; });
+    renderSelectCards(weaponChoicesEl, WEAPONS, (w) => { selectedWeapon = w; });
     characterSelectScreen.classList.remove('hidden');
   }
 
-  function startGame(character) {
-    game = new Game(character || CHARACTERS[0]);
+  function startGame(character, weapon) {
+    game = new Game(character || CHARACTERS[0], weapon || WEAPONS[0]);
     paused = false;
     lastTime = 0;
     characterSelectScreen.classList.add('hidden');
@@ -792,8 +822,8 @@
   startBtn.addEventListener('click', showCharacterSelect);
   restartBtn.addEventListener('click', showCharacterSelect);
   confirmCharacterBtn.addEventListener('click', () => {
-    if (!selectedCharacter) return;
-    startGame(selectedCharacter);
+    if (!selectedCharacter || !selectedWeapon) return;
+    startGame(selectedCharacter, selectedWeapon);
   });
 
   pauseBtn.addEventListener('click', () => {
