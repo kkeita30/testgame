@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.6.0';
+  const GAME_VERSION = '1.7.0';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -330,6 +330,17 @@
       this.levelingUp = false;
       this.awaitingResume = false;
       this.shakeTime = 0;
+
+      // Kill-rate rubber-band: enemyLevel is no longer a pure function of
+      // elapsed time. Every 60s it is re-evaluated against how much of the
+      // last window's spawns actually got killed, so a player who is
+      // falling behind gets the ramp held (or walked back) instead of
+      // ratcheting up regardless of how the fight is actually going.
+      this.enemyLevel = 1;
+      this.levelCheckTimer = 60;
+      this.totalSpawned = 0;
+      this.spawnedAtCheckpoint = 0;
+      this.killsAtCheckpoint = 0;
     }
 
     onLevelUp() {
@@ -381,16 +392,6 @@
       pauseBtn.classList.add('hidden');
     }
 
-    // A single discrete tier that replaces the old continuous time-based
-    // curves. Everything time-driven (enemy HP/dmg baseline, spawn rate,
-    // type unlocks) steps up once per tier instead of drifting smoothly, so
-    // difficulty increases read as distinct, legible jumps rather than an
-    // imperceptible ramp - the same reason player level-ups are steps, not
-    // a smooth stat drift.
-    get enemyLevel() {
-      return 1 + Math.floor(this.time / 60);
-    }
-
     spawnEnemy() {
       const p = this.player;
       const angle = rand(0, TAU);
@@ -398,6 +399,7 @@
       const x = p.x + Math.cos(angle) * spawnDist;
       const y = p.y + Math.sin(angle) * spawnDist;
       const L = this.enemyLevel;
+      this.totalSpawned++;
 
       let type = 'grunt';
       const r = Math.random();
@@ -452,6 +454,24 @@
       if (this.over || this.levelingUp || this.awaitingResume || paused) return;
       this.time += dt;
       const p = this.player;
+
+      // Kill-rate rubber-band, checked once per 60s window: a single
+      // discrete "enemy level" replaced the old continuous time-based
+      // curves so difficulty reads as legible steps. This is the step
+      // rule - normally +1 per window, but if the player killed less than
+      // half of what spawned last window the level holds instead of
+      // advancing, and below a quarter it steps back down (never below 1).
+      this.levelCheckTimer -= dt;
+      if (this.levelCheckTimer <= 0) {
+        this.levelCheckTimer += 60;
+        const spawnedThisWindow = this.totalSpawned - this.spawnedAtCheckpoint;
+        const killsThisWindow = this.kills - this.killsAtCheckpoint;
+        const killRate = spawnedThisWindow > 0 ? killsThisWindow / spawnedThisWindow : 1;
+        if (killRate < 0.25) this.enemyLevel = Math.max(1, this.enemyLevel - 1);
+        else if (killRate >= 0.5) this.enemyLevel += 1;
+        this.spawnedAtCheckpoint = this.totalSpawned;
+        this.killsAtCheckpoint = this.kills;
+      }
 
       // movement
       let mx = input.dx, my = input.dy;
