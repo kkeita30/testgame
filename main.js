@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.13.3';
+  const GAME_VERSION = '1.14.0';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -45,6 +45,28 @@
   let dragOrigin = { x: 0, y: 0 };
   const DRAG_RADIUS = 42; // px of drag needed to reach full speed
 
+  // Double-tap: two touchdowns close together in both time and position
+  // trigger the active character's special ability. This rides along the
+  // same touchstart/mousedown that starts a drag, so the second tap both
+  // activates the ability and immediately continues as a normal move.
+  let lastTapTime = 0;
+  let lastTapX = 0, lastTapY = 0;
+  const DOUBLE_TAP_MAX_INTERVAL_MS = 350;
+  const DOUBLE_TAP_MAX_DIST = 40;
+  function checkDoubleTap(x, y) {
+    const now = performance.now();
+    const closeInTime = now - lastTapTime < DOUBLE_TAP_MAX_INTERVAL_MS;
+    const closeInSpace = Math.hypot(x - lastTapX, y - lastTapY) < DOUBLE_TAP_MAX_DIST;
+    if (closeInTime && closeInSpace) {
+      if (game) game.tryActivateSpecial();
+      lastTapTime = 0; // consume it, so a 3rd quick tap doesn't chain another activation
+    } else {
+      lastTapTime = now;
+      lastTapX = x;
+      lastTapY = y;
+    }
+  }
+
   function dragSet(x, y) {
     let dx = x - dragOrigin.x;
     let dy = y - dragOrigin.y;
@@ -64,6 +86,7 @@
     dragOrigin.y = y;
     input.dx = 0;
     input.dy = 0;
+    checkDoubleTap(x, y);
     if (game && game.awaitingResume) {
       game.awaitingResume = false;
       resumeHint.classList.add('hidden');
@@ -154,6 +177,7 @@
   const levelEl = document.getElementById('level');
   const difficultyEl = document.getElementById('difficulty');
   const killRateEl = document.getElementById('kill-rate');
+  const specialIndicatorEl = document.getElementById('special-indicator');
   const killsEl = document.getElementById('kills');
   const startScreen = document.getElementById('start-screen');
   const characterSelectScreen = document.getElementById('character-select-screen');
@@ -184,6 +208,20 @@
       name: 'スタンダード',
       desc: 'バランス型。今後HP・移動速度・リジェネ・回収範囲や特殊能力が異なるキャラクターが追加されます。',
       apply: (p) => {},
+      // Double-tap special: a comeback tool for the classic "surrounded by
+      // enemies I can't kill, can't reach gems, can't level up" death
+      // spiral. The bomb alone would just leave the player back in the same
+      // spot moments later, so it's paired with a gem-vacuum window that
+      // turns the cleared enemies' drops into an immediate level-up burst.
+      special: {
+        name: 'エマージェンシーボム',
+        desc: 'その場にいる敵を強制撃破し、10秒間ジェム回収範囲が全画面になる(クールタイム60秒)',
+        cooldown: 60,
+        activate(p, game) {
+          for (const e of game.enemies) e.hp = 0;
+          p.specialBuffTimer = 10;
+        },
+      },
     },
   ];
 
@@ -240,8 +278,15 @@
       this.chainLevel = 0;
       this.slowLevel = 0;
 
+      // Double-tap special ability, defined per character (§ CHARACTERS).
+      // null until a character with one is applied below.
+      this.special = null;
+      this.specialCooldownRemaining = 0;
+      this.specialBuffTimer = 0;
+
       if (character) character.apply(this);
       if (weapon) weapon.apply(this);
+      if (character && character.special) this.special = character.special;
     }
 
     get speed() { return this.baseSpeed * this.speedMult; }
@@ -614,6 +659,14 @@
       this.updateHud();
     }
 
+    tryActivateSpecial() {
+      if (this.over || this.levelingUp || this.awaitingResume || paused) return;
+      const p = this.player;
+      if (!p.special || p.specialCooldownRemaining > 0) return;
+      p.specialCooldownRemaining = p.special.cooldown;
+      p.special.activate(p, this);
+    }
+
     onPlayerDeath() {
       this.over = true;
       const mm = String(Math.floor(this.time / 60)).padStart(2, '0');
@@ -724,6 +777,8 @@
 
       if (p.invulnTimer > 0) p.invulnTimer -= dt;
       if (p.regen > 0) p.hp = Math.min(p.maxHp, p.hp + p.regen * dt);
+      if (p.specialCooldownRemaining > 0) p.specialCooldownRemaining -= dt;
+      if (p.specialBuffTimer > 0) p.specialBuffTimer -= dt;
 
       // spawn
       this.spawnTimer -= dt;
@@ -829,9 +884,10 @@
       this.projectiles = this.projectiles.filter(pr => pr.life > 0);
 
       // gems: attract + collect
+      const effectivePickupRadius = p.specialBuffTimer > 0 ? Infinity : p.pickupRadius;
       for (const g of this.gems) {
         const d = dist(g.x, g.y, p.x, p.y);
-        if (d < p.pickupRadius) {
+        if (d < effectivePickupRadius) {
           const pull = 500;
           g.x += (p.x - g.x) / Math.max(d, 1) * pull * dt;
           g.y += (p.y - g.y) / Math.max(d, 1) * pull * dt;
@@ -886,6 +942,17 @@
       const mm = String(Math.floor(this.time / 60)).padStart(2, '0');
       const ss = String(Math.floor(this.time % 60)).padStart(2, '0');
       timerEl.textContent = `${mm}:${ss}`;
+
+      if (!p.special) {
+        specialIndicatorEl.classList.add('hidden');
+      } else {
+        specialIndicatorEl.classList.remove('hidden');
+        const ready = p.specialCooldownRemaining <= 0;
+        specialIndicatorEl.classList.toggle('ready', ready);
+        specialIndicatorEl.textContent = ready
+          ? `${p.special.name} 準備完了(ダブルタップ)`
+          : `${p.special.name} ${Math.ceil(p.specialCooldownRemaining)}s`;
+      }
     }
 
     draw() {
