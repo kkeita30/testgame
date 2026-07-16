@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.7.3';
+  const GAME_VERSION = '1.8.0';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -153,6 +153,7 @@
   const timerEl = document.getElementById('timer');
   const levelEl = document.getElementById('level');
   const difficultyEl = document.getElementById('difficulty');
+  const killRateEl = document.getElementById('kill-rate');
   const killsEl = document.getElementById('kills');
   const startScreen = document.getElementById('start-screen');
   const levelupScreen = document.getElementById('levelup-screen');
@@ -599,6 +600,14 @@
       xpBar.style.width = clamp(p.xp / p.xpNext, 0, 1) * 100 + '%';
       levelEl.textContent = `Lv.${p.level}`;
       difficultyEl.textContent = `難易度${this.difficulty}`;
+      // Live view of the same window the difficulty checkpoint judges -
+      // shows "--" until at least one enemy has spawned in the current
+      // window, since dividing by zero spawns has no meaningful rate yet.
+      const spawnedThisWindow = this.totalSpawned - this.spawnedAtCheckpoint;
+      const killsThisWindow = this.kills - this.killsAtCheckpoint;
+      killRateEl.textContent = spawnedThisWindow > 0
+        ? `撃破率 ${Math.round((killsThisWindow / spawnedThisWindow) * 100)}%`
+        : '撃破率 --';
       killsEl.textContent = `${this.kills} kills`;
       const mm = String(Math.floor(this.time / 60)).padStart(2, '0');
       const ss = String(Math.floor(this.time % 60)).padStart(2, '0');

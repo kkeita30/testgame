@@ -108,6 +108,12 @@ html, body {
   font-size: 18px !important;
 }
 
+#kill-rate {
+  font-size: 12px !important;
+  font-weight: 500;
+  color: #999;
+}
+
 #difficulty {
   color: #ff8a8a;
 }
