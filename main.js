@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.15.0';
+  const GAME_VERSION = '1.16.0';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -493,7 +493,7 @@
   // `projCount` fields directly as their level rather than a separate
   // counter - multishot's `projCount` starts at 1 (base weapon already
   // fires one shot), so it's always in the "upgrade" state, never "(New)".
-  const EXPLOSION_DAMAGE_PCT = 0.6;
+  const EXPLOSION_DAMAGE_PCT = 0.8;
   const CHAIN_DAMAGE_PCT = 0.3;
   const CHAIN_RADIUS = 150;
   const SLOW_MULT = 0.5;
@@ -876,6 +876,23 @@
                 nearest.hitFlash = 0.12;
                 if (proj.slowDuration > 0) nearest.slowTimer = Math.max(nearest.slowTimer, proj.slowDuration);
                 this.chainZaps.push(new ChainZap(fromX, fromY, nearest.x, nearest.y));
+
+                // Chain's role is spreading damage/status to more targets,
+                // not diminishing whatever it spreads - so if explosion is
+                // also equipped, each chained hit detonates its own
+                // explosion too, using the player's full attack power
+                // (proj.damage) rather than chain's own reduced damage.
+                if (proj.explosionRadius > 0) {
+                  for (const other of this.enemies) {
+                    if (other === nearest || chained.has(other)) continue;
+                    if (dist(other.x, other.y, nearest.x, nearest.y) <= proj.explosionRadius) {
+                      other.hp -= proj.damage * EXPLOSION_DAMAGE_PCT;
+                      other.hitFlash = 0.12;
+                      for (let i = 0; i < 8; i++) this.particles.push(new Particle(nearest.x, nearest.y, '#ff4500', 2.5));
+                    }
+                  }
+                }
+
                 chained.add(nearest);
                 fromX = nearest.x; fromY = nearest.y;
               }
