@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.12.0';
+  const GAME_VERSION = '1.13.0';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -348,12 +348,22 @@
     }
   }
 
+  // Brief fading line drawn between a chain jump's origin and its target,
+  // so the chain effect reads as visibly "arcing" between enemies rather
+  // than just being invisible bonus damage.
+  class ChainZap {
+    constructor(x1, y1, x2, y2) {
+      this.x1 = x1; this.y1 = y1; this.x2 = x2; this.y2 = y2;
+      this.life = 0.15;
+      this.maxLife = 0.15;
+    }
+  }
+
   const UPGRADE_POOL = [
     { id: 'damage', title: 'ダメージ強化', desc: '攻撃ダメージ +50%', apply: p => p.damage = Math.round(p.damage * 1.5) },
     { id: 'atkspeed', title: '攻撃速度アップ', desc: '攻撃間隔 -15%', apply: p => p.atkCooldown = Math.max(0.15, p.atkCooldown * 0.85) },
     { id: 'speed', title: '移動速度アップ', desc: '移動速度 +12%', apply: p => p.speedMult *= 1.12 },
     { id: 'maxhp', title: '最大HPアップ', desc: '最大HP +25、HP回復', apply: p => { p.maxHp += 25; p.hp = Math.min(p.maxHp, p.hp + 25); } },
-    { id: 'multishot', title: 'マルチショット', desc: '同時発射数 +1', apply: p => p.projCount += 1 },
     { id: 'pickup', title: '回収範囲アップ', desc: 'XP回収範囲 +30', apply: p => p.pickupRadius += 30 },
     { id: 'regen', title: 'リジェネ', desc: '毎秒HP自然回復 +1', apply: p => p.regen += 1 },
   ];
@@ -409,15 +419,17 @@
   ];
 
   // Bullet effects: unlike the plain stat upgrades above, these have levels
-  // (0 = not yet acquired) and a cap. The first pick activates the effect;
-  // later picks strengthen it. Once maxLevel is reached, onLevelUp() below
-  // stops offering that entry at all. Pierce reuses the existing `pierce`
-  // count field directly as its level rather than a separate counter.
-  const EXPLOSION_DAMAGE_PCT = 0.5;
-  const CHAIN_DAMAGE_PCT = 0.6;
+  // and a cap. The first pick activates the effect; later picks strengthen
+  // it. Once maxLevel is reached, onLevelUp() below stops offering that
+  // entry at all. Pierce and multishot reuse the existing `pierce`/
+  // `projCount` fields directly as their level rather than a separate
+  // counter - multishot's `projCount` starts at 1 (base weapon already
+  // fires one shot), so it's always in the "upgrade" state, never "(New)".
+  const EXPLOSION_DAMAGE_PCT = 0.6;
+  const CHAIN_DAMAGE_PCT = 0.3;
   const CHAIN_RADIUS = 150;
   const SLOW_MULT = 0.5;
-  function explosionRadiusForLevel(level) { return 30 + 15 * (level - 1); }
+  function explosionRadiusForLevel(level) { return 50 + 20 * (level - 1); }
   function slowDurationForLevel(level) { return 1.0 + 0.5 * (level - 1); }
 
   const BULLET_EFFECTS = [
@@ -457,6 +469,21 @@
       introDesc: '弾が敵を貫通するようになる',
       upgradeDesc: level => `貫通数が増加する(${level} → ${level + 1})`,
     },
+    {
+      id: 'multishot',
+      name: 'マルチショット',
+      maxLevel: 5,
+      // projCount starts at 1 (the base weapon already fires one shot), so
+      // this is always in the "upgrade" state, never the "(New)" state.
+      // baseLevel marks that starting value so the "already invested in
+      // this effect" check below (used for the priority slot) isn't
+      // fooled into thinking the player has invested before ever picking it.
+      baseLevel: 1,
+      getLevel: p => p.projCount,
+      levelUp: p => { p.projCount++; },
+      introDesc: '同時発射数が増加する',
+      upgradeDesc: level => `同時発射数が増加する(${level} → ${level + 1})`,
+    },
   ];
 
   function bulletEffectUpgrade(effect, player) {
@@ -487,6 +514,7 @@
       this.projectiles = [];
       this.gems = [];
       this.particles = [];
+      this.chainZaps = [];
       this.camX = 0;
       this.camY = 0;
       this.time = 0;
@@ -513,16 +541,30 @@
     onLevelUp() {
       this.levelingUp = true;
       const picks = [];
+      const notMaxedEffects = BULLET_EFFECTS.filter(eff => eff.getLevel(this.player) < eff.maxLevel);
       const pool = [
         ...UPGRADE_POOL,
         ...TRADEOFF_POOL,
-        ...BULLET_EFFECTS
-          .filter(eff => eff.getLevel(this.player) < eff.maxLevel)
-          .map(eff => bulletEffectUpgrade(eff, this.player)),
+        ...notMaxedEffects.map(eff => bulletEffectUpgrade(eff, this.player)),
       ];
-      for (let i = 0; i < 3 && pool.length; i++) {
-        const idx = randInt(0, pool.length - 1);
-        picks.push(pool.splice(idx, 1)[0]);
+
+      // Slot 1 is a "bullet effect priority" slot: if the player already
+      // has at least one level in some not-yet-maxed effect, that slot is
+      // reserved for deepening one of those instead of a plain random draw,
+      // so committing to an effect keeps paying off instead of getting
+      // diluted by the rest of the pool. With nothing owned yet (or
+      // everything owned already maxed), it just behaves like a normal slot.
+      const ownedEffects = notMaxedEffects.filter(eff => eff.getLevel(this.player) > (eff.baseLevel || 0));
+      const firstSlotPool = ownedEffects.length > 0
+        ? ownedEffects.map(eff => bulletEffectUpgrade(eff, this.player))
+        : pool;
+      const firstPick = firstSlotPool[randInt(0, firstSlotPool.length - 1)];
+      picks.push(firstPick);
+
+      const remainingPool = pool.filter(up => up.id !== firstPick.id);
+      for (let i = 0; i < 2 && remainingPool.length; i++) {
+        const idx = randInt(0, remainingPool.length - 1);
+        picks.push(remainingPool.splice(idx, 1)[0]);
       }
       upgradeChoicesEl.innerHTML = '';
       for (const up of picks) {
@@ -744,6 +786,7 @@
                 nearest.hp -= proj.damage * CHAIN_DAMAGE_PCT;
                 nearest.hitFlash = 0.12;
                 if (proj.slowDuration > 0) nearest.slowTimer = Math.max(nearest.slowTimer, proj.slowDuration);
+                this.chainZaps.push(new ChainZap(fromX, fromY, nearest.x, nearest.y));
                 chained.add(nearest);
                 fromX = nearest.x; fromY = nearest.y;
               }
@@ -793,6 +836,10 @@
         pt.life -= dt;
       }
       this.particles = this.particles.filter(pt => pt.life > 0);
+
+      // chain zaps
+      for (const zap of this.chainZaps) zap.life -= dt;
+      this.chainZaps = this.chainZaps.filter(zap => zap.life > 0);
 
       if (this.shakeTime > 0) this.shakeTime -= dt;
 
@@ -871,6 +918,18 @@
         ctx.beginPath();
         ctx.arc(sx, sy, pt.radius, 0, TAU);
         ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+
+      // chain zaps
+      for (const zap of this.chainZaps) {
+        ctx.globalAlpha = clamp(zap.life / zap.maxLife, 0, 1);
+        ctx.strokeStyle = '#7ec8ff';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(zap.x1 + offX, zap.y1 + offY);
+        ctx.lineTo(zap.x2 + offX, zap.y2 + offY);
+        ctx.stroke();
         ctx.globalAlpha = 1;
       }
 
