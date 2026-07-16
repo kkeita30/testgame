@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.14.2';
+  const GAME_VERSION = '1.15.0';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -238,7 +238,7 @@
   // (the old `xpNext * 1.35 + 5` recurrence), so it stays a smooth, roughly
   // steady climb instead of snowballing into a wall by level ~15. A hard
   // cap keeps very long runs from ever facing an unbounded requirement.
-  const XP_NEXT_CAP = 1000;
+  const XP_NEXT_CAP = 3000;
   function xpNextForLevel(level) {
     return Math.min(XP_NEXT_CAP, Math.round(10 + 8 * Math.pow(level, 1.5)));
   }
@@ -888,10 +888,16 @@
       }
 
       // dead enemies -> gems + particles
+      // A crowd-clearing build (multishot/pierce/chain) makes the same
+      // crowdExtra that inflates enemy spawn count also shrink each gem's
+      // value, so more kills/sec doesn't translate into unbounded XP
+      // income - without this, clearing bigger swarms would feed back into
+      // leveling faster, which spawns even bigger swarms, and so on.
+      const gemValueMult = 1 / (1 + crowdExtra);
       this.enemies = this.enemies.filter(e => {
         if (e.hp <= 0) {
           this.kills++;
-          this.gems.push(new Gem(e.x, e.y, e.xpValue));
+          this.gems.push(new Gem(e.x, e.y, Math.max(1, Math.round(e.xpValue * gemValueMult))));
           for (let i = 0; i < 6; i++) this.particles.push(new Particle(e.x, e.y, e.color));
           return false;
         }
