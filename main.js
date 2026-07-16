@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.11.2';
+  const GAME_VERSION = '1.12.0';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -231,6 +231,15 @@
       this.pickupRadius = 70;
       this.regen = 0;
 
+      // Bullet effects: 0 means not yet acquired. First pick sets it to 1
+      // (activates the effect); further picks raise the level (stronger
+      // effect) up to BULLET_EFFECTS' maxLevel, after which the upgrade
+      // stops appearing as a choice. Pierce reuses the existing `pierce`
+      // count directly as its level instead of a separate field.
+      this.explosionLevel = 0;
+      this.chainLevel = 0;
+      this.slowLevel = 0;
+
       if (character) character.apply(this);
       if (weapon) weapon.apply(this);
     }
@@ -297,11 +306,12 @@
       this.scoreValue = def.score;
       this.hitFlash = 0;
       this.contactCd = 0;
+      this.slowTimer = 0;
     }
   }
 
   class Projectile {
-    constructor(x, y, vx, vy, damage, pierce, radius) {
+    constructor(x, y, vx, vy, damage, pierce, radius, explosionRadius, chainHops, slowDuration) {
       this.x = x; this.y = y;
       this.vx = vx; this.vy = vy;
       this.damage = damage;
@@ -309,6 +319,9 @@
       this.radius = radius || 5;
       this.life = 1.6;
       this.hitSet = new Set();
+      this.explosionRadius = explosionRadius || 0;
+      this.chainHops = chainHops || 0;
+      this.slowDuration = slowDuration || 0;
     }
   }
 
@@ -342,9 +355,119 @@
     { id: 'maxhp', title: '最大HPアップ', desc: '最大HP +25、HP回復', apply: p => { p.maxHp += 25; p.hp = Math.min(p.maxHp, p.hp + 25); } },
     { id: 'multishot', title: 'マルチショット', desc: '同時発射数 +1', apply: p => p.projCount += 1 },
     { id: 'pickup', title: '回収範囲アップ', desc: 'XP回収範囲 +30', apply: p => p.pickupRadius += 30 },
-    { id: 'pierce', title: '貫通強化', desc: '弾の貫通数 +1', apply: p => p.pierce += 1 },
     { id: 'regen', title: 'リジェネ', desc: '毎秒HP自然回復 +1', apply: p => p.regen += 1 },
   ];
+
+  // Floors/ceilings for the tradeoff upgrades below, so stacking the same
+  // downside repeatedly can't reduce a stat to uselessness (or, on the
+  // cooldown side, to unplayable slowness). Once a stat is saturated at its
+  // limit, further picks of that tradeoff still grant the upside "for free".
+  const STAT_LIMITS = { minDamage: 3, maxAtkCooldown: 1.4, minAtkCooldown: 0.15, minMaxHp: 40 };
+
+  // Each grants a strong upside alongside a real downside, for players who
+  // want to commit to a build rather than only stacking safe, one-sided
+  // upgrades.
+  const TRADEOFF_POOL = [
+    {
+      id: 'trade-damage',
+      title: '捨て身の一撃',
+      desc: 'ダメージ +80% / 攻撃間隔 +15%(発射速度ダウン)',
+      apply: p => {
+        p.damage = Math.round(p.damage * 1.8);
+        p.atkCooldown = Math.min(STAT_LIMITS.maxAtkCooldown, p.atkCooldown * 1.15);
+      },
+    },
+    {
+      id: 'trade-atkspeed',
+      title: '速射特化',
+      desc: '攻撃間隔 -23%(発射速度アップ) / ダメージ -20%',
+      apply: p => {
+        p.atkCooldown = Math.max(STAT_LIMITS.minAtkCooldown, p.atkCooldown / 1.3);
+        p.damage = Math.max(STAT_LIMITS.minDamage, Math.round(p.damage * 0.8));
+      },
+    },
+    {
+      id: 'trade-regen',
+      title: '生命転化',
+      desc: 'HP自然回復 +2 / 最大HP -15%',
+      apply: p => {
+        p.regen += 2;
+        p.maxHp = Math.max(STAT_LIMITS.minMaxHp, Math.round(p.maxHp * 0.85));
+        p.hp = Math.min(p.hp, p.maxHp);
+      },
+    },
+    {
+      id: 'trade-speed',
+      title: '俊足の代償',
+      desc: '移動速度 +30% / 最大HP -15%',
+      apply: p => {
+        p.speedMult *= 1.3;
+        p.maxHp = Math.max(STAT_LIMITS.minMaxHp, Math.round(p.maxHp * 0.85));
+        p.hp = Math.min(p.hp, p.maxHp);
+      },
+    },
+  ];
+
+  // Bullet effects: unlike the plain stat upgrades above, these have levels
+  // (0 = not yet acquired) and a cap. The first pick activates the effect;
+  // later picks strengthen it. Once maxLevel is reached, onLevelUp() below
+  // stops offering that entry at all. Pierce reuses the existing `pierce`
+  // count field directly as its level rather than a separate counter.
+  const EXPLOSION_DAMAGE_PCT = 0.5;
+  const CHAIN_DAMAGE_PCT = 0.6;
+  const CHAIN_RADIUS = 150;
+  const SLOW_MULT = 0.5;
+  function explosionRadiusForLevel(level) { return 30 + 15 * (level - 1); }
+  function slowDurationForLevel(level) { return 1.0 + 0.5 * (level - 1); }
+
+  const BULLET_EFFECTS = [
+    {
+      id: 'explosion',
+      name: '爆発',
+      maxLevel: 5,
+      getLevel: p => p.explosionLevel,
+      levelUp: p => { p.explosionLevel++; },
+      introDesc: '着弾地点の周囲に範囲ダメージを与えるようになる',
+      upgradeDesc: level => `爆発範囲が拡大する(${Math.round(explosionRadiusForLevel(level))} → ${Math.round(explosionRadiusForLevel(level + 1))})`,
+    },
+    {
+      id: 'chain',
+      name: '連鎖',
+      maxLevel: 5,
+      getLevel: p => p.chainLevel,
+      levelUp: p => { p.chainLevel++; },
+      introDesc: '着弾時、近くの敵にダメージが連鎖するようになる',
+      upgradeDesc: level => `連鎖回数が増加する(${level} → ${level + 1}体)`,
+    },
+    {
+      id: 'slow',
+      name: '低速',
+      maxLevel: 5,
+      getLevel: p => p.slowLevel,
+      levelUp: p => { p.slowLevel++; },
+      introDesc: '着弾した敵を一時的に減速させるようになる',
+      upgradeDesc: level => `減速時間が増加する(${slowDurationForLevel(level).toFixed(1)}秒 → ${slowDurationForLevel(level + 1).toFixed(1)}秒)`,
+    },
+    {
+      id: 'pierce',
+      name: '貫通',
+      maxLevel: 5,
+      getLevel: p => p.pierce,
+      levelUp: p => { p.pierce++; },
+      introDesc: '弾が敵を貫通するようになる',
+      upgradeDesc: level => `貫通数が増加する(${level} → ${level + 1})`,
+    },
+  ];
+
+  function bulletEffectUpgrade(effect, player) {
+    const level = effect.getLevel(player);
+    return {
+      id: `bullet-${effect.id}`,
+      title: level === 0 ? `${effect.name}(New)` : `${effect.name} Lv.${level}→${level + 1}`,
+      desc: level === 0 ? effect.introDesc : effect.upgradeDesc(level),
+      apply: p => effect.levelUp(p),
+    };
+  }
 
   // Not part of the random pool: always offered as an extra choice so the
   // player can decline a bad draw. No stat changes, but banks a chunk of
@@ -390,7 +513,13 @@
     onLevelUp() {
       this.levelingUp = true;
       const picks = [];
-      const pool = UPGRADE_POOL.slice();
+      const pool = [
+        ...UPGRADE_POOL,
+        ...TRADEOFF_POOL,
+        ...BULLET_EFFECTS
+          .filter(eff => eff.getLevel(this.player) < eff.maxLevel)
+          .map(eff => bulletEffectUpgrade(eff, this.player)),
+      ];
       for (let i = 0; i < 3 && pool.length; i++) {
         const idx = randInt(0, pool.length - 1);
         picks.push(pool.splice(idx, 1)[0]);
@@ -485,12 +614,16 @@
       if (sorted.length === 0) return;
       p.atkTimer = p.atkCooldown;
 
+      const explosionRadius = p.explosionLevel > 0 ? explosionRadiusForLevel(p.explosionLevel) : 0;
+      const chainHops = p.chainLevel;
+      const slowDuration = p.slowLevel > 0 ? slowDurationForLevel(p.slowLevel) : 0;
+
       for (let i = 0; i < p.projCount; i++) {
         const target = sorted[i % sorted.length].e;
         const ang = Math.atan2(target.y - p.y, target.x - p.x) + rand(-0.05, 0.05);
         const vx = Math.cos(ang) * p.projSpeed;
         const vy = Math.sin(ang) * p.projSpeed;
-        this.projectiles.push(new Projectile(p.x, p.y, vx, vy, p.damage, p.pierce, 5));
+        this.projectiles.push(new Projectile(p.x, p.y, vx, vy, p.damage, p.pierce, 5, explosionRadius, chainHops, slowDuration));
       }
     }
 
@@ -554,10 +687,12 @@
       // enemies
       for (const e of this.enemies) {
         const d = dist(e.x, e.y, p.x, p.y) || 1;
-        e.x += (p.x - e.x) / d * e.speed * dt;
-        e.y += (p.y - e.y) / d * e.speed * dt;
+        const effSpeed = e.slowTimer > 0 ? e.speed * SLOW_MULT : e.speed;
+        e.x += (p.x - e.x) / d * effSpeed * dt;
+        e.y += (p.y - e.y) / d * effSpeed * dt;
         if (e.hitFlash > 0) e.hitFlash -= dt;
         if (e.contactCd > 0) e.contactCd -= dt;
+        if (e.slowTimer > 0) e.slowTimer -= dt;
 
         if (d < e.radius + p.radius && e.contactCd <= 0) {
           p.takeDamage(e.dmg);
@@ -582,6 +717,38 @@
             e.hp -= proj.damage;
             e.hitFlash = 0.12;
             proj.hitSet.add(e);
+            if (proj.slowDuration > 0) e.slowTimer = Math.max(e.slowTimer, proj.slowDuration);
+
+            if (proj.explosionRadius > 0) {
+              for (const other of this.enemies) {
+                if (other === e) continue;
+                if (dist(other.x, other.y, e.x, e.y) <= proj.explosionRadius) {
+                  other.hp -= proj.damage * EXPLOSION_DAMAGE_PCT;
+                  other.hitFlash = 0.12;
+                  for (let i = 0; i < 4; i++) this.particles.push(new Particle(e.x, e.y, '#ffa040'));
+                }
+              }
+            }
+
+            if (proj.chainHops > 0) {
+              const chained = new Set([e]);
+              let fromX = e.x, fromY = e.y;
+              for (let hop = 0; hop < proj.chainHops; hop++) {
+                let nearest = null, nearestD2 = CHAIN_RADIUS * CHAIN_RADIUS;
+                for (const cand of this.enemies) {
+                  if (chained.has(cand)) continue;
+                  const d2 = dist2(fromX, fromY, cand.x, cand.y);
+                  if (d2 <= nearestD2) { nearest = cand; nearestD2 = d2; }
+                }
+                if (!nearest) break;
+                nearest.hp -= proj.damage * CHAIN_DAMAGE_PCT;
+                nearest.hitFlash = 0.12;
+                if (proj.slowDuration > 0) nearest.slowTimer = Math.max(nearest.slowTimer, proj.slowDuration);
+                chained.add(nearest);
+                fromX = nearest.x; fromY = nearest.y;
+              }
+            }
+
             if (proj.pierce <= 0) { proj.life = 0; break; }
             proj.pierce -= 1;
           }
@@ -712,7 +879,7 @@
         const sx = e.x + offX, sy = e.y + offY;
         if (sx < -40 || sx > W + 40 || sy < -40 || sy > H + 40) continue;
         ctx.beginPath();
-        ctx.fillStyle = e.hitFlash > 0 ? '#ffffff' : e.color;
+        ctx.fillStyle = e.hitFlash > 0 ? '#ffffff' : (e.slowTimer > 0 ? '#7ec8ff' : e.color);
         ctx.arc(sx, sy, e.radius, 0, TAU);
         ctx.fill();
         // hp bar for tougher enemies
