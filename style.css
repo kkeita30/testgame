@@ -131,10 +131,20 @@ html, body {
   text-align: center;
   z-index: 30;
   padding: 20px;
+  overflow-y: auto;
 }
 
 .overlay.hidden {
   display: none;
+}
+
+/* justify-content: center clips the top of overflowing content out of
+   scroll range on short viewports (e.g. phone landscape) - flex-start
+   keeps everything reachable by scrolling normally. This screen is also
+   the one most likely to keep growing (more characters/weapons later). */
+#character-select-screen {
+  justify-content: flex-start;
+  padding-top: max(20px, 5vh);
 }
 
 .overlay h1 {
@@ -203,9 +213,6 @@ html, body {
   flex-direction: column;
   gap: 20px;
   width: min(360px, 88vw);
-  max-height: 58vh;
-  overflow-y: auto;
-  padding: 2px;
 }
 
 .select-group h3 {
