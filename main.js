@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.7.2';
+  const GAME_VERSION = '1.7.3';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -152,7 +152,7 @@
   const xpBar = document.getElementById('xp-bar');
   const timerEl = document.getElementById('timer');
   const levelEl = document.getElementById('level');
-  const enemyLevelEl = document.getElementById('enemy-level');
+  const difficultyEl = document.getElementById('difficulty');
   const killsEl = document.getElementById('kills');
   const startScreen = document.getElementById('start-screen');
   const levelupScreen = document.getElementById('levelup-screen');
@@ -331,12 +331,12 @@
       this.awaitingResume = false;
       this.shakeTime = 0;
 
-      // Kill-rate rubber-band: enemyLevel is no longer a pure function of
+      // Kill-rate rubber-band: difficulty is no longer a pure function of
       // elapsed time. Every 60s it is re-evaluated against how much of the
       // last window's spawns actually got killed, so a player who is
       // falling behind gets the ramp held (or walked back) instead of
       // ratcheting up regardless of how the fight is actually going.
-      this.enemyLevel = 1;
+      this.difficulty = 1;
       this.levelCheckTimer = 60;
       this.totalSpawned = 0;
       this.spawnedAtCheckpoint = 0;
@@ -398,13 +398,13 @@
       const spawnDist = Math.max(W, H) * 0.65 + 60;
       const x = p.x + Math.cos(angle) * spawnDist;
       const y = p.y + Math.sin(angle) * spawnDist;
-      const L = this.enemyLevel;
+      const D = this.difficulty;
       this.totalSpawned++;
 
       let type = 'grunt';
       const r = Math.random();
-      if (L >= 5 && r < 0.22) type = 'tank';
-      else if (L >= 2 && r < 0.5) type = 'fast';
+      if (D >= 5 && r < 0.22) type = 'tank';
+      else if (D >= 2 && r < 0.5) type = 'fast';
 
       // Stepped time-based baseline, plus a build-aware top-up: enemy HP
       // tracks how much dps the player has stacked (damage x attack speed)
@@ -415,11 +415,11 @@
       // player never invested in. The offense coefficient is kept low
       // (0.25) on purpose - upgrading damage/attack speed should mostly
       // just feel stronger, not get mostly cancelled out by tougher enemies.
-      const tierHpMult = 1 + (L - 1) * 0.18;
+      const tierHpMult = 1 + (D - 1) * 0.18;
       const offenseExtra = Math.max(0, offensePowerMult(p) - 1);
       const hpMult = tierHpMult * (1 + offenseExtra * 0.25);
 
-      const tierDmgMult = 1 + (L - 1) * 0.14;
+      const tierDmgMult = 1 + (D - 1) * 0.14;
       const survivalExtra = Math.max(0, survivalPowerMult(p) - 1);
       const dmgMult = tierDmgMult * (1 + survivalExtra * 0.7);
 
@@ -456,10 +456,10 @@
       const p = this.player;
 
       // Kill-rate rubber-band, checked once per 60s window: a single
-      // discrete "enemy level" replaced the old continuous time-based
+      // discrete "difficulty" tier replaced the old continuous time-based
       // curves so difficulty reads as legible steps. This is the step
       // rule - normally +1 per window, but if the player killed less than
-      // half of what spawned last window the level holds instead of
+      // half of what spawned last window the tier holds instead of
       // advancing, and below a quarter it steps back down (never below 1).
       this.levelCheckTimer -= dt;
       if (this.levelCheckTimer <= 0) {
@@ -467,8 +467,8 @@
         const spawnedThisWindow = this.totalSpawned - this.spawnedAtCheckpoint;
         const killsThisWindow = this.kills - this.killsAtCheckpoint;
         const killRate = spawnedThisWindow > 0 ? killsThisWindow / spawnedThisWindow : 1;
-        if (killRate < 0.25) this.enemyLevel = Math.max(1, this.enemyLevel - 1);
-        else if (killRate >= 0.5) this.enemyLevel += 1;
+        if (killRate < 0.25) this.difficulty = Math.max(1, this.difficulty - 1);
+        else if (killRate >= 0.5) this.difficulty += 1;
         this.spawnedAtCheckpoint = this.totalSpawned;
         this.killsAtCheckpoint = this.kills;
       }
@@ -491,8 +491,8 @@
 
       // spawn
       this.spawnTimer -= dt;
-      const L = this.enemyLevel;
-      const tierInterval = Math.max(0.22, this.spawnInterval - (L - 1) * 0.11);
+      const D = this.difficulty;
+      const tierInterval = Math.max(0.22, this.spawnInterval - (D - 1) * 0.11);
       // Multishot/pierce make a player good at handling crowds, so a build
       // that stacks those sees extra enemies on top of the tier baseline;
       // a build that never picks them up keeps the gentle baseline.
@@ -500,7 +500,7 @@
       const curInterval = Math.max(0.15, tierInterval / (1 + crowdExtra * 0.5));
       if (this.spawnTimer <= 0) {
         this.spawnTimer = curInterval;
-        const tierBurst = 1 + Math.floor((L - 1) / 5);
+        const tierBurst = 1 + Math.floor((D - 1) / 5);
         const burst = tierBurst + Math.round(crowdExtra * 2);
         for (let i = 0; i < burst; i++) this.spawnEnemy();
       }
@@ -598,7 +598,7 @@
       hpText.textContent = `${Math.ceil(p.hp)}/${p.maxHp}`;
       xpBar.style.width = clamp(p.xp / p.xpNext, 0, 1) * 100 + '%';
       levelEl.textContent = `Lv.${p.level}`;
-      enemyLevelEl.textContent = `敵Lv.${this.enemyLevel}`;
+      difficultyEl.textContent = `難易度${this.difficulty}`;
       killsEl.textContent = `${this.kills} kills`;
       const mm = String(Math.floor(this.time / 60)).padStart(2, '0');
       const ss = String(Math.floor(this.time % 60)).padStart(2, '0');
