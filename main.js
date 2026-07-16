@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.17.1';
+  const GAME_VERSION = '1.17.2';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -517,7 +517,7 @@
   // fires one shot), so it's always in the "upgrade" state, never "(New)".
   const EXPLOSION_DAMAGE_PCT = 0.8;
   const CHAIN_DAMAGE_PCT = 0.3;
-  const CHAIN_RADIUS = 150;
+  const CHAIN_RADIUS = 300;
   const SLOW_MULT = 0.5;
   function explosionRadiusForLevel(level) { return 50 + 20 * (level - 1); }
   function slowDurationForLevel(level) { return 1.0 + 0.5 * (level - 1); }
@@ -551,7 +551,7 @@
       maxLevel: 5,
       getLevel: p => p.chainLevel,
       levelUp: p => { p.chainLevel++; },
-      introDesc: '着弾時、近くの敵にダメージが連鎖するようになる',
+      introDesc: '着弾時、自機周辺の敵にダメージが連鎖するようになる',
       upgradeDesc: level => `連鎖回数が増加する(${level} → ${level + 1}体)`,
     },
     {
@@ -922,20 +922,28 @@
             }
 
             if (proj.chainHops > 0) {
+              // Chain reaches out from the PLAYER, not from the impact
+              // point - multishot's real strength is all-around self
+              // defense (shots naturally cover multiple directions since
+              // enemies approach from everywhere), while a single forward
+              // shot + chain-from-the-hit only ever covers one direction.
+              // Rooting every hop's search at the player's position instead
+              // gives chain that same all-around coverage: any single hit
+              // can peel off nearby threats on every side, not just the
+              // ones near wherever that one shot happened to land.
               const chained = new Set([e]);
-              let fromX = e.x, fromY = e.y;
               for (let hop = 0; hop < proj.chainHops; hop++) {
                 let nearest = null, nearestD2 = CHAIN_RADIUS * CHAIN_RADIUS;
                 for (const cand of this.enemies) {
                   if (chained.has(cand)) continue;
-                  const d2 = dist2(fromX, fromY, cand.x, cand.y);
+                  const d2 = dist2(p.x, p.y, cand.x, cand.y);
                   if (d2 <= nearestD2) { nearest = cand; nearestD2 = d2; }
                 }
                 if (!nearest) break;
                 nearest.hp -= proj.damage * CHAIN_DAMAGE_PCT;
                 nearest.hitFlash = 0.12;
                 if (proj.slowDuration > 0) nearest.slowTimer = Math.max(nearest.slowTimer, proj.slowDuration);
-                this.chainZaps.push(new ChainZap(fromX, fromY, nearest.x, nearest.y));
+                this.chainZaps.push(new ChainZap(p.x, p.y, nearest.x, nearest.y));
 
                 // Chain's role is spreading damage/status to more targets,
                 // not diminishing whatever it spreads - so if explosion is
@@ -954,7 +962,6 @@
                 }
 
                 chained.add(nearest);
-                fromX = nearest.x; fromY = nearest.y;
               }
             }
 
