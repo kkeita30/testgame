@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.13.1';
+  const GAME_VERSION = '1.13.2';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -350,7 +350,7 @@
   }
 
   class Particle {
-    constructor(x, y, color) {
+    constructor(x, y, color, sizeMult) {
       this.x = x; this.y = y;
       const ang = rand(0, TAU);
       const spd = rand(40, 140);
@@ -359,7 +359,7 @@
       this.life = rand(0.25, 0.5);
       this.maxLife = this.life;
       this.color = color;
-      this.radius = rand(2, 4);
+      this.radius = rand(2, 4) * (sizeMult || 1);
     }
   }
 
@@ -784,7 +784,7 @@
                 if (dist(other.x, other.y, e.x, e.y) <= proj.explosionRadius) {
                   other.hp -= proj.damage * EXPLOSION_DAMAGE_PCT;
                   other.hitFlash = 0.12;
-                  for (let i = 0; i < 4; i++) this.particles.push(new Particle(e.x, e.y, '#ffa040'));
+                  for (let i = 0; i < 8; i++) this.particles.push(new Particle(e.x, e.y, '#ff4500', 2.5));
                 }
               }
             }
