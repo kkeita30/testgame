@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.16.0';
+  const GAME_VERSION = '1.16.1';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -709,11 +709,11 @@
       // player never invested in. The offense coefficient is kept low
       // (0.25) on purpose - upgrading damage/attack speed should mostly
       // just feel stronger, not get mostly cancelled out by tougher enemies.
-      const tierHpMult = 1 + (D - 1) * 0.18;
+      const tierHpMult = 1 + (D - 1) * 0.14;
       const offenseExtra = Math.max(0, offensePowerMult(p) - 1);
       const hpMult = tierHpMult * (1 + offenseExtra * 0.25);
 
-      const tierDmgMult = 1 + (D - 1) * 0.14;
+      const tierDmgMult = 1 + (D - 1) * 0.11;
       const survivalExtra = Math.max(0, survivalPowerMult(p) - 1);
       const dmgMult = tierDmgMult * (1 + survivalExtra * 0.7);
 
