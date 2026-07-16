@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.14.1';
+  const GAME_VERSION = '1.14.2';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -215,8 +215,8 @@
       // turns the cleared enemies' drops into an immediate level-up burst.
       special: {
         name: 'エマージェンシーボム',
-        desc: 'その場にいる敵を強制撃破し、10秒間ジェム回収範囲が全画面になる(クールタイム60秒)',
-        cooldown: 60,
+        desc: 'その場にいる敵を強制撃破し、10秒間ジェム回収範囲が全画面・獲得XPが1.5倍になる(クールタイム120秒)',
+        cooldown: 120,
         activate(p, game) {
           for (const e of game.enemies) e.hp = 0;
           p.specialBuffTimer = 10;
@@ -390,12 +390,15 @@
     }
   }
 
+  const GEM_LIFESPAN = 60; // seconds before an uncollected gem despawns
+
   class Gem {
     constructor(x, y, value) {
       this.x = x; this.y = y;
       this.value = value;
       this.radius = 5;
       this.vx = 0; this.vy = 0;
+      this.life = GEM_LIFESPAN;
     }
   }
 
@@ -899,6 +902,9 @@
 
       // gems: attract + collect
       const effectivePickupRadius = p.specialBuffTimer > 0 ? Infinity : p.pickupRadius;
+      // Gems collected during the vacuum buff are worth extra, so stockpiling
+      // XP and popping the ability pays off more than using it on cooldown.
+      const buffXpMult = p.specialBuffTimer > 0 ? 1.5 : 1;
       for (const g of this.gems) {
         const d = dist(g.x, g.y, p.x, p.y);
         if (d < effectivePickupRadius) {
@@ -906,13 +912,16 @@
           g.x += (p.x - g.x) / Math.max(d, 1) * pull * dt;
           g.y += (p.y - g.y) / Math.max(d, 1) * pull * dt;
         }
+        g.life -= dt;
       }
       this.gems = this.gems.filter(g => {
         if (dist(g.x, g.y, p.x, p.y) < p.radius + g.radius) {
-          p.gainXp(g.value);
+          p.gainXp(g.value * buffXpMult);
           return false;
         }
-        return true;
+        // Uncollected gems despawn after GEM_LIFESPAN so a high-difficulty
+        // run's kill volume doesn't leave the screen carpeted in gems.
+        return g.life > 0;
       });
 
       // particles
