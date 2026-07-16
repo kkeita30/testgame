@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.11.1';
+  const GAME_VERSION = '1.11.2';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -842,8 +842,12 @@
     pauseBtn.textContent = paused ? '>' : 'II';
   });
 
-  // Prevent page scroll/bounce on iOS
+  // Prevent page scroll/bounce on iOS while playing. Overlay screens (e.g.
+  // the start-setup screen) can legitimately need to scroll internally on
+  // short viewports, so this only blocks touches outside of them - a
+  // blanket preventDefault here would silently block that scrolling too.
   document.addEventListener('touchmove', (e) => {
+    if (e.target.closest('.overlay')) return;
     e.preventDefault();
   }, { passive: false });
 
