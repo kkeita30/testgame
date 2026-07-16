@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.8.0';
+  const GAME_VERSION = '1.8.1';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -459,17 +459,17 @@
       // Kill-rate rubber-band, checked once per 60s window: a single
       // discrete "difficulty" tier replaced the old continuous time-based
       // curves so difficulty reads as legible steps. This is the step
-      // rule - normally +1 per window, but if the player killed less than
-      // half of what spawned last window the tier holds instead of
-      // advancing, and below a quarter it steps back down (never below 1).
+      // rule - normally +1 per window, but if the player killed 70% or
+      // less of what spawned last window the tier holds instead of
+      // advancing, and at 50% or less it steps back down (never below 1).
       this.levelCheckTimer -= dt;
       if (this.levelCheckTimer <= 0) {
         this.levelCheckTimer += 60;
         const spawnedThisWindow = this.totalSpawned - this.spawnedAtCheckpoint;
         const killsThisWindow = this.kills - this.killsAtCheckpoint;
         const killRate = spawnedThisWindow > 0 ? killsThisWindow / spawnedThisWindow : 1;
-        if (killRate < 0.25) this.difficulty = Math.max(1, this.difficulty - 1);
-        else if (killRate >= 0.5) this.difficulty += 1;
+        if (killRate <= 0.5) this.difficulty = Math.max(1, this.difficulty - 1);
+        else if (killRate > 0.7) this.difficulty += 1;
         this.spawnedAtCheckpoint = this.totalSpawned;
         this.killsAtCheckpoint = this.kills;
       }
