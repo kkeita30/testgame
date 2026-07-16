@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.5.1';
+  const GAME_VERSION = '1.6.0';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -152,6 +152,7 @@
   const xpBar = document.getElementById('xp-bar');
   const timerEl = document.getElementById('timer');
   const levelEl = document.getElementById('level');
+  const enemyLevelEl = document.getElementById('enemy-level');
   const killsEl = document.getElementById('kills');
   const startScreen = document.getElementById('start-screen');
   const levelupScreen = document.getElementById('levelup-screen');
@@ -380,33 +381,45 @@
       pauseBtn.classList.add('hidden');
     }
 
+    // A single discrete tier that replaces the old continuous time-based
+    // curves. Everything time-driven (enemy HP/dmg baseline, spawn rate,
+    // type unlocks) steps up once per tier instead of drifting smoothly, so
+    // difficulty increases read as distinct, legible jumps rather than an
+    // imperceptible ramp - the same reason player level-ups are steps, not
+    // a smooth stat drift.
+    get enemyLevel() {
+      return 1 + Math.floor(this.time / 60);
+    }
+
     spawnEnemy() {
       const p = this.player;
       const angle = rand(0, TAU);
       const spawnDist = Math.max(W, H) * 0.65 + 60;
       const x = p.x + Math.cos(angle) * spawnDist;
       const y = p.y + Math.sin(angle) * spawnDist;
+      const L = this.enemyLevel;
 
       let type = 'grunt';
       const r = Math.random();
-      const t = this.time;
-      if (t > 300 && r < 0.22) type = 'tank';
-      else if (t > 100 && r < 0.5) type = 'fast';
+      if (L >= 5 && r < 0.22) type = 'tank';
+      else if (L >= 2 && r < 0.5) type = 'fast';
 
-      // Slow time-based baseline, plus a build-aware top-up: enemy HP tracks
-      // how much dps the player has stacked (damage x attack speed) beyond
-      // the starting weapon, and enemy contact damage tracks how tanky the
-      // player has made themselves via max HP. A run that skips those
-      // upgrades never sees the extra factor kick in, so it stays on the
-      // gentle time curve instead of getting hard-countered by a stat the
-      // player never invested in.
-      const timeHpMult = 1 + t / 320;
+      // Stepped time-based baseline, plus a build-aware top-up: enemy HP
+      // tracks how much dps the player has stacked (damage x attack speed)
+      // beyond the starting weapon, and enemy contact damage tracks how
+      // tanky the player has made themselves via max HP. A run that skips
+      // those upgrades never sees the extra factor kick in, so it stays on
+      // the tier baseline instead of getting hard-countered by a stat the
+      // player never invested in. The offense coefficient is kept low
+      // (0.25) on purpose - upgrading damage/attack speed should mostly
+      // just feel stronger, not get mostly cancelled out by tougher enemies.
+      const tierHpMult = 1 + (L - 1) * 0.18;
       const offenseExtra = Math.max(0, offensePowerMult(p) - 1);
-      const hpMult = timeHpMult * (1 + offenseExtra * 0.6);
+      const hpMult = tierHpMult * (1 + offenseExtra * 0.25);
 
-      const timeDmgMult = 1 + t / 420;
+      const tierDmgMult = 1 + (L - 1) * 0.14;
       const survivalExtra = Math.max(0, survivalPowerMult(p) - 1);
-      const dmgMult = timeDmgMult * (1 + survivalExtra * 0.7);
+      const dmgMult = tierDmgMult * (1 + survivalExtra * 0.7);
 
       this.enemies.push(new Enemy(type, x, y, hpMult, dmgMult));
     }
@@ -458,16 +471,17 @@
 
       // spawn
       this.spawnTimer -= dt;
-      const timeInterval = Math.max(0.22, this.spawnInterval - this.time * 0.002);
+      const L = this.enemyLevel;
+      const tierInterval = Math.max(0.22, this.spawnInterval - (L - 1) * 0.11);
       // Multishot/pierce make a player good at handling crowds, so a build
-      // that stacks those sees extra enemies on top of the slow time-based
-      // ramp; a build that never picks them up keeps the gentle baseline.
+      // that stacks those sees extra enemies on top of the tier baseline;
+      // a build that never picks them up keeps the gentle baseline.
       const crowdExtra = Math.max(0, crowdPowerMult(p) - 1);
-      const curInterval = Math.max(0.15, timeInterval / (1 + crowdExtra * 0.5));
+      const curInterval = Math.max(0.15, tierInterval / (1 + crowdExtra * 0.5));
       if (this.spawnTimer <= 0) {
         this.spawnTimer = curInterval;
-        const timeBurst = 1 + Math.floor(this.time / 280);
-        const burst = timeBurst + Math.round(crowdExtra * 2);
+        const tierBurst = 1 + Math.floor((L - 1) / 5);
+        const burst = tierBurst + Math.round(crowdExtra * 2);
         for (let i = 0; i < burst; i++) this.spawnEnemy();
       }
 
@@ -564,6 +578,7 @@
       hpText.textContent = `${Math.ceil(p.hp)}/${p.maxHp}`;
       xpBar.style.width = clamp(p.xp / p.xpNext, 0, 1) * 100 + '%';
       levelEl.textContent = `Lv.${p.level}`;
+      enemyLevelEl.textContent = `敵Lv.${this.enemyLevel}`;
       killsEl.textContent = `${this.kills} kills`;
       const mm = String(Math.floor(this.time / 60)).padStart(2, '0');
       const ss = String(Math.floor(this.time % 60)).padStart(2, '0');

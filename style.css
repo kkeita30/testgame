@@ -108,6 +108,10 @@ html, body {
   font-size: 18px !important;
 }
 
+#enemy-level {
+  color: #ff8a8a;
+}
+
 /* Overlays */
 .overlay {
   position: absolute;
