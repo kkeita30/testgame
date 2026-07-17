@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.23.0';
+  const GAME_VERSION = '1.24.0';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -198,11 +198,12 @@
   // - CHARACTERS differentiate on survivability/utility stats (HP, move
   //   speed, regen, pickup range) and, later, on double-tap special
   //   abilities/passives.
-  // - WEAPONS differentiate on offense stats (damage, fire rate, pierce,
-  //   multishot).
-  // Only one placeholder entry exists in each today; new options slot in by
-  // adding array entries, each with an `apply(player)` that tweaks starting
-  // stats (or, once built, assigns the actual weapon/ability behavior).
+  // - WEAPONS differentiate on offense stats (damage, fire rate, pierce)
+  //   and each carries its own weapon-innate effect (see WEAPON_INNATE_*
+  //   below) - standard's is multishot.
+  // Multiple CHARACTERS entries exist now; WEAPONS still has only the one
+  // placeholder. New options slot in by adding array entries, each with an
+  // `apply(player)` that tweaks starting stats.
   // Tank's reflect passive scales off two of the player's own stats rather
   // than a fixed number, so investing in either raw damage or (fittingly,
   // for a tank) max HP both feed back into how hard the counter hits.
@@ -318,12 +319,32 @@
     },
   ];
 
+  // Weapon-innate effect: an effect baked into the weapon itself, distinct
+  // per weapon, rather than a level-up pool pick - it can't be skipped or
+  // missed, and doesn't compete against real choices for a slot. Ranks up
+  // automatically as the player levels rather than being chosen. Multishot
+  // moved here (off of BULLET_EFFECTS) because it had become a de facto
+  // mandatory pick in practically every run; an "upgrade" nobody actually
+  // skips isn't really offering a choice. Other weapons are each expected
+  // to get their own distinct innate effect instead of also getting
+  // multishot.
+  const WEAPON_INNATE_MAX_RANK = 5;
+  const WEAPON_INNATE_LEVELS_PER_RANK = 3;
+  function weaponInnateRankForLevel(level) {
+    return Math.min(WEAPON_INNATE_MAX_RANK, Math.floor((level - 1) / WEAPON_INNATE_LEVELS_PER_RANK) + 1);
+  }
+
   const WEAPONS = [
     {
       id: 'standard',
       name: 'スタンダード',
-      desc: '標準武器。今後ダメージ・発射速度・貫通・マルチショットが異なる武器が追加されます。',
+      desc: '標準武器。今後ダメージ・発射速度・貫通などが異なる武器が追加されます。',
       apply: (p) => {},
+      innateEffect: {
+        name: 'マルチショット',
+        desc: `自機レベルアップ${WEAPON_INNATE_LEVELS_PER_RANK}ごとにランクが上昇(最大Lv.${WEAPON_INNATE_MAX_RANK})し、同時発射数がランクと同じ数になる`,
+        applyRank(p, rank) { p.projCount = rank; },
+      },
     },
   ];
 
@@ -394,8 +415,13 @@
       this.passive = null;
       this.skipRefundPct = SKIP_REFUND_PCT_BASE;
 
+      // Weapon-innate effect (§ WEAPONS): kept reference so its rank can be
+      // recomputed on every level-up, not just once at game start.
+      this.weapon = weapon || null;
+
       if (character) character.apply(this);
       if (weapon) weapon.apply(this);
+      this.applyWeaponInnateEffect();
       if (character && character.special) {
         this.special = character.special;
         // Start on cooldown rather than immediately usable, so the
@@ -425,12 +451,23 @@
       if (this.hp <= 0) { this.hp = 0; game.onPlayerDeath(); }
     }
 
+    // Recomputes the current weapon's innate-effect rank from this.level
+    // and re-applies it. Idempotent (applyRank sets an absolute value, not
+    // an increment), so it's safe to call unconditionally on every level-up
+    // rather than only when the rank actually changed.
+    applyWeaponInnateEffect() {
+      if (!this.weapon || !this.weapon.innateEffect) return;
+      const rank = weaponInnateRankForLevel(this.level);
+      this.weapon.innateEffect.applyRank(this, rank);
+    }
+
     gainXp(amount) {
       this.xp += amount;
       while (this.xp >= this.xpNext) {
         this.xp -= this.xpNext;
         this.level++;
         this.xpNext = xpNextForLevel(this.level);
+        this.applyWeaponInnateEffect();
         game.onLevelUp();
       }
     }
@@ -455,7 +492,7 @@
 
   // Player stat values at game start, used as the "no upgrades taken" yardstick
   // for the build-aware difficulty scaling below.
-  const BASELINE_STATS = { damage: 10, atkCooldown: 0.7, projCount: 1, pierce: 0, maxHp: 100 };
+  const BASELINE_STATS = { damage: 10, atkCooldown: 0.7, pierce: 0, maxHp: 100 };
 
   // How often (in seconds) the kill-rate rubber-band re-evaluates difficulty.
   // Shortened from 60s to let a well-performing run's natural difficulty
@@ -476,9 +513,14 @@
     return base * (1 + p.explosionLevel * 0.15);
   }
   function crowdPowerMult(p) {
-    const base = 1 + Math.max(0, p.projCount - BASELINE_STATS.projCount) * 0.18 + p.pierce * 0.15;
+    // Multishot no longer counts here - it's now the standard weapon's
+    // innate effect (auto-ranks with player level, see WEAPONS) rather
+    // than a chosen upgrade, so it shouldn't feed into "you invested in
+    // crowd-clearing power, so face a bigger crowd" scaling the way an
+    // actual choice like pierce/chain does.
+    const base = 1 + p.pierce * 0.15;
     // Chain is effectively "hit more enemies per shot", the same crowd-
-    // clearing role multishot/pierce play, so it feeds the same multiplier.
+    // clearing role pierce plays, so it feeds the same multiplier.
     return base * (1 + p.chainLevel * 0.15);
   }
   function survivalPowerMult(p) {
@@ -643,10 +685,8 @@
   // Bullet effects: unlike the plain stat upgrades above, these have levels
   // and a cap. The first pick activates the effect; later picks strengthen
   // it. Once maxLevel is reached, onLevelUp() below stops offering that
-  // entry at all. Pierce and multishot reuse the existing `pierce`/
-  // `projCount` fields directly as their level rather than a separate
-  // counter - multishot's `projCount` starts at 1 (base weapon already
-  // fires one shot), so it's always in the "upgrade" state, never "(New)".
+  // entry at all. Pierce reuses the existing `pierce` field directly as
+  // its level rather than a separate counter.
   const EXPLOSION_DAMAGE_PCT = 0.8;
   const CHAIN_DAMAGE_PCT = 0.5;
   const CHAIN_RADIUS = 150;
@@ -732,21 +772,6 @@
       levelUp: p => { p.pierce++; },
       introDesc: '弾が敵を貫通するようになる',
       upgradeDesc: level => `貫通数が増加する(${level} → ${level + 1})`,
-    },
-    {
-      id: 'multishot',
-      name: 'マルチショット',
-      maxLevel: 5,
-      // projCount starts at 1 (the base weapon already fires one shot), so
-      // this is always in the "upgrade" state, never the "(New)" state.
-      // baseLevel marks that starting value so the "already invested in
-      // this effect" check below (used for the priority slot) isn't
-      // fooled into thinking the player has invested before ever picking it.
-      baseLevel: 1,
-      getLevel: p => p.projCount,
-      levelUp: p => { p.projCount++; },
-      introDesc: '同時発射数が増加する',
-      upgradeDesc: level => `同時発射数が増加する(${level} → ${level + 1})`,
     },
   ];
 
@@ -1031,9 +1056,11 @@
       this.spawnTimer -= dt;
       const D = this.difficulty;
       const tierInterval = Math.max(0.22, this.spawnInterval - (D - 1) * 0.11);
-      // Multishot/pierce make a player good at handling crowds, so a build
+      // Pierce/chain make a player good at handling crowds, so a build
       // that stacks those sees extra enemies on top of the tier baseline;
       // a build that never picks them up keeps the gentle baseline.
+      // Multishot doesn't count here - it's the standard weapon's innate
+      // effect now, not a chosen investment (see crowdPowerMult).
       const crowdExtra = Math.max(0, crowdPowerMult(p) - 1);
       const curInterval = Math.max(0.15, tierInterval / (1 + crowdExtra * 0.5));
       if (this.spawnTimer <= 0) {
@@ -1189,8 +1216,8 @@
       // one at all, rather than every kill dropping a smaller and smaller
       // gem. At baseline (crowdExtra=0) this averages out to the same
       // expected XP/kill as the old always-drop scheme (BASE_GEM_DROP_CHANCE
-      // 0.5 x GEM_VALUE_MULT 2 = 1x). A crowd-clearing build (multishot/
-      // pierce/chain) pushes crowdExtra up, which further lowers the drop
+      // 0.5 x GEM_VALUE_MULT 2 = 1x). A crowd-clearing build (pierce/chain)
+      // pushes crowdExtra up, which further lowers the drop
       // chance below that baseline - without this, clearing bigger swarms
       // would feed back into leveling faster, which spawns even bigger
       // swarms, and so on. Unlike the old per-gem value dampening, this
@@ -1457,7 +1484,8 @@
       const card = document.createElement('div');
       card.className = 'upgrade-card character-card';
       const passiveLine = entry.passive ? `<div class="u-desc">パッシブ「${entry.passive.name}」: ${entry.passive.desc}</div>` : '';
-      card.innerHTML = `<div class="u-title">${entry.name}</div><div class="u-desc">${entry.desc}</div>${passiveLine}`;
+      const innateLine = entry.innateEffect ? `<div class="u-desc">武器固有効果「${entry.innateEffect.name}」: ${entry.innateEffect.desc}</div>` : '';
+      card.innerHTML = `<div class="u-title">${entry.name}</div><div class="u-desc">${entry.desc}</div>${passiveLine}${innateLine}`;
       card.addEventListener('click', () => {
         onPick(entry);
         for (const el of containerEl.children) el.classList.remove('selected');
