@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.21.0';
+  const GAME_VERSION = '1.22.0';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -557,8 +557,15 @@
   // counter - multishot's `projCount` starts at 1 (base weapon already
   // fires one shot), so it's always in the "upgrade" state, never "(New)".
   const EXPLOSION_DAMAGE_PCT = 0.8;
-  const CHAIN_DAMAGE_PCT = 0.3;
+  const CHAIN_DAMAGE_PCT = 0.5;
   const CHAIN_RADIUS = 150;
+  // Chain is now a proc rather than a guaranteed on-hit effect: each hit
+  // only has a chance to trigger it at all. Net nerf (fewer hits actually
+  // chain), but raising the per-trigger damage to compensate shifts chain
+  // toward synergizing with attack speed (more swings = more chances to
+  // proc) rather than raw single-hit damage, which the guaranteed version
+  // didn't care about either way.
+  const CHAIN_TRIGGER_CHANCE = 0.5;
   const SLOW_MULT = 0.5;
   const SLOWED_DMG_MULT = 0.5; // a slowed enemy's contact damage is also halved
   function explosionRadiusForLevel(level) { return 50 + 20 * (level - 1); }
@@ -605,7 +612,7 @@
       maxLevel: 5,
       getLevel: p => p.chainLevel,
       levelUp: p => { p.chainLevel++; },
-      introDesc: '着弾時、近くの敵にダメージが連鎖するようになる',
+      introDesc: `着弾時${Math.round(CHAIN_TRIGGER_CHANCE * 100)}%の確率で、近くの敵にダメージ(本体ダメージの${Math.round(CHAIN_DAMAGE_PCT * 100)}%)が連鎖するようになる`,
       upgradeDesc: level => `連鎖回数が増加する(${level} → ${level + 1}体)`,
     },
     {
@@ -1031,7 +1038,7 @@
               }
             }
 
-            if (proj.chainHops > 0) {
+            if (proj.chainHops > 0 && Math.random() < CHAIN_TRIGGER_CHANCE) {
               const chained = new Set([e]);
               let fromX = e.x, fromY = e.y;
               for (let hop = 0; hop < proj.chainHops; hop++) {
