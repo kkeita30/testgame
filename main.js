@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.26.0';
+  const GAME_VERSION = '1.27.0';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -680,6 +680,17 @@
         p.speedMult *= 1.3;
         p.maxHp = Math.max(STAT_LIMITS.minMaxHp, Math.round(p.maxHp * 0.85));
         p.hp = Math.min(p.hp, p.maxHp);
+      },
+    },
+    {
+      id: 'trade-maxhp',
+      title: '鉄壁の構え',
+      desc: '最大HP +25% / ダメージ -15%',
+      apply: p => {
+        const added = Math.round(p.maxHp * 0.25);
+        p.maxHp += added;
+        p.hp = Math.min(p.maxHp, p.hp + added);
+        p.damage = Math.max(STAT_LIMITS.minDamage, Math.round(p.damage * 0.85));
       },
     },
   ];
