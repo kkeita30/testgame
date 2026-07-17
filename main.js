@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.20.0';
+  const GAME_VERSION = '1.21.0';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -207,7 +207,7 @@
     {
       id: 'standard',
       name: 'スタンダード',
-      desc: 'バランス型。今後HP・移動速度・リジェネ・回収範囲や特殊能力が異なるキャラクターが追加されます。',
+      desc: 'バランス型。今後HP・移動速度・リジェネ・回収範囲や特殊能力・パッシブが異なるキャラクターが追加されます。',
       apply: (p) => {},
       // Double-tap special: a comeback tool for the classic "surrounded by
       // enemies I can't kill, can't reach gems, can't level up" death
@@ -222,6 +222,15 @@
           for (const e of game.enemies) { e.hp = 0; e.forceKilled = true; }
           p.specialBuffTimer = 10;
         },
+      },
+      // Passive: always-on, no activation needed (unlike the special
+      // above). Raises the "skip a level-up" refund from the base 30% to
+      // 60%, making Standard's skip a much more genuine alternative to
+      // taking a mediocre upgrade instead of a near-total loss.
+      passive: {
+        name: '倹約家',
+        desc: 'レベルアップの「スキップ」時に払い戻されるXPが60%になる(通常30%)',
+        apply(p) { p.skipRefundPct = 0.6; },
       },
     },
   ];
@@ -296,6 +305,12 @@
       this.specialCooldownRemaining = 0;
       this.specialBuffTimer = 0;
 
+      // Passive: an always-on per-character trait, defined per character
+      // (§ CHARACTERS), as opposed to the double-tap-activated special
+      // above. null until a character with one is applied below.
+      this.passive = null;
+      this.skipRefundPct = SKIP_REFUND_PCT_BASE;
+
       if (character) character.apply(this);
       if (weapon) weapon.apply(this);
       if (character && character.special) {
@@ -303,6 +318,10 @@
         // Start on cooldown rather than immediately usable, so the
         // ability reads as an earned comeback tool, not a free opener.
         this.specialCooldownRemaining = this.special.cooldown;
+      }
+      if (character && character.passive) {
+        this.passive = character.passive;
+        this.passive.apply(this);
       }
     }
 
@@ -663,12 +682,16 @@
 
   // Not part of the random pool: always offered as an extra choice so the
   // player can decline a bad draw. No stat changes, but banks a chunk of
-  // progress toward the next level instead of leaving XP near empty.
+  // progress toward the next level instead of leaving XP near empty. The
+  // refund percentage is per-player (p.skipRefundPct) rather than a fixed
+  // 30%, so a character passive can raise it - hence desc is a function of
+  // the current player instead of a static string.
+  const SKIP_REFUND_PCT_BASE = 0.3;
   const SKIP_UPGRADE = {
     id: 'skip',
     title: 'スキップ',
-    desc: '強化なし。次のレベルアップまでのXPを30%獲得した状態にする',
-    apply: p => { p.xp = p.xpNext * 0.3; },
+    desc: p => `強化なし。次のレベルアップまでのXPを${Math.round(p.skipRefundPct * 100)}%獲得した状態にする`,
+    apply: p => { p.xp = p.xpNext * p.skipRefundPct; },
   };
 
   // ---------- Game controller ----------
@@ -744,7 +767,7 @@
       }
       const skipCard = document.createElement('div');
       skipCard.className = 'upgrade-card skip-card';
-      skipCard.innerHTML = `<div class="u-title">${SKIP_UPGRADE.title}</div><div class="u-desc">${SKIP_UPGRADE.desc}</div>`;
+      skipCard.innerHTML = `<div class="u-title">${SKIP_UPGRADE.title}</div><div class="u-desc">${SKIP_UPGRADE.desc(this.player)}</div>`;
       skipCard.addEventListener('click', () => this.pickUpgrade(SKIP_UPGRADE));
       upgradeChoicesEl.appendChild(skipCard);
       levelupScreen.classList.remove('hidden');
@@ -1313,7 +1336,8 @@
     for (const entry of roster) {
       const card = document.createElement('div');
       card.className = 'upgrade-card character-card';
-      card.innerHTML = `<div class="u-title">${entry.name}</div><div class="u-desc">${entry.desc}</div>`;
+      const passiveLine = entry.passive ? `<div class="u-desc">パッシブ「${entry.passive.name}」: ${entry.passive.desc}</div>` : '';
+      card.innerHTML = `<div class="u-title">${entry.name}</div><div class="u-desc">${entry.desc}</div>${passiveLine}`;
       card.addEventListener('click', () => {
         onPick(entry);
         for (const el of containerEl.children) el.classList.remove('selected');
