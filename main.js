@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.19.0';
+  const GAME_VERSION = '1.20.0';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -428,6 +428,13 @@
   // kills (forceKilled) are exempt - the ability's whole point is banking a
   // pile of gems for one big burst, which this cap would otherwise defeat.
   const GEM_CAP = 60;
+  // Gem drops are probabilistic rather than guaranteed: a kill has a
+  // BASE_GEM_DROP_CHANCE chance of dropping a gem at all, worth GEM_VALUE_MULT
+  // times the enemy's xpValue when it does. Chosen so a build that never
+  // pushes crowdExtra above 0 sees the same expected XP/kill as the old
+  // always-drop-at-face-value scheme (0.5 x 2 = 1x).
+  const BASE_GEM_DROP_CHANCE = 0.5;
+  const GEM_VALUE_MULT = 2;
 
   class Gem {
     constructor(x, y, value) {
@@ -1045,17 +1052,27 @@
       }
 
       // dead enemies -> gems + particles
-      // A crowd-clearing build (multishot/pierce/chain) makes the same
-      // crowdExtra that inflates enemy spawn count also shrink each gem's
-      // value, so more kills/sec doesn't translate into unbounded XP
-      // income - without this, clearing bigger swarms would feed back into
-      // leveling faster, which spawns even bigger swarms, and so on.
-      const gemValueMult = 1 / (1 + crowdExtra);
+      // Gems are no longer a guaranteed drop: a kill has a chance to drop
+      // one at all, rather than every kill dropping a smaller and smaller
+      // gem. At baseline (crowdExtra=0) this averages out to the same
+      // expected XP/kill as the old always-drop scheme (BASE_GEM_DROP_CHANCE
+      // 0.5 x GEM_VALUE_MULT 2 = 1x). A crowd-clearing build (multishot/
+      // pierce/chain) pushes crowdExtra up, which further lowers the drop
+      // chance below that baseline - without this, clearing bigger swarms
+      // would feed back into leveling faster, which spawns even bigger
+      // swarms, and so on. Unlike the old per-gem value dampening, this
+      // also directly cuts down how many gem entities pile up on screen in
+      // the first place.
+      const gemDropChance = Math.min(1, BASE_GEM_DROP_CHANCE / (1 + crowdExtra));
       this.enemies = this.enemies.filter(e => {
         if (e.hp <= 0) {
           this.kills++;
-          if (e.forceKilled || this.gems.length < GEM_CAP) {
-            this.gems.push(new Gem(e.x, e.y, Math.max(1, Math.round(e.xpValue * gemValueMult))));
+          // The emergency bomb's forced kills always drop, uncapped and at
+          // full chance - the ability's whole point is a guaranteed gem
+          // burst, not one gated behind the same odds as a normal kill.
+          const drops = e.forceKilled || Math.random() < gemDropChance;
+          if (drops && (e.forceKilled || this.gems.length < GEM_CAP)) {
+            this.gems.push(new Gem(e.x, e.y, Math.round(e.xpValue * GEM_VALUE_MULT)));
           }
           for (let i = 0; i < 6; i++) this.particles.push(new Particle(e.x, e.y, e.color));
           return false;
