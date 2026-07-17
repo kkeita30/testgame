@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.22.0';
+  const GAME_VERSION = '1.23.0';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -203,11 +203,17 @@
   // Only one placeholder entry exists in each today; new options slot in by
   // adding array entries, each with an `apply(player)` that tweaks starting
   // stats (or, once built, assigns the actual weapon/ability behavior).
+  // Tank's reflect passive scales off two of the player's own stats rather
+  // than a fixed number, so investing in either raw damage or (fittingly,
+  // for a tank) max HP both feed back into how hard the counter hits.
+  const REFLECT_DMG_PCT_OF_ATTACK = 0.3;
+  const REFLECT_DMG_PCT_OF_MAXHP = 0.08;
+
   const CHARACTERS = [
     {
       id: 'standard',
       name: 'スタンダード',
-      desc: 'バランス型。今後HP・移動速度・リジェネ・回収範囲や特殊能力・パッシブが異なるキャラクターが追加されます。',
+      desc: 'バランス型。レベルアップしやすく扱いやすい初心者向けタイプ。パッシブでいろいろなビルドを試しやすい。',
       apply: (p) => {},
       // Double-tap special: a comeback tool for the classic "surrounded by
       // enemies I can't kill, can't reach gems, can't level up" death
@@ -218,6 +224,8 @@
         name: 'エマージェンシーボム',
         desc: 'その場にいる敵を強制撃破し、10秒間ジェム回収範囲が全画面・獲得XPが1.5倍になる(クールタイム120秒)',
         cooldown: 120,
+        buffPickupRadiusMult: Infinity,
+        buffXpMult: 1.5,
         activate(p, game) {
           for (const e of game.enemies) { e.hp = 0; e.forceKilled = true; }
           p.specialBuffTimer = 10;
@@ -231,6 +239,81 @@
         name: '倹約家',
         desc: 'レベルアップの「スキップ」時に払い戻されるXPが60%になる(通常30%)',
         apply(p) { p.skipRefundPct = 0.6; },
+      },
+    },
+    {
+      id: 'tank',
+      name: 'タンク',
+      desc: '最大HPが高く、移動速度は低いタフ型。被弾しても反撃パッシブで攻撃してきた敵にダメージを返せる。',
+      apply: (p) => {
+        p.maxHp = 180;
+        p.hp = p.maxHp;
+        p.speedMult *= 0.7;
+      },
+      // Special: a burst of survivability rather than raw offense - heals
+      // a big chunk back and grants a temporary mobility window to
+      // reposition/collect gems (and keep landing the reflect passive
+      // below) instead of just tanking hits in place. Short cooldown
+      // relative to Standard's bomb since it's a sustain tool, not a
+      // one-shot-clears-the-screen panic button.
+      special: {
+        name: 'リカバリーダッシュ',
+        desc: '最大HPの50%を回復し、20秒間移動速度が50%アップする(クールタイム60秒)',
+        cooldown: 60,
+        buffSpeedMult: 1.5,
+        activate(p, game) {
+          p.hp = Math.min(p.maxHp, p.hp + p.maxHp * 0.5);
+          p.specialBuffTimer = 20;
+        },
+      },
+      // Passive: always-on counterattack. Scales with both attack power
+      // and max HP, so it pays off whether the build goes offense-heavy
+      // or leans into Tank's naturally high HP pool even further.
+      passive: {
+        name: '鉄の反撃',
+        desc: `被ダメージ時、攻撃してきた敵に反射ダメージを与える(攻撃力の${Math.round(REFLECT_DMG_PCT_OF_ATTACK * 100)}% + 最大HPの${Math.round(REFLECT_DMG_PCT_OF_MAXHP * 100)}%)`,
+        apply(p) {},
+        onContactDamage(p, enemy, game) {
+          const reflect = Math.round(p.damage * REFLECT_DMG_PCT_OF_ATTACK + p.maxHp * REFLECT_DMG_PCT_OF_MAXHP);
+          enemy.hp -= reflect;
+          enemy.hitFlash = 0.12;
+        },
+      },
+    },
+    {
+      id: 'speed',
+      name: 'スピード',
+      desc: '最大HPが低く、移動速度が速い機動型。攻撃速度2倍・攻撃力半減のパッシブを持つ、操作難易度が高い上級者向け。',
+      apply: (p) => {
+        p.maxHp = 70;
+        p.hp = p.maxHp;
+        p.speedMult *= 1.35;
+      },
+      // Special: short cooldown relative to its own duration (10s buff /
+      // 10s cooldown, back-to-back = a 20s cycle), so a player who lands
+      // it on cooldown spends roughly half the run buffed - rewarding
+      // active, attentive play over Standard's rarer, more deliberate bomb.
+      special: {
+        name: 'オーバードライブ',
+        desc: '10秒間、攻撃力が50%アップ・ジェム回収範囲が3倍になる(クールタイム10秒)',
+        cooldown: 10,
+        buffDamageMult: 1.5,
+        buffPickupRadiusMult: 3,
+        activate(p, game) {
+          p.specialBuffTimer = 10;
+        },
+      },
+      // Passive: always-on glass-cannon weapon trait. Total DPS at
+      // baseline is unchanged (half damage x double attack rate), but it
+      // shifts the weapon toward synergizing with per-hit-count effects
+      // (combo, chain's proc chance) rather than raw per-hit power.
+      passive: {
+        name: '高速連射',
+        desc: '武器の攻撃間隔が半分(攻撃速度2倍)になる代わりに、攻撃力が半分になる',
+        apply(p) {
+          p.atkCooldown = Math.max(STAT_LIMITS.minAtkCooldown, p.atkCooldown * 0.5);
+          p.damage = Math.max(STAT_LIMITS.minDamage, Math.round(p.damage * 0.5));
+        },
       },
     },
   ];
@@ -325,7 +408,15 @@
       }
     }
 
-    get speed() { return this.baseSpeed * this.speedMult; }
+    get speed() {
+      // A special's timed buff can include a temporary move-speed
+      // multiplier (e.g. tank's recovery dash) - declared on the special
+      // itself (buffSpeedMult) rather than hardcoded here, since which
+      // characters get a speed buff at all varies per character.
+      const buffMult = this.specialBuffTimer > 0 && this.special && this.special.buffSpeedMult != null
+        ? this.special.buffSpeedMult : 1;
+      return this.baseSpeed * this.speedMult * buffMult;
+    }
 
     takeDamage(amount) {
       if (this.invulnTimer > 0) return;
@@ -869,13 +960,20 @@
       const explosionRadius = p.explosionLevel > 0 ? explosionRadiusForLevel(p.explosionLevel) : 0;
       const chainHops = p.chainLevel;
       const slowDuration = p.slowLevel > 0 ? slowDurationForLevel(p.slowLevel) : 0;
+      // Some specials (e.g. speed-type's overdrive) include a timed damage
+      // buff, declared on the special itself (buffDamageMult) rather than
+      // hardcoded here. Baked into the shot at fire time, same as p.damage
+      // normally is - not re-evaluated later at the moment of the hit.
+      const buffDamageMult = p.specialBuffTimer > 0 && p.special && p.special.buffDamageMult != null
+        ? p.special.buffDamageMult : 1;
+      const shotDamage = p.damage * buffDamageMult;
 
       for (let i = 0; i < p.projCount; i++) {
         const target = sorted[i % sorted.length].e;
         const ang = Math.atan2(target.y - p.y, target.x - p.x) + rand(-0.05, 0.05);
         const vx = Math.cos(ang) * p.projSpeed;
         const vy = Math.sin(ang) * p.projSpeed;
-        this.projectiles.push(new Projectile(p.x, p.y, vx, vy, p.damage, p.pierce, 5, explosionRadius, chainHops, slowDuration));
+        this.projectiles.push(new Projectile(p.x, p.y, vx, vy, shotDamage, p.pierce, 5, explosionRadius, chainHops, slowDuration));
       }
     }
 
@@ -992,6 +1090,11 @@
           // blunt an enemy, not just its approach speed.
           const dmg = e.slowTimer > 0 ? e.dmg * SLOWED_DMG_MULT : e.dmg;
           p.takeDamage(dmg);
+          // Passive hook for characters like Tank whose passive reacts to
+          // being hit (e.g. reflect damage). Fires on the contact event
+          // itself, not gated on invulnerability - the enemy touched the
+          // player either way.
+          if (p.passive && p.passive.onContactDamage) p.passive.onContactDamage(p, e, this);
           e.contactCd = 0.5;
           this.shakeTime = 0.15;
         }
@@ -1113,10 +1216,20 @@
       this.projectiles = this.projectiles.filter(pr => pr.life > 0);
 
       // gems: attract + collect
-      const effectivePickupRadius = p.specialBuffTimer > 0 ? Infinity : p.pickupRadius;
+      // Which specials grant a pickup-range/XP buff (and by how much) is
+      // declared per-special (buffPickupRadiusMult/buffXpMult) rather than
+      // hardcoded here, since different characters' buffs grant different
+      // amounts (or none at all). buffPickupRadiusMult multiplies the
+      // player's current pickupRadius rather than overriding it outright,
+      // so it still scales with pickup-range upgrades - standard's
+      // Infinity just makes that multiplication Infinity regardless.
+      const specialBuffActive = p.specialBuffTimer > 0;
+      const effectivePickupRadius = specialBuffActive && p.special && p.special.buffPickupRadiusMult != null
+        ? p.pickupRadius * p.special.buffPickupRadiusMult : p.pickupRadius;
       // Gems collected during the vacuum buff are worth extra, so stockpiling
       // XP and popping the ability pays off more than using it on cooldown.
-      const buffXpMult = p.specialBuffTimer > 0 ? 1.5 : 1;
+      const buffXpMult = specialBuffActive && p.special && p.special.buffXpMult != null
+        ? p.special.buffXpMult : 1;
       for (const g of this.gems) {
         const d = dist(g.x, g.y, p.x, p.y);
         if (d < effectivePickupRadius) {
