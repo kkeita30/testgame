@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.18.0';
+  const GAME_VERSION = '1.18.1';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -902,7 +902,13 @@
         const duration = interceptDuration(p);
         const maxTargets = interceptTargetCount(p.interceptLevel);
         for (let i = 0; i < Math.min(maxTargets, nearby.length); i++) {
-          nearby[i].slowTimer = Math.max(nearby[i].slowTimer, duration);
+          const e = nearby[i];
+          // Only flash on the newly-caught transition (slowTimer was at 0),
+          // not every single frame it continues to sit in range - otherwise
+          // the line would just be permanently on-screen instead of reading
+          // as a "zap" the way chain's does.
+          if (e.slowTimer <= 0) this.chainZaps.push(new ChainZap(p.x, p.y, e.x, e.y));
+          e.slowTimer = Math.max(e.slowTimer, duration);
         }
       }
 
