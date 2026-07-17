@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.18.1';
+  const GAME_VERSION = '1.18.2';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -616,6 +616,24 @@
     },
   ];
 
+  // Slots 2-3 of a level-up draw from the full pool but at reduced odds for
+  // bullet effects specifically - slot 1 already exists to funnel players
+  // toward bullet effects (either deepening one they own, or a normal draw
+  // when they own none yet), so without this the other two slots would
+  // double up on that same bias instead of mostly offering plain/tradeoff
+  // variety.
+  const BULLET_EFFECT_SLOT_WEIGHT = 0.4;
+  function pickWeightedIndex(pool) {
+    const weights = pool.map(up => up.id.startsWith('bullet-') ? BULLET_EFFECT_SLOT_WEIGHT : 1);
+    const total = weights.reduce((sum, w) => sum + w, 0);
+    let r = Math.random() * total;
+    for (let i = 0; i < pool.length; i++) {
+      r -= weights[i];
+      if (r <= 0) return i;
+    }
+    return pool.length - 1;
+  }
+
   function bulletEffectUpgrade(effect, player) {
     const level = effect.getLevel(player);
     return {
@@ -696,7 +714,7 @@
 
       const remainingPool = pool.filter(up => up.id !== firstPick.id);
       for (let i = 0; i < 2 && remainingPool.length; i++) {
-        const idx = randInt(0, remainingPool.length - 1);
+        const idx = pickWeightedIndex(remainingPool);
         picks.push(remainingPool.splice(idx, 1)[0]);
       }
       upgradeChoicesEl.innerHTML = '';
