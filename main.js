@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.18.2';
+  const GAME_VERSION = '1.19.0';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -219,7 +219,7 @@
         desc: 'その場にいる敵を強制撃破し、10秒間ジェム回収範囲が全画面・獲得XPが1.5倍になる(クールタイム120秒)',
         cooldown: 120,
         activate(p, game) {
-          for (const e of game.enemies) e.hp = 0;
+          for (const e of game.enemies) { e.hp = 0; e.forceKilled = true; }
           p.specialBuffTimer = 10;
         },
       },
@@ -399,6 +399,10 @@
       this.hitFlash = 0;
       this.contactCd = 0;
       this.slowTimer = 0;
+      // Set by the emergency-bomb special so its mass-kill burst is exempt
+      // from GEM_CAP below - the whole point of that ability is stockpiling
+      // gems for one big level-up burst, which the cap would otherwise gut.
+      this.forceKilled = false;
     }
   }
 
@@ -418,6 +422,12 @@
   }
 
   const GEM_LIFESPAN = 60; // seconds before an uncollected gem despawns
+  // Hard ceiling on gems simultaneously alive on screen. Late-run crowd
+  // builds kill fast enough that, combined with GEM_LIFESPAN, the field can
+  // otherwise get carpeted in gems well before any of them expire. Bomb
+  // kills (forceKilled) are exempt - the ability's whole point is banking a
+  // pile of gems for one big burst, which this cap would otherwise defeat.
+  const GEM_CAP = 60;
 
   class Gem {
     constructor(x, y, value) {
@@ -1044,7 +1054,9 @@
       this.enemies = this.enemies.filter(e => {
         if (e.hp <= 0) {
           this.kills++;
-          this.gems.push(new Gem(e.x, e.y, Math.max(1, Math.round(e.xpValue * gemValueMult))));
+          if (e.forceKilled || this.gems.length < GEM_CAP) {
+            this.gems.push(new Gem(e.x, e.y, Math.max(1, Math.round(e.xpValue * gemValueMult))));
+          }
           for (let i = 0; i < 6; i++) this.particles.push(new Particle(e.x, e.y, e.color));
           return false;
         }
