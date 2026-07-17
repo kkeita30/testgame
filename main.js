@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.25.0';
+  const GAME_VERSION = '1.26.0';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -616,7 +616,20 @@
     { id: 'damage', title: 'ダメージ強化', desc: '攻撃ダメージ +50%', apply: p => p.damage = Math.round(p.damage * 1.5) },
     { id: 'atkspeed', title: '攻撃速度アップ', desc: '攻撃間隔 -20%', apply: p => p.atkCooldown = Math.max(0.15, p.atkCooldown * 0.8) },
     { id: 'speed', title: '移動速度アップ', desc: '移動速度 +12%', apply: p => p.speedMult *= 1.12 },
-    { id: 'maxhp', title: '最大HPアップ', desc: '最大HP +25、HP回復', apply: p => { p.maxHp += 25; p.hp = Math.min(p.maxHp, p.hp + 25); } },
+    {
+      id: 'maxhp',
+      title: '最大HPアップ',
+      desc: '最大HP +15%、HP回復',
+      // Percentage rather than a flat +25, so it stays meaningfully
+      // proportional to whatever the current maxHp already is (e.g. much
+      // bigger in absolute terms on Tank's 180 base than a flat number
+      // would be) instead of mattering less and less on higher-HP builds.
+      apply: p => {
+        const added = Math.round(p.maxHp * 0.15);
+        p.maxHp += added;
+        p.hp = Math.min(p.maxHp, p.hp + added);
+      },
+    },
     { id: 'pickup', title: '回収範囲アップ', desc: 'XP回収範囲 +30', apply: p => p.pickupRadius += 30 },
     { id: 'regen', title: 'リジェネ', desc: '毎秒HP自然回復 +1', apply: p => p.regen += 1 },
   ];
