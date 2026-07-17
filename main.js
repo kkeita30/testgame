@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.24.0';
+  const GAME_VERSION = '1.25.0';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -177,7 +177,6 @@
   const levelEl = document.getElementById('level');
   const difficultyEl = document.getElementById('difficulty');
   const killRateEl = document.getElementById('kill-rate');
-  const comboIndicatorEl = document.getElementById('combo-indicator');
   const specialIndicatorEl = document.getElementById('special-indicator');
   const killsEl = document.getElementById('kills');
   const startScreen = document.getElementById('start-screen');
@@ -307,7 +306,7 @@
       // Passive: always-on glass-cannon weapon trait. Total DPS at
       // baseline is unchanged (half damage x double attack rate), but it
       // shifts the weapon toward synergizing with per-hit-count effects
-      // (combo, chain's proc chance) rather than raw per-hit power.
+      // (chain's proc chance) rather than raw per-hit power.
       passive: {
         name: '高速連射',
         desc: '武器の攻撃間隔が半分(攻撃速度2倍)になる代わりに、攻撃力が半分になる',
@@ -393,16 +392,6 @@
       this.slowLevel = 0;
       this.interceptLevel = 0;
 
-      // Combo: consecutive hits on the SAME enemy ramp up damage, resetting
-      // if the target changes or too long passes between hits. Rewards
-      // sustained single-target focus (attack speed/damage synergy), which
-      // multishot tends to work against since it usually spreads shots
-      // across different enemies in a swarm.
-      this.comboLevel = 0;
-      this.comboTarget = null;
-      this.comboCount = 0;
-      this.comboResetTimer = 0;
-
       // Double-tap special ability, defined per character (§ CHARACTERS).
       // null until a character with one is applied below.
       this.special = null;
@@ -480,7 +469,7 @@
     // Deliberately huge single-target HP pool: a pure multishot build
     // spreads its damage across many enemies and struggles to burn this
     // down alone, so surviving bosses well pushes toward also investing in
-    // single-target-friendly upgrades (combo, raw damage, explosion/chain).
+    // single-target-friendly upgrades (raw damage, explosion/chain).
     boss:   { hp: 500, speed: 35,  radius: 32, color: '#c81e3a', dmg: 20, xp: 50, score: 5 },
   };
 
@@ -714,20 +703,7 @@
   function interceptDuration(p) { return p.slowLevel > 0 ? slowDurationForLevel(p.slowLevel) : INTERCEPT_BASE_DURATION; }
   function interceptTargetCount(level) { return level; }
 
-  const COMBO_PER_STACK_BONUS = 0.08;
-  const COMBO_RESET_WINDOW = 1.5; // seconds since the last hit on the same target
-  function comboMaxStacks(level) { return level * 4; }
-
   const BULLET_EFFECTS = [
-    {
-      id: 'combo',
-      name: '連撃',
-      maxLevel: 5,
-      getLevel: p => p.comboLevel,
-      levelUp: p => { p.comboLevel++; },
-      introDesc: '同じ敵に連続ヒットさせるほどダメージが上昇するようになる',
-      upgradeDesc: level => `連撃の上限段数が増加する(+${Math.round(comboMaxStacks(level) * COMBO_PER_STACK_BONUS * 100)}% → +${Math.round(comboMaxStacks(level + 1) * COMBO_PER_STACK_BONUS * 100)}%)`,
-    },
     {
       id: 'explosion',
       name: '爆発',
@@ -1050,7 +1026,6 @@
       } else if (p.specialCooldownRemaining > 0) {
         p.specialCooldownRemaining -= dt;
       }
-      if (p.comboResetTimer > 0) p.comboResetTimer -= dt;
 
       // spawn
       this.spawnTimer -= dt;
@@ -1140,19 +1115,7 @@
         for (const e of this.enemies) {
           if (proj.hitSet.has(e)) continue;
           if (dist2(proj.x, proj.y, e.x, e.y) < (proj.radius + e.radius) * (proj.radius + e.radius)) {
-            let hitDamage = proj.damage;
-            if (p.comboLevel > 0) {
-              // A hit on a different target (or one that arrives after the
-              // reset window has lapsed) starts a fresh combo instead of
-              // continuing the old one.
-              if (p.comboTarget !== e || p.comboResetTimer <= 0) p.comboCount = 0;
-              const maxStacks = comboMaxStacks(p.comboLevel);
-              hitDamage = proj.damage * (1 + Math.min(p.comboCount, maxStacks) * COMBO_PER_STACK_BONUS);
-              p.comboTarget = e;
-              p.comboCount += 1;
-              p.comboResetTimer = COMBO_RESET_WINDOW;
-            }
-            e.hp -= hitDamage;
+            e.hp -= proj.damage;
             e.hitFlash = 0.12;
             proj.hitSet.add(e);
             if (proj.slowDuration > 0) e.slowTimer = Math.max(e.slowTimer, proj.slowDuration);
@@ -1314,14 +1277,6 @@
         ? `撃破率 ${Math.round((killsThisWindow / spawnedThisWindow) * 100)}%`
         : '撃破率 --';
       killsEl.textContent = `${this.kills} kills`;
-
-      const comboActive = p.comboLevel > 0 && p.comboResetTimer > 0 && p.comboCount > 1;
-      comboIndicatorEl.classList.toggle('hidden', !comboActive);
-      if (comboActive) {
-        const maxStacks = comboMaxStacks(p.comboLevel);
-        const bonusPct = Math.round(Math.min(p.comboCount - 1, maxStacks) * COMBO_PER_STACK_BONUS * 100);
-        comboIndicatorEl.textContent = `連撃 x${p.comboCount} (+${bonusPct}%)`;
-      }
 
       const mm = String(Math.floor(this.time / 60)).padStart(2, '0');
       const ss = String(Math.floor(this.time % 60)).padStart(2, '0');
