@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.31.0';
+  const GAME_VERSION = '1.32.0';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -485,17 +485,39 @@
   // sessions.
   const ENEMY_SPAWN_RATE_MULT = 1.5;
 
+  // Absolute floor/ceiling on how many spawn EVENTS (not enemies - see
+  // ENEMY_TYPES.burst) can fire per second, regardless of how the
+  // difficulty/crowd-driven cadence below computes out. Without a
+  // ceiling, tierInterval bottoming out at high difficulty while
+  // ENEMY_SPAWN_RATE_MULT/crowdExtra keep pushing the rate up further
+  // could reach spawn rates far beyond what's actually playable or even
+  // visible; the floor is a safety net for the opposite direction should
+  // future tuning ever push the raw cadence below it.
+  const SPAWN_RATE_MIN = 1;
+  const SPAWN_RATE_MAX = 5;
+
+  // Hard ceiling on enemies simultaneously alive. Independent of the
+  // spawn-rate cap above - even a bounded spawn rate can still pile up an
+  // unbounded total if the player can't kill enemies as fast as they
+  // arrive, so this is the backstop for that case.
+  const MAX_ALIVE_ENEMIES = 120;
+
+  // burst = how many of this type spawn together as a single identity
+  // trait (e.g. fast enemies arrive in pairs), independent of difficulty/
+  // crowd-build scaling - see the spawn-pacing block in update() below,
+  // which now scales purely via how often a spawn event fires, not via
+  // how many enemies each event produces.
   const ENEMY_TYPES = {
     // HP values are the pre-v1.28.0 baseline divided by ENEMY_SPAWN_RATE_MULT
     // (18/10/70/500 -> 12/7/47/333), rounded.
-    grunt:  { hp: 12,  speed: 78,  radius: 13, color: '#ff5a5a', dmg: 8,  xp: 3,  score: 1 },
-    fast:   { hp: 7,   speed: 140, radius: 10, color: '#ffd23a', dmg: 6,  xp: 4,  score: 1 },
-    tank:   { hp: 47,  speed: 48,  radius: 20, color: '#a15aff', dmg: 14, xp: 10, score: 2 },
+    grunt:  { hp: 12,  speed: 78,  radius: 13, color: '#ff5a5a', dmg: 8,  xp: 3,  score: 1, burst: 1 },
+    fast:   { hp: 7,   speed: 140, radius: 10, color: '#ffd23a', dmg: 6,  xp: 4,  score: 1, burst: 2 },
+    tank:   { hp: 47,  speed: 48,  radius: 20, color: '#a15aff', dmg: 14, xp: 10, score: 2, burst: 1 },
     // Deliberately huge single-target HP pool: a pure multishot build
     // spreads its damage across many enemies and struggles to burn this
     // down alone, so surviving bosses well pushes toward also investing in
     // single-target-friendly upgrades (raw damage, explosion/chain).
-    boss:   { hp: 333, speed: 35,  radius: 32, color: '#c81e3a', dmg: 20, xp: 50, score: 5 },
+    boss:   { hp: 333, speed: 35,  radius: 32, color: '#c81e3a', dmg: 20, xp: 50, score: 5, burst: 1 },
   };
 
   // Bosses don't roll into the normal per-spawn type dice - they arrive on
@@ -969,12 +991,7 @@
 
     spawnEnemy(forceType) {
       const p = this.player;
-      const angle = rand(0, TAU);
-      const spawnDist = Math.max(W, H) * 0.65 + 60;
-      const x = p.x + Math.cos(angle) * spawnDist;
-      const y = p.y + Math.sin(angle) * spawnDist;
       const D = this.difficulty;
-      this.totalSpawned++;
 
       let type = forceType || 'grunt';
       if (!forceType) {
@@ -1000,7 +1017,25 @@
       const survivalExtra = Math.max(0, survivalPowerMult(p) - 1);
       const dmgMult = tierDmgMult * (1 + survivalExtra * 0.7);
 
-      this.enemies.push(new Enemy(type, x, y, hpMult, dmgMult));
+      // A spawn event places def.burst enemies of the rolled type together
+      // as a loose cluster (same general direction, small angular jitter)
+      // rather than one at a time - burst count is a per-type identity
+      // trait (see ENEMY_TYPES), not a difficulty/crowd-scaling lever.
+      const def = ENEMY_TYPES[type];
+      const baseAngle = rand(0, TAU);
+      const spawnDist = Math.max(W, H) * 0.65 + 60;
+      for (let i = 0; i < def.burst; i++) {
+        // Forced spawns (currently only the boss's periodic arrival) are
+        // exempt from MAX_ALIVE_ENEMIES, same spirit as the emergency
+        // bomb's exemption from GEM_CAP - a rare, deliberately singular
+        // event shouldn't get silently swallowed by an unrelated cap.
+        if (!forceType && this.enemies.length >= MAX_ALIVE_ENEMIES) break;
+        const angle = baseAngle + rand(-0.15, 0.15);
+        const x = p.x + Math.cos(angle) * spawnDist;
+        const y = p.y + Math.sin(angle) * spawnDist;
+        this.totalSpawned++;
+        this.enemies.push(new Enemy(type, x, y, hpMult, dmgMult));
+      }
     }
 
     fireWeapon(dt) {
@@ -1097,17 +1132,21 @@
       const D = this.difficulty;
       const tierInterval = Math.max(0.22, this.spawnInterval - (D - 1) * 0.11);
       // Pierce/chain make a player good at handling crowds, so a build
-      // that stacks those sees extra enemies on top of the tier baseline;
-      // a build that never picks them up keeps the gentle baseline.
-      // Multishot doesn't count here - it's the standard weapon's innate
-      // effect now, not a chosen investment (see crowdPowerMult).
+      // that stacks those sees a faster spawn cadence than the tier
+      // baseline; a build that never picks them up keeps the gentle
+      // baseline. Multishot doesn't count here - it's the standard
+      // weapon's innate effect now, not a chosen investment (see
+      // crowdPowerMult). Pacing is expressed as spawn events/second
+      // (clamped to [SPAWN_RATE_MIN, SPAWN_RATE_MAX]) rather than enemies/
+      // second - how many enemies a single event produces is now a
+      // per-type trait (ENEMY_TYPES.burst), not a scaling lever here.
       const crowdExtra = Math.max(0, crowdPowerMult(p) - 1);
-      const curInterval = Math.max(0.15, tierInterval / (1 + crowdExtra * 0.5) / ENEMY_SPAWN_RATE_MULT);
+      const rawEventsPerSec = (1 + crowdExtra * 0.5) * ENEMY_SPAWN_RATE_MULT / tierInterval;
+      const eventsPerSec = clamp(rawEventsPerSec, SPAWN_RATE_MIN, SPAWN_RATE_MAX);
+      const curInterval = 1 / eventsPerSec;
       if (this.spawnTimer <= 0) {
         this.spawnTimer = curInterval;
-        const tierBurst = 1 + Math.floor((D - 1) / 5);
-        const burst = tierBurst + Math.round(crowdExtra * 2);
-        for (let i = 0; i < burst; i++) this.spawnEnemy();
+        if (this.enemies.length < MAX_ALIVE_ENEMIES) this.spawnEnemy();
       }
 
       // Boss: a periodic, singular arrival rather than a dice roll mixed
