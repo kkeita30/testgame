@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.35.6';
+  const GAME_VERSION = '1.35.7';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -1079,7 +1079,14 @@
       // player never invested in. The offense coefficient is kept low
       // (0.25) on purpose - upgrading damage/attack speed should mostly
       // just feel stronger, not get mostly cancelled out by tougher enemies.
-      const tierHpMult = 1 + (D - 1) * 0.14;
+      // Both per-tier coefficients were halved (0.14->0.07, 0.11->0.055,
+      // v1.35.7) after verifying that a well-performing run reaching
+      // difficulty ~43 by the 15-minute mark was taking single boss hits
+      // for 100%+ of maxHp even with heavy HP investment - offense had
+      // outpaced defense so early that HP upgrades never felt worth taking
+      // until it was already too late to catch up. Their ratio to each
+      // other (dmg:hp) is kept the same, only the overall pace is slower.
+      const tierHpMult = 1 + (D - 1) * 0.07;
       const offenseExtra = Math.max(0, offensePowerMult(p) - 1);
       // Once spawn pacing is pinned at SPAWN_RATE_MAX, further crowd
       // investment can't buy a faster spawn rate anymore - it buys
@@ -1088,7 +1095,7 @@
       // top, so the burst is a real spike in danger, not just more targets.
       const hpMult = tierHpMult * (1 + offenseExtra * 0.25) * (1 + this.spawnRateOverflow * SPAWN_OVERFLOW_HP_COEFF) * (this.rushState === 'active' ? RUSH_HP_MULT : 1);
 
-      const tierDmgMult = 1 + (D - 1) * 0.11;
+      const tierDmgMult = 1 + (D - 1) * 0.055;
       const survivalExtra = Math.max(0, survivalPowerMult(p) - 1);
       const dmgMult = tierDmgMult * (1 + survivalExtra * 0.7);
 
