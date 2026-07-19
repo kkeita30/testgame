@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.34.0';
+  const GAME_VERSION = '1.35.0';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -372,7 +372,9 @@
       this.x = 0;
       this.y = 0;
       this.radius = 16;
-      this.baseSpeed = 190;
+      // Raised from 190 (v1.35.0) to fold in roughly what one move-speed
+      // upgrade pick used to add, now that the upgrade itself is gone.
+      this.baseSpeed = 210;
       this.speedMult = 1;
       this.maxHp = 100;
       this.hp = 100;
@@ -389,7 +391,9 @@
       this.projSpeed = 380;
       this.projCount = 1;
       this.pierce = 0;
-      this.pickupRadius = 70;
+      // Raised from 70 (v1.35.0) to fold in exactly what one pickup-range
+      // upgrade pick used to add, now that the upgrade itself is gone.
+      this.pickupRadius = 100;
       this.regen = 0;
       // Multiplier on the weapon's firing range (see weaponRange() below).
       // 1 = the default screen-relative range; left open for a future
@@ -706,10 +710,16 @@
     }
   }
 
+  // Move speed and pickup radius upgrades were removed (v1.35.0): neither
+  // feeds into any difficulty-scaling axis (§6-2), and both had a
+  // lopsided value curve - move speed is only good in moderation (too
+  // much makes the character harder to control precisely), while pickup
+  // radius has no downside at all but is effectively fully solved after
+  // one pick, making repeat picks pure filler either way. Their value was
+  // folded into the base stats instead (see Player constructor).
   const UPGRADE_POOL = [
     { id: 'damage', title: 'ダメージ強化', desc: '攻撃ダメージ +50%', apply: p => p.damage = Math.round(p.damage * 1.5) },
     { id: 'atkspeed', title: '攻撃速度アップ', desc: '攻撃間隔 -20%', apply: p => p.atkCooldown = Math.max(0.15, p.atkCooldown * 0.8) },
-    { id: 'speed', title: '移動速度アップ', desc: '移動速度 +12%', apply: p => p.speedMult *= 1.12 },
     {
       id: 'maxhp',
       title: '最大HPアップ',
@@ -724,7 +734,6 @@
         p.hp = Math.min(p.maxHp, p.hp + added);
       },
     },
-    { id: 'pickup', title: '回収範囲アップ', desc: 'XP回収範囲 +30', apply: p => p.pickupRadius += 30 },
     { id: 'regen', title: 'リジェネ', desc: '毎秒HP自然回復 +1', apply: p => p.regen += 1 },
   ];
 
