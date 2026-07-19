@@ -66,11 +66,16 @@
     <button id="restart-btn">もう一度</button>
   </div>
 
+  <!-- Pause Screen -->
+  <div id="pause-screen" class="overlay hidden">
+    <h2>一時停止中</h2>
+    <div id="pause-stats"></div>
+    <button id="resume-btn">再開</button>
+    <button id="back-to-title-btn" class="secondary">タイトルに戻る</button>
+  </div>
+
   <!-- Pause button -->
   <button id="pause-btn" class="hidden">II</button>
-
-  <!-- Resume hint (shown after a level-up pick, until the player taps again) -->
-  <div id="resume-hint" class="hidden">タップして再開</div>
 
   <!-- Special ability status (double-tap to activate) -->
   <div id="special-indicator" class="hidden"></div>

@@ -188,6 +188,20 @@ html, body {
   transform: scale(0.96);
 }
 
+.overlay button.secondary {
+  background: transparent;
+  border: 2px solid #555;
+  color: #aaa;
+  box-shadow: none;
+  margin-top: 12px;
+  padding: 10px 28px;
+  font-size: 14px;
+}
+
+.overlay button.secondary:active {
+  background: #23232e;
+}
+
 .overlay button:disabled {
   background: #333;
   color: #777;
@@ -275,29 +289,16 @@ html, body {
   color: #ddd;
 }
 
-#resume-hint {
-  position: absolute;
-  inset: 0;
-  z-index: 15;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  pointer-events: none;
-  color: #fff;
-  font-size: 18px;
-  font-weight: 700;
-  text-shadow: 0 2px 8px rgba(0,0,0,0.7);
-  background: rgba(0,0,0,0.25);
-  animation: resume-pulse 1s ease-in-out infinite;
+#pause-stats {
+  font-size: 14px;
+  line-height: 1.7;
+  color: #ddd;
+  text-align: left;
+  width: min(320px, 88vw);
 }
 
-#resume-hint.hidden {
-  display: none;
-}
-
-@keyframes resume-pulse {
-  0%, 100% { opacity: 0.55; }
-  50% { opacity: 1; }
+#pause-stats p {
+  margin-bottom: 2px;
 }
 
 #special-indicator {

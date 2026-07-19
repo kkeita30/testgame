@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.29.0';
+  const GAME_VERSION = '1.30.0';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -87,10 +87,6 @@
     input.dx = 0;
     input.dy = 0;
     checkDoubleTap(x, y);
-    if (game && game.awaitingResume) {
-      game.awaitingResume = false;
-      resumeHint.classList.add('hidden');
-    }
   }
   function dragEnd() {
     dragTouchId = null;
@@ -186,12 +182,15 @@
   const confirmCharacterBtn = document.getElementById('confirm-character-btn');
   const levelupScreen = document.getElementById('levelup-screen');
   const gameoverScreen = document.getElementById('gameover-screen');
-  const resumeHint = document.getElementById('resume-hint');
   const upgradeChoicesEl = document.getElementById('upgrade-choices');
   const finalStatsEl = document.getElementById('final-stats');
   const startBtn = document.getElementById('start-btn');
   const restartBtn = document.getElementById('restart-btn');
   const pauseBtn = document.getElementById('pause-btn');
+  const pauseScreen = document.getElementById('pause-screen');
+  const pauseStatsEl = document.getElementById('pause-stats');
+  const resumeBtn = document.getElementById('resume-btn');
+  const backToTitleBtn = document.getElementById('back-to-title-btn');
 
   // Two independent rosters, picked separately before a run:
   // - CHARACTERS differentiate on survivability/utility stats (HP, move
@@ -355,6 +354,16 @@
   function xpNextForLevel(level) {
     return Math.min(XP_NEXT_CAP, Math.round(10 + 8 * Math.pow(level, 1.5)));
   }
+
+  // Grace-period invulnerability granted when control returns to the
+  // player after a level-up pick or unpausing (see pickUpgrade() and the
+  // pause button handler). Replaces the old "tap the screen to resume"
+  // gate: that gate could leave an enemy already at point-blank range by
+  // the time the player was allowed to act again, with no way to have
+  // dodged it in the meantime. A brief window of the same invulnerability
+  // already used for normal post-hit i-frames gives a fair chance to
+  // reposition instead.
+  const RESUME_INVULN_DURATION = 1.0;
 
   // ---------- Entity classes ----------
   class Player {
@@ -863,7 +872,6 @@
       this.spawnInterval = 1.1;
       this.over = false;
       this.levelingUp = false;
-      this.awaitingResume = false;
       this.shakeTime = 0;
 
       // Kill-rate rubber-band: difficulty is no longer a pure function of
@@ -929,20 +937,14 @@
       up.apply(this.player);
       levelupScreen.classList.add('hidden');
       this.levelingUp = false;
-      // The player's finger just lifted off the upgrade card, so there is
-      // no active drag. Keep gameplay stopped until they deliberately
-      // touch the screen again, instead of leaving them briefly
-      // uncontrollable while enemies keep closing in.
-      this.awaitingResume = true;
-      resumeHint.classList.remove('hidden');
-      // update() (and its HUD refresh) is skipped while awaitingResume, so
-      // refresh once here - otherwise picking Skip wouldn't show its XP
-      // top-up on the bar until the player taps to resume.
+      // Grant a brief invulnerability window instead of gating movement
+      // behind a "tap to resume" screen (see RESUME_INVULN_DURATION).
+      this.player.invulnTimer = Math.max(this.player.invulnTimer, RESUME_INVULN_DURATION);
       this.updateHud();
     }
 
     tryActivateSpecial() {
-      if (this.over || this.levelingUp || this.awaitingResume || paused) return;
+      if (this.over || this.levelingUp || paused) return;
       const p = this.player;
       if (!p.special || p.specialCooldownRemaining > 0 || p.specialBuffTimer > 0) return;
       // Cooldown doesn't start here - it starts once the buff itself runs
@@ -1037,7 +1039,7 @@
     }
 
     update(dt) {
-      if (this.over || this.levelingUp || this.awaitingResume || paused) return;
+      if (this.over || this.levelingUp || paused) return;
       this.time += dt;
       const p = this.player;
 
@@ -1362,7 +1364,7 @@
       ctx.clearRect(0, 0, W, H);
 
       let shakeX = 0, shakeY = 0;
-      if (this.shakeTime > 0 && !paused) {
+      if (this.shakeTime > 0 && !paused && !this.levelingUp) {
         shakeX = rand(-4, 4);
         shakeY = rand(-4, 4);
       }
@@ -1405,14 +1407,6 @@
         ctx.fillStyle = e.hitFlash > 0 ? '#ffffff' : (e.slowTimer > 0 ? '#7ec8ff' : e.color);
         ctx.arc(sx, sy, e.radius, 0, TAU);
         ctx.fill();
-        // hp bar for tougher enemies
-        if (e.maxHp > 15) {
-          const w = e.radius * 2;
-          ctx.fillStyle = 'rgba(0,0,0,0.5)';
-          ctx.fillRect(sx - w / 2, sy - e.radius - 8, w, 4);
-          ctx.fillStyle = '#5aff7a';
-          ctx.fillRect(sx - w / 2, sy - e.radius - 8, w * clamp(e.hp / e.maxHp, 0, 1), 4);
-        }
       }
 
       // particles - drawn above enemies so death/explosion bursts read
@@ -1528,7 +1522,6 @@
     startScreen.classList.add('hidden');
     gameoverScreen.classList.add('hidden');
     levelupScreen.classList.add('hidden');
-    resumeHint.classList.add('hidden');
     pauseBtn.classList.remove('hidden');
     pauseBtn.textContent = 'II';
     if (rafId) cancelAnimationFrame(rafId);
@@ -1542,20 +1535,66 @@
     startGame(selectedCharacter, selectedWeapon);
   });
 
+  // Renders a snapshot of the player's current build into the pause
+  // screen - stats that otherwise have no single place they're all
+  // visible together mid-run (HUD only shows a handful of them).
+  function renderPauseStats(g) {
+    const p = g.player;
+    const mm = String(Math.floor(g.time / 60)).padStart(2, '0');
+    const ss = String(Math.floor(g.time % 60)).padStart(2, '0');
+    const bulletLines = [];
+    if (p.explosionLevel > 0) bulletLines.push(`爆発 Lv.${p.explosionLevel}`);
+    if (p.chainLevel > 0) bulletLines.push(`連鎖 Lv.${p.chainLevel}`);
+    if (p.slowLevel > 0) bulletLines.push(`低速 Lv.${p.slowLevel}`);
+    if (p.interceptLevel > 0) bulletLines.push(`迎撃 Lv.${p.interceptLevel}`);
+    if (p.pierce > 0) bulletLines.push(`貫通 Lv.${p.pierce}`);
+    pauseStatsEl.innerHTML = `
+      <p>HP: ${Math.ceil(p.hp)} / ${p.maxHp}</p>
+      <p>レベル: ${p.level}</p>
+      <p>ダメージ: ${p.damage} / 攻撃間隔: ${p.atkCooldown.toFixed(2)}秒</p>
+      <p>同時発射数: ${p.projCount}</p>
+      <p>移動速度: ${Math.round(p.speed)}</p>
+      <p>HP自然回復: ${p.regen}/秒 / 回収範囲: ${Math.round(p.pickupRadius)}</p>
+      ${bulletLines.length ? `<p>弾丸効果: ${bulletLines.join(' / ')}</p>` : ''}
+      <p>生存時間: ${mm}:${ss} / 撃破数: ${g.kills} / 難易度: ${g.difficulty}</p>
+    `;
+  }
+
+  // The pause screen is a full overlay (like the other screens), which
+  // would otherwise sit on top of and block the small pause-btn itself -
+  // so pausing hides that button and resuming happens via the explicit
+  // "再開" button on the pause screen instead of re-clicking pause-btn.
   pauseBtn.addEventListener('click', () => {
     if (!game || game.over) return;
-    if (paused) {
-      // Resuming: the tap that hit this button isn't a movement gesture,
-      // so gate play behind the same "tap the screen to resume" flow used
-      // after a level-up pick, instead of letting enemies act on an
-      // uncontrolled player the instant the button is released.
-      paused = false;
-      game.awaitingResume = true;
-      resumeHint.classList.remove('hidden');
-    } else {
-      paused = true;
-    }
-    pauseBtn.textContent = paused ? '>' : 'II';
+    paused = true;
+    renderPauseStats(game);
+    pauseScreen.classList.remove('hidden');
+    pauseBtn.classList.add('hidden');
+  });
+
+  resumeBtn.addEventListener('click', () => {
+    if (!game || game.over) return;
+    paused = false;
+    pauseScreen.classList.add('hidden');
+    pauseBtn.classList.remove('hidden');
+    // Grant a brief invulnerability window on resume, same as after a
+    // level-up pick (see RESUME_INVULN_DURATION) - the player couldn't
+    // react while paused, so an enemy that closed to point-blank range
+    // during that time shouldn't land a free hit the instant control
+    // returns.
+    game.player.invulnTimer = Math.max(game.player.invulnTimer, RESUME_INVULN_DURATION);
+  });
+
+  backToTitleBtn.addEventListener('click', () => {
+    if (!game) return;
+    // Reuses the same "over" flag the normal game-over path sets, so the
+    // render loop stops driving this game instance the same way it
+    // already does after death - no separate teardown path needed.
+    game.over = true;
+    paused = false;
+    pauseScreen.classList.add('hidden');
+    pauseBtn.classList.add('hidden');
+    startScreen.classList.remove('hidden');
   });
 
   // Prevent page scroll/bounce on iOS while playing. Overlay screens (e.g.
