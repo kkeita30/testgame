@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.33.0';
+  const GAME_VERSION = '1.34.0';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -174,6 +174,7 @@
   const difficultyEl = document.getElementById('difficulty');
   const killRateEl = document.getElementById('kill-rate');
   const specialIndicatorEl = document.getElementById('special-indicator');
+  const rushAlertEl = document.getElementById('rush-alert');
   const killsEl = document.getElementById('kills');
   const startScreen = document.getElementById('start-screen');
   const characterSelectScreen = document.getElementById('character-select-screen');
@@ -537,6 +538,22 @@
   // event rather than blending into the regular swarm composition.
   const BOSS_MIN_DIFFICULTY = 8;
   const BOSS_SPAWN_INTERVAL = 90;
+
+  // Rush: a reward event for sustained high performance. Sustaining a high
+  // kill rate for a while triggers a short warning countdown, then a burst
+  // of extra enemies deliberately exceeding the normal spawn-rate ceiling
+  // (via burst count rather than event frequency - see spawnEnemy() and
+  // §6-3's SPAWN_RATE_MAX), followed by a guaranteed double level-up as
+  // the payoff. MAX_ALIVE_ENEMIES still applies during a rush - only the
+  // rate ceiling is deliberately bypassed.
+  const RUSH_CHECK_INTERVAL = 5; // seconds between eligibility samples - finer than DIFFICULTY_CHECK_INTERVAL since a continuous "sustained" condition needs tighter granularity
+  const RUSH_KILL_RATE_THRESHOLD = 0.9;
+  const RUSH_SUSTAIN_DURATION = 60; // seconds of sustained high kill-rate needed to trigger
+  const RUSH_WARNING_DURATION = 10; // "ラッシュまであとN秒" countdown before it starts
+  const RUSH_DURATION = 20;
+  const RUSH_BURST_MULT = 2; // multiplies ENEMY_TYPES burst, not spawn-event frequency
+  const RUSH_SPEED_MULT = 1.2;
+  const RUSH_LEVEL_UPS = 2; // forced level-ups on rush end, independent of current XP
 
   // Player stat values at game start, used as the "no upgrades taken" yardstick
   // for the build-aware difficulty scaling below.
@@ -932,6 +949,21 @@
       // read by spawnEnemy() to convert that excess into extra enemy HP
       // instead. 0 until the cap is actually being pushed against.
       this.spawnRateOverflow = 0;
+
+      // Rush state machine: 'idle' (tracking eligibility) -> 'warning'
+      // (countdown alert) -> 'active' (the burst itself) -> back to
+      // 'idle'. rushTimer counts down within whichever of warning/active
+      // is current.
+      this.rushState = 'idle';
+      this.rushTimer = 0;
+      this.rushCheckTimer = RUSH_CHECK_INTERVAL;
+      this.rushSpawnedAtCheckpoint = 0;
+      this.rushKillsAtCheckpoint = 0;
+      this.rushGoodStreak = 0;
+      // Forced level-ups still queued from a just-finished rush - handled
+      // one at a time via pickUpgrade() chaining straight into the next
+      // onLevelUp() instead of returning control to the player in between.
+      this.pendingForcedLevelUps = 0;
     }
 
     onLevelUp() {
@@ -982,6 +1014,17 @@
       up.apply(this.player);
       levelupScreen.classList.add('hidden');
       this.levelingUp = false;
+      // A rush's guaranteed level-ups (§ RUSH_LEVEL_UPS) chain straight
+      // into the next one instead of actually resuming play in between -
+      // the player still gets to pick each one, just back to back.
+      if (this.pendingForcedLevelUps > 0) {
+        this.pendingForcedLevelUps--;
+        this.player.level++;
+        this.player.xpNext = xpNextForLevel(this.player.level);
+        this.player.applyWeaponInnateEffect();
+        this.onLevelUp();
+        return;
+      }
       // Grant a brief invulnerability window instead of gating movement
       // behind a "tap to resume" screen (see RESUME_INVULN_DURATION).
       this.player.invulnTimer = Math.max(this.player.invulnTimer, RESUME_INVULN_DURATION);
@@ -1042,10 +1085,15 @@
       // as a loose cluster (same general direction, small angular jitter)
       // rather than one at a time - burst count is a per-type identity
       // trait (see ENEMY_TYPES), not a difficulty/crowd-scaling lever.
+      // During an active rush, burst is doubled - this is the mechanism by
+      // which a rush deliberately exceeds SPAWN_RATE_MAX (§6-3): that cap
+      // only bounds how often a spawn event fires, not how many enemies
+      // one event produces.
       const def = ENEMY_TYPES[type];
+      const burstCount = def.burst * (this.rushState === 'active' ? RUSH_BURST_MULT : 1);
       const baseAngle = rand(0, TAU);
       const spawnDist = Math.max(W, H) * 0.65 + 60;
-      for (let i = 0; i < def.burst; i++) {
+      for (let i = 0; i < burstCount; i++) {
         // Forced spawns (currently only the boss's periodic arrival) are
         // exempt from MAX_ALIVE_ENEMIES, same spirit as the emergency
         // bomb's exemption from GEM_CAP - a rare, deliberately singular
@@ -1121,6 +1169,52 @@
         else if (killRate > 0.7) this.difficulty += 1;
         this.spawnedAtCheckpoint = this.totalSpawned;
         this.killsAtCheckpoint = this.kills;
+      }
+
+      // Rush: tracked on its own short window (RUSH_CHECK_INTERVAL),
+      // independent of the difficulty rubber-band's 50s window above -
+      // "sustained X seconds" needs finer sampling than that to trigger
+      // at roughly the right moment rather than up to a whole window late.
+      if (this.rushState === 'idle') {
+        this.rushCheckTimer -= dt;
+        if (this.rushCheckTimer <= 0) {
+          this.rushCheckTimer += RUSH_CHECK_INTERVAL;
+          const spawnedThisRushWindow = this.totalSpawned - this.rushSpawnedAtCheckpoint;
+          const killsThisRushWindow = this.kills - this.rushKillsAtCheckpoint;
+          const rushRate = spawnedThisRushWindow > 0 ? killsThisRushWindow / spawnedThisRushWindow : 1;
+          this.rushGoodStreak = rushRate >= RUSH_KILL_RATE_THRESHOLD ? this.rushGoodStreak + RUSH_CHECK_INTERVAL : 0;
+          this.rushSpawnedAtCheckpoint = this.totalSpawned;
+          this.rushKillsAtCheckpoint = this.kills;
+          if (this.rushGoodStreak >= RUSH_SUSTAIN_DURATION) {
+            this.rushGoodStreak = 0;
+            this.rushState = 'warning';
+            this.rushTimer = RUSH_WARNING_DURATION;
+          }
+        }
+      } else if (this.rushState === 'warning') {
+        this.rushTimer -= dt;
+        if (this.rushTimer <= 0) {
+          this.rushState = 'active';
+          this.rushTimer = RUSH_DURATION;
+        }
+      } else if (this.rushState === 'active') {
+        this.rushTimer -= dt;
+        if (this.rushTimer <= 0) {
+          this.rushState = 'idle';
+          // Don't let the rush's own spawn/kill burst feed straight into
+          // the next eligibility window.
+          this.rushSpawnedAtCheckpoint = this.totalSpawned;
+          this.rushKillsAtCheckpoint = this.kills;
+          // Guaranteed payoff: RUSH_LEVEL_UPS level-ups regardless of
+          // current XP. Only the first is triggered directly here -
+          // pickUpgrade() chains straight into the next one instead of
+          // handing control back to the player in between.
+          this.pendingForcedLevelUps += RUSH_LEVEL_UPS - 1;
+          this.player.level++;
+          this.player.xpNext = xpNextForLevel(this.player.level);
+          this.player.applyWeaponInnateEffect();
+          this.onLevelUp();
+        }
       }
 
       // movement
@@ -1207,9 +1301,10 @@
       }
 
       // enemies
+      const rushSpeedMult = this.rushState === 'active' ? RUSH_SPEED_MULT : 1;
       for (const e of this.enemies) {
         const d = dist(e.x, e.y, p.x, p.y) || 1;
-        const effSpeed = e.slowTimer > 0 ? e.speed * SLOW_MULT : e.speed;
+        const effSpeed = (e.slowTimer > 0 ? e.speed * SLOW_MULT : e.speed) * rushSpeedMult;
         e.x += (p.x - e.x) / d * effSpeed * dt;
         e.y += (p.y - e.y) / d * effSpeed * dt;
         if (e.hitFlash > 0) e.hitFlash -= dt;
@@ -1426,6 +1521,20 @@
         } else {
           specialIndicatorEl.textContent = `${p.special.name} ${Math.ceil(p.specialCooldownRemaining)}s`;
         }
+      }
+
+      if (this.rushState === 'warning') {
+        rushAlertEl.classList.remove('hidden');
+        rushAlertEl.classList.add('rush-warning');
+        rushAlertEl.classList.remove('rush-active');
+        rushAlertEl.textContent = `ラッシュまであと${Math.ceil(this.rushTimer)}秒`;
+      } else if (this.rushState === 'active') {
+        rushAlertEl.classList.remove('hidden');
+        rushAlertEl.classList.remove('rush-warning');
+        rushAlertEl.classList.add('rush-active');
+        rushAlertEl.textContent = `ラッシュ発生中！ 残り${Math.ceil(this.rushTimer)}秒`;
+      } else {
+        rushAlertEl.classList.add('hidden');
       }
     }
 
