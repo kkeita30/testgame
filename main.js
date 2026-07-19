@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.35.4';
+  const GAME_VERSION = '1.35.5';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -545,17 +545,29 @@
 
   // Rush: a reward event for sustained high performance. Clearing 90%+ of
   // a single 50s difficulty-check window's spawns triggers a short warning
-  // countdown, then a burst of extra enemies deliberately exceeding the
-  // normal spawn-rate ceiling (via burst count rather than event frequency
-  // - see spawnEnemy() and §6-3's SPAWN_RATE_MAX), followed by an instant
-  // HP heal + full gem collection as the payoff. MAX_ALIVE_ENEMIES still
-  // applies during a rush - only the rate ceiling is deliberately bypassed.
+  // countdown, then a burst of extra, tougher enemies deliberately exceeding
+  // the normal spawn-rate ceiling (via burst count rather than event
+  // frequency - see spawnEnemy() and §6-3's SPAWN_RATE_MAX), followed by an
+  // instant HP heal + full gem collection as the payoff. MAX_ALIVE_ENEMIES
+  // still applies during a rush - only the rate ceiling is deliberately
+  // bypassed.
   const RUSH_KILL_RATE_THRESHOLD = 0.9;
   const RUSH_WARNING_DURATION = 10; // "ラッシュまであとN秒" countdown before it starts
-  const RUSH_DURATION = 20;
+  // Deliberately equal to DIFFICULTY_CHECK_INTERVAL - RUSH_WARNING_DURATION
+  // (50 - 10 = 40): warning + active always spans exactly one full
+  // difficulty-check window, so a rush's active phase reliably concludes on
+  // the very tick the next window's kill-rate check runs (see update()) -
+  // that's what lets the difficulty check treat "a rush just ended" as a
+  // simple state check instead of racing two independent timers.
+  const RUSH_DURATION = 40;
   const RUSH_BURST_MULT = 2; // multiplies ENEMY_TYPES burst, not spawn-event frequency
   const RUSH_SPEED_MULT = 1.2;
+  const RUSH_HP_MULT = 1.5; // multiplies HP of enemies spawned during an active rush
   const RUSH_HEAL_FRAC = 0.5; // fraction of maxHp healed on rush end
+  // Difficulty step size on the window a rush concludes in, in place of the
+  // usual +1, if that window's kill rate also cleared RUSH_KILL_RATE_THRESHOLD
+  // - clearing a rush cleanly earns a bigger difficulty jump than a normal window.
+  const RUSH_DIFFICULTY_BONUS = 2;
   // Minimum difficulty-check windows (50s each) between two rush triggers.
   // Without this, a player clearing 90%+ every window gets a rush every
   // single window, which stops reading as a special event - see §6-6.
@@ -1061,8 +1073,10 @@
       const offenseExtra = Math.max(0, offensePowerMult(p) - 1);
       // Once spawn pacing is pinned at SPAWN_RATE_MAX, further crowd
       // investment can't buy a faster spawn rate anymore - it buys
-      // tougher enemies instead (see SPAWN_OVERFLOW_HP_COEFF).
-      const hpMult = tierHpMult * (1 + offenseExtra * 0.25) * (1 + this.spawnRateOverflow * SPAWN_OVERFLOW_HP_COEFF);
+      // tougher enemies instead (see SPAWN_OVERFLOW_HP_COEFF). Enemies
+      // spawned during an active rush get a further flat RUSH_HP_MULT on
+      // top, so the burst is a real spike in danger, not just more targets.
+      const hpMult = tierHpMult * (1 + offenseExtra * 0.25) * (1 + this.spawnRateOverflow * SPAWN_OVERFLOW_HP_COEFF) * (this.rushState === 'active' ? RUSH_HP_MULT : 1);
 
       const tierDmgMult = 1 + (D - 1) * 0.11;
       const survivalExtra = Math.max(0, survivalPowerMult(p) - 1);
@@ -1152,8 +1166,27 @@
         const spawnedThisWindow = this.totalSpawned - this.spawnedAtCheckpoint;
         const killsThisWindow = this.kills - this.killsAtCheckpoint;
         const killRate = spawnedThisWindow > 0 ? killsThisWindow / spawnedThisWindow : 1;
+
+        // RUSH_DURATION is sized so an active rush always concludes exactly
+        // on this window boundary (see its definition) - a still-'active'
+        // state here means this window fully contained that rush's burst.
+        const rushConcluding = this.rushState === 'active';
         if (killRate <= 0.5) this.difficulty = Math.max(1, this.difficulty - 1);
-        else if (killRate > 0.7) this.difficulty += 1;
+        else if (killRate > 0.7) {
+          this.difficulty += (rushConcluding && killRate > RUSH_KILL_RATE_THRESHOLD) ? RUSH_DIFFICULTY_BONUS : 1;
+        }
+
+        if (rushConcluding) {
+          this.rushState = 'idle';
+          // Payoff: heal RUSH_HEAL_FRAC of maxHp and sweep every gem
+          // currently on screen straight into XP, rewarding the player for
+          // having just weathered the burst instead of interrupting play
+          // with forced level-up picks.
+          this.player.hp = Math.min(this.player.maxHp, this.player.hp + this.player.maxHp * RUSH_HEAL_FRAC);
+          for (const g of this.gems) this.player.gainXp(g.value);
+          this.gems.length = 0;
+        }
+
         // Rush eligibility rides along the same 50s window/checkpoint as
         // the difficulty rubber-band above, rather than a separate
         // dedicated tracker - if this window's kill rate alone cleared
@@ -1161,6 +1194,9 @@
         // multi-window "sustained" streak needed). rushWindowCooldown
         // additionally caps how often that can actually fire, so a
         // consistently high kill rate doesn't trigger a rush every window.
+        // Decrementing it unconditionally (even on a rushConcluding window)
+        // keeps the "once every RUSH_WINDOW_COOLDOWN windows" cadence
+        // accurate regardless of how that window was otherwise spent.
         if (this.rushWindowCooldown > 0) this.rushWindowCooldown--;
         if (this.rushState === 'idle' && this.rushWindowCooldown <= 0 && killRate > RUSH_KILL_RATE_THRESHOLD) {
           this.rushState = 'warning';
@@ -1171,8 +1207,11 @@
         this.killsAtCheckpoint = this.kills;
       }
 
-      // Rush state machine timers, independent of the 50s check above -
-      // once triggered, warning/active just count down on their own.
+      // Rush's warning -> active transition, independent of the 50s check
+      // above. active -> idle is instead handled inside that check (see
+      // rushConcluding), so this only ever decrements rushTimer while
+      // 'active' for the HUD's "残りN秒" display - it never itself ends the
+      // rush, avoiding any drift between two independent countdowns.
       if (this.rushState === 'warning') {
         this.rushTimer -= dt;
         if (this.rushTimer <= 0) {
@@ -1180,17 +1219,7 @@
           this.rushTimer = RUSH_DURATION;
         }
       } else if (this.rushState === 'active') {
-        this.rushTimer -= dt;
-        if (this.rushTimer <= 0) {
-          this.rushState = 'idle';
-          // Payoff: heal RUSH_HEAL_FRAC of maxHp and sweep every gem
-          // currently on screen straight into XP, rewarding the player for
-          // having just weathered the burst instead of interrupting play
-          // with forced level-up picks.
-          this.player.hp = Math.min(this.player.maxHp, this.player.hp + this.player.maxHp * RUSH_HEAL_FRAC);
-          for (const g of this.gems) this.player.gainXp(g.value);
-          this.gems.length = 0;
-        }
+        this.rushTimer = Math.max(0, this.rushTimer - dt);
       }
 
       // movement
