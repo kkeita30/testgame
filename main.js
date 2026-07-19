@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.32.0';
+  const GAME_VERSION = '1.33.0';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -496,6 +496,18 @@
   const SPAWN_RATE_MIN = 1;
   const SPAWN_RATE_MAX = 5;
 
+  // Once the raw spawn cadence (difficulty + crowd investment) wants to
+  // exceed SPAWN_RATE_MAX, that excess no longer buys a faster spawn rate
+  // - instead it buys tougher enemies, so crowd investment (pierce/chain
+  // today, whatever gets added later) keeps having *some* cost even past
+  // the point where it can't spawn more enemies per second any faster.
+  // Scales with however far past the ceiling the raw rate would have
+  // gone (e.g. raw rate at 2x the ceiling = 1.0 overflow = +30% HP), so a
+  // future crowd-clear upgrade that pushes players past the ceiling even
+  // sooner automatically taxes itself via this same knob, with no extra
+  // tuning required per upgrade.
+  const SPAWN_OVERFLOW_HP_COEFF = 0.3;
+
   // Hard ceiling on enemies simultaneously alive. Independent of the
   // spawn-rate cap above - even a bounded spawn rate can still pile up an
   // unbounded total if the player can't kill enemies as fast as they
@@ -914,6 +926,12 @@
       this.killsAtCheckpoint = 0;
 
       this.bossSpawnTimer = BOSS_SPAWN_INTERVAL;
+
+      // How far past SPAWN_RATE_MAX the raw spawn cadence would have gone
+      // this tick, recomputed every spawn-pacing check (see update()) and
+      // read by spawnEnemy() to convert that excess into extra enemy HP
+      // instead. 0 until the cap is actually being pushed against.
+      this.spawnRateOverflow = 0;
     }
 
     onLevelUp() {
@@ -1011,7 +1029,10 @@
       // just feel stronger, not get mostly cancelled out by tougher enemies.
       const tierHpMult = 1 + (D - 1) * 0.14;
       const offenseExtra = Math.max(0, offensePowerMult(p) - 1);
-      const hpMult = tierHpMult * (1 + offenseExtra * 0.25);
+      // Once spawn pacing is pinned at SPAWN_RATE_MAX, further crowd
+      // investment can't buy a faster spawn rate anymore - it buys
+      // tougher enemies instead (see SPAWN_OVERFLOW_HP_COEFF).
+      const hpMult = tierHpMult * (1 + offenseExtra * 0.25) * (1 + this.spawnRateOverflow * SPAWN_OVERFLOW_HP_COEFF);
 
       const tierDmgMult = 1 + (D - 1) * 0.11;
       const survivalExtra = Math.max(0, survivalPowerMult(p) - 1);
@@ -1144,6 +1165,10 @@
       const rawEventsPerSec = (1 + crowdExtra * 0.5) * ENEMY_SPAWN_RATE_MULT / tierInterval;
       const eventsPerSec = clamp(rawEventsPerSec, SPAWN_RATE_MIN, SPAWN_RATE_MAX);
       const curInterval = 1 / eventsPerSec;
+      // How much spawn-pace demand the ceiling is currently swallowing -
+      // spawnEnemy() converts this into extra HP instead (see
+      // SPAWN_OVERFLOW_HP_COEFF).
+      this.spawnRateOverflow = Math.max(0, rawEventsPerSec / SPAWN_RATE_MAX - 1);
       if (this.spawnTimer <= 0) {
         this.spawnTimer = curInterval;
         if (this.enemies.length < MAX_ALIVE_ENEMIES) this.spawnEnemy();
