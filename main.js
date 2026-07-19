@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.27.0';
+  const GAME_VERSION = '1.28.0';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -462,15 +462,27 @@
     }
   }
 
+  // Overall enemy spawn throughput multiplier: raises how often/how many
+  // enemies spawn (see curInterval below) without changing the total HP
+  // the player needs to burn through per second - individual enemy HP in
+  // ENEMY_TYPES is scaled down by this same factor to compensate, and the
+  // gem drop chance (BASE_GEM_DROP_CHANCE below) is divided by it too, so
+  // total XP income per second doesn't just inflate for free alongside the
+  // extra kills. Introduced after spawn density felt too sparse in some
+  // sessions.
+  const ENEMY_SPAWN_RATE_MULT = 1.5;
+
   const ENEMY_TYPES = {
-    grunt:  { hp: 18,  speed: 78,  radius: 13, color: '#ff5a5a', dmg: 8,  xp: 3,  score: 1 },
-    fast:   { hp: 10,  speed: 140, radius: 10, color: '#ffd23a', dmg: 6,  xp: 4,  score: 1 },
-    tank:   { hp: 70,  speed: 48,  radius: 20, color: '#a15aff', dmg: 14, xp: 10, score: 2 },
+    // HP values are the pre-v1.28.0 baseline divided by ENEMY_SPAWN_RATE_MULT
+    // (18/10/70/500 -> 12/7/47/333), rounded.
+    grunt:  { hp: 12,  speed: 78,  radius: 13, color: '#ff5a5a', dmg: 8,  xp: 3,  score: 1 },
+    fast:   { hp: 7,   speed: 140, radius: 10, color: '#ffd23a', dmg: 6,  xp: 4,  score: 1 },
+    tank:   { hp: 47,  speed: 48,  radius: 20, color: '#a15aff', dmg: 14, xp: 10, score: 2 },
     // Deliberately huge single-target HP pool: a pure multishot build
     // spreads its damage across many enemies and struggles to burn this
     // down alone, so surviving bosses well pushes toward also investing in
     // single-target-friendly upgrades (raw damage, explosion/chain).
-    boss:   { hp: 500, speed: 35,  radius: 32, color: '#c81e3a', dmg: 20, xp: 50, score: 5 },
+    boss:   { hp: 333, speed: 35,  radius: 32, color: '#c81e3a', dmg: 20, xp: 50, score: 5 },
   };
 
   // Bosses don't roll into the normal per-spawn type dice - they arrive on
@@ -571,10 +583,12 @@
   const GEM_CAP = 60;
   // Gem drops are probabilistic rather than guaranteed: a kill has a
   // BASE_GEM_DROP_CHANCE chance of dropping a gem at all, worth GEM_VALUE_MULT
-  // times the enemy's xpValue when it does. Chosen so a build that never
-  // pushes crowdExtra above 0 sees the same expected XP/kill as the old
-  // always-drop-at-face-value scheme (0.5 x 2 = 1x).
-  const BASE_GEM_DROP_CHANCE = 0.5;
+  // times the enemy's xpValue when it does. The 0.5 base was chosen so a
+  // build that never pushes crowdExtra above 0 saw the same expected
+  // XP/kill as the old always-drop-at-face-value scheme (0.5 x 2 = 1x);
+  // now divided by ENEMY_SPAWN_RATE_MULT so that baseline no longer shifts
+  // just because there are 1.5x as many kills available per second.
+  const BASE_GEM_DROP_CHANCE = 0.5 / ENEMY_SPAWN_RATE_MULT;
   const GEM_VALUE_MULT = 2;
 
   class Gem {
@@ -1061,7 +1075,7 @@
       // Multishot doesn't count here - it's the standard weapon's innate
       // effect now, not a chosen investment (see crowdPowerMult).
       const crowdExtra = Math.max(0, crowdPowerMult(p) - 1);
-      const curInterval = Math.max(0.15, tierInterval / (1 + crowdExtra * 0.5));
+      const curInterval = Math.max(0.15, tierInterval / (1 + crowdExtra * 0.5) / ENEMY_SPAWN_RATE_MULT);
       if (this.spawnTimer <= 0) {
         this.spawnTimer = curInterval;
         const tierBurst = 1 + Math.floor((D - 1) / 5);
