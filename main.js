@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.35.5';
+  const GAME_VERSION = '1.35.6';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -565,9 +565,11 @@
   const RUSH_HP_MULT = 1.5; // multiplies HP of enemies spawned during an active rush
   const RUSH_HEAL_FRAC = 0.5; // fraction of maxHp healed on rush end
   // Difficulty step size on the window a rush concludes in, in place of the
-  // usual +1, if that window's kill rate also cleared RUSH_KILL_RATE_THRESHOLD
-  // - clearing a rush cleanly earns a bigger difficulty jump than a normal window.
-  const RUSH_DIFFICULTY_BONUS = 2;
+  // usual step, if that window's kill rate also cleared RUSH_KILL_RATE_THRESHOLD
+  // (see DIFFICULTY_STEP_HIGH_KILL_RATE below, whose non-rush tier this sits
+  // on top of) - clearing a rush cleanly earns the single biggest difficulty
+  // jump in the game.
+  const RUSH_DIFFICULTY_BONUS = 3;
   // Minimum difficulty-check windows (50s each) between two rush triggers.
   // Without this, a player clearing 90%+ every window gets a rush every
   // single window, which stops reading as a special event - see §6-6.
@@ -582,6 +584,14 @@
   // climb move a bit faster, now that the XP curve (v1.9.0) caps out and
   // stops slowing leveling down at high player levels.
   const DIFFICULTY_CHECK_INTERVAL = 50;
+
+  // Kill-rate rubber-band step sizes for the two "extreme" tiers layered on
+  // top of the original +-1/hold three-band system (see the cascade in
+  // update()): coasting at RUSH_KILL_RATE_THRESHOLD (90%) or above jumps by
+  // more than the normal +1 even outside a rush, and cratering to 30% or
+  // below backs off by more than the normal -1 in a single window.
+  const DIFFICULTY_STEP_HIGH_KILL_RATE = 2; // killRate >= RUSH_KILL_RATE_THRESHOLD, non-rush window
+  const DIFFICULTY_STEP_LOW_KILL_RATE = 2; // killRate <= 0.3 (magnitude subtracted)
 
   // These three convert "how far past baseline has the player pushed this
   // stat" into a multiplier (1 = no upgrades in that direction yet). Difficulty
@@ -1156,10 +1166,15 @@
       // Kill-rate rubber-band, checked once per DIFFICULTY_CHECK_INTERVAL
       // window: a single discrete "difficulty" tier replaced the old
       // continuous time-based curves so difficulty reads as legible steps.
-      // This is the step rule - normally +1 per window, but if the player
-      // killed 70% or less of what spawned last window the tier holds
-      // instead of advancing, and at 50% or less it steps back down
-      // (never below 1).
+      // Step rule (killRate this window -> difficulty delta, never below 1):
+      //   >= 90% (rush-concluding window): +RUSH_DIFFICULTY_BONUS (3)
+      //   >= 90% (normal window):          +DIFFICULTY_STEP_HIGH_KILL_RATE (2)
+      //   >= 70% (and < 90%):              +1
+      //   > 50% and < 70%:                 hold
+      //   <= 50% (and > 30%):              -1
+      //   <= 30%:                          -DIFFICULTY_STEP_LOW_KILL_RATE (2)
+      // The 70%/50% band is the original three-tier rubber-band; the >=90%
+      // and <=30% tiers layer extra feedback at the extremes on top of it.
       this.levelCheckTimer -= dt;
       if (this.levelCheckTimer <= 0) {
         this.levelCheckTimer += DIFFICULTY_CHECK_INTERVAL;
@@ -1171,10 +1186,16 @@
         // on this window boundary (see its definition) - a still-'active'
         // state here means this window fully contained that rush's burst.
         const rushConcluding = this.rushState === 'active';
-        if (killRate <= 0.5) this.difficulty = Math.max(1, this.difficulty - 1);
-        else if (killRate > 0.7) {
-          this.difficulty += (rushConcluding && killRate > RUSH_KILL_RATE_THRESHOLD) ? RUSH_DIFFICULTY_BONUS : 1;
+        if (killRate >= RUSH_KILL_RATE_THRESHOLD) {
+          this.difficulty += rushConcluding ? RUSH_DIFFICULTY_BONUS : DIFFICULTY_STEP_HIGH_KILL_RATE;
+        } else if (killRate >= 0.7) {
+          this.difficulty += 1;
+        } else if (killRate <= 0.3) {
+          this.difficulty = Math.max(1, this.difficulty - DIFFICULTY_STEP_LOW_KILL_RATE);
+        } else if (killRate <= 0.5) {
+          this.difficulty = Math.max(1, this.difficulty - 1);
         }
+        // else: 0.5 < killRate < 0.7 -> hold, no change
 
         if (rushConcluding) {
           this.rushState = 'idle';
