@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.35.7';
+  const GAME_VERSION = '1.35.8';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -1097,7 +1097,14 @@
 
       const tierDmgMult = 1 + (D - 1) * 0.055;
       const survivalExtra = Math.max(0, survivalPowerMult(p) - 1);
-      const dmgMult = tierDmgMult * (1 + survivalExtra * 0.7);
+      // 0.7 -> 0.5 (v1.35.8): maxHp is already pre-damped to half weight
+      // inside survivalExtra (see survivalPowerMult), so at 0.7 here, doubling
+      // maxHp alone still fed back as a net +35% enemy dmg - meaningfully
+      // harsher than doubling damage/atkspeed feeding back as only +25% extra
+      // enemy HP via the symmetric offenseExtra * 0.25 above. 0.5 brings
+      // maxHp's net feedback (0.5 pre-damping * 0.5 here = 0.25) in line with
+      // that offense-side rate instead of penalizing HP investment more.
+      const dmgMult = tierDmgMult * (1 + survivalExtra * 0.5);
 
       // A spawn event places def.burst enemies of the rolled type together
       // as a loose cluster (same general direction, small angular jitter)
