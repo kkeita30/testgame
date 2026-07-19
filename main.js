@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.30.0';
+  const GAME_VERSION = '1.31.0';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -549,14 +549,19 @@
   }
 
   // The weapon can only target enemies within this radius. Tied to the
-  // current viewport (half the smaller of W/H, the player being fixed at
+  // current viewport (half the LARGER of W/H, the player being fixed at
   // screen center - see camera code) rather than a fixed pixel value, so
-  // enemies are never shot down before they've actually become visible on
-  // screen, regardless of device/orientation. A circle of this radius is
-  // fully inscribed in the W x H viewport, guaranteeing "in range" implies
-  // "on screen" in every direction, not just straight up/down/left/right.
+  // it scales sensibly across devices/orientations. Basing it on the
+  // longer side (with a small deliberate overshoot) rather than the
+  // shorter one keeps engagement range generous - a circle inscribed in
+  // the shorter side alone would be needlessly short on wide/tall aspect
+  // ratios. The tradeoff is that along the shorter axis, kills can now
+  // happen slightly beyond that edge of the screen - acceptable since it's
+  // only a modest amount, not the effectively-unbounded range from before
+  // this whole range concept existed.
+  const WEAPON_RANGE_OVERSHOOT = 1.1;
   function weaponRange(p) {
-    return Math.min(W, H) * 0.5 * p.rangeMult;
+    return Math.max(W, H) * 0.5 * WEAPON_RANGE_OVERSHOOT * p.rangeMult;
   }
 
   class Enemy {
