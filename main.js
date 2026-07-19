@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.28.0';
+  const GAME_VERSION = '1.29.0';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -381,6 +381,10 @@
       this.pierce = 0;
       this.pickupRadius = 70;
       this.regen = 0;
+      // Multiplier on the weapon's firing range (see weaponRange() below).
+      // 1 = the default screen-relative range; left open for a future
+      // range upgrade to multiply.
+      this.rangeMult = 1;
 
       // Bullet effects: 0 means not yet acquired. First pick sets it to 1
       // (activates the effect); further picks raise the level (stronger
@@ -533,6 +537,17 @@
     const hpExtra = Math.max(0, p.maxHp / BASELINE_STATS.maxHp - 1) * 0.5;
     const base = 1 + hpExtra;
     return base * (1 + p.slowLevel * 0.15) * (1 + p.interceptLevel * 0.15);
+  }
+
+  // The weapon can only target enemies within this radius. Tied to the
+  // current viewport (half the smaller of W/H, the player being fixed at
+  // screen center - see camera code) rather than a fixed pixel value, so
+  // enemies are never shot down before they've actually become visible on
+  // screen, regardless of device/orientation. A circle of this radius is
+  // fully inscribed in the W x H viewport, guaranteeing "in range" implies
+  // "on screen" in every direction, not just straight up/down/left/right.
+  function weaponRange(p) {
+    return Math.min(W, H) * 0.5 * p.rangeMult;
   }
 
   class Enemy {
@@ -987,9 +1002,14 @@
       if (p.atkTimer > 0) return;
       if (this.enemies.length === 0) return;
 
-      // find nearest N enemies
+      // find nearest N enemies within weapon range - out-of-range enemies
+      // (typically still off-screen) are ignored entirely rather than
+      // being auto-targeted, so kills happen where the player can actually
+      // see them.
+      const range2 = weaponRange(p) ** 2;
       const sorted = this.enemies
         .map(e => ({ e, d: dist2(e.x, e.y, p.x, p.y) }))
+        .filter(o => o.d <= range2)
         .sort((a, b) => a.d - b.d)
         .slice(0, Math.max(1, p.projCount));
 
