@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.35.3';
+  const GAME_VERSION = '1.35.4';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -556,6 +556,10 @@
   const RUSH_BURST_MULT = 2; // multiplies ENEMY_TYPES burst, not spawn-event frequency
   const RUSH_SPEED_MULT = 1.2;
   const RUSH_HEAL_FRAC = 0.5; // fraction of maxHp healed on rush end
+  // Minimum difficulty-check windows (50s each) between two rush triggers.
+  // Without this, a player clearing 90%+ every window gets a rush every
+  // single window, which stops reading as a special event - see §6-6.
+  const RUSH_WINDOW_COOLDOWN = 3;
 
   // Player stat values at game start, used as the "no upgrades taken" yardstick
   // for the build-aware difficulty scaling below.
@@ -953,6 +957,11 @@
       // rushTimer counts down within whichever of warning/active is current.
       this.rushState = 'idle';
       this.rushTimer = 0;
+      // Counts down once per difficulty-check window (see update()); a
+      // trigger is only allowed while this is 0, and resets it to
+      // RUSH_WINDOW_COOLDOWN on trigger, so back-to-back windows can't
+      // both fire a rush even if killRate clears the threshold both times.
+      this.rushWindowCooldown = 0;
     }
 
     onLevelUp() {
@@ -1149,10 +1158,14 @@
         // the difficulty rubber-band above, rather than a separate
         // dedicated tracker - if this window's kill rate alone cleared
         // RUSH_KILL_RATE_THRESHOLD, that's sufficient to trigger (no
-        // multi-window "sustained" streak needed).
-        if (this.rushState === 'idle' && killRate > RUSH_KILL_RATE_THRESHOLD) {
+        // multi-window "sustained" streak needed). rushWindowCooldown
+        // additionally caps how often that can actually fire, so a
+        // consistently high kill rate doesn't trigger a rush every window.
+        if (this.rushWindowCooldown > 0) this.rushWindowCooldown--;
+        if (this.rushState === 'idle' && this.rushWindowCooldown <= 0 && killRate > RUSH_KILL_RATE_THRESHOLD) {
           this.rushState = 'warning';
           this.rushTimer = RUSH_WARNING_DURATION;
+          this.rushWindowCooldown = RUSH_WINDOW_COOLDOWN;
         }
         this.spawnedAtCheckpoint = this.totalSpawned;
         this.killsAtCheckpoint = this.kills;
