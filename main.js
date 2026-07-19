@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.35.2';
+  const GAME_VERSION = '1.35.3';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -547,15 +547,15 @@
   // a single 50s difficulty-check window's spawns triggers a short warning
   // countdown, then a burst of extra enemies deliberately exceeding the
   // normal spawn-rate ceiling (via burst count rather than event frequency
-  // - see spawnEnemy() and §6-3's SPAWN_RATE_MAX), followed by a
-  // guaranteed double level-up as the payoff. MAX_ALIVE_ENEMIES still
+  // - see spawnEnemy() and §6-3's SPAWN_RATE_MAX), followed by an instant
+  // HP heal + full gem collection as the payoff. MAX_ALIVE_ENEMIES still
   // applies during a rush - only the rate ceiling is deliberately bypassed.
   const RUSH_KILL_RATE_THRESHOLD = 0.9;
   const RUSH_WARNING_DURATION = 10; // "ラッシュまであとN秒" countdown before it starts
   const RUSH_DURATION = 20;
   const RUSH_BURST_MULT = 2; // multiplies ENEMY_TYPES burst, not spawn-event frequency
   const RUSH_SPEED_MULT = 1.2;
-  const RUSH_LEVEL_UPS = 2; // forced level-ups on rush end, independent of current XP
+  const RUSH_HEAL_FRAC = 0.5; // fraction of maxHp healed on rush end
 
   // Player stat values at game start, used as the "no upgrades taken" yardstick
   // for the build-aware difficulty scaling below.
@@ -953,10 +953,6 @@
       // rushTimer counts down within whichever of warning/active is current.
       this.rushState = 'idle';
       this.rushTimer = 0;
-      // Forced level-ups still queued from a just-finished rush - handled
-      // one at a time via pickUpgrade() chaining straight into the next
-      // onLevelUp() instead of returning control to the player in between.
-      this.pendingForcedLevelUps = 0;
     }
 
     onLevelUp() {
@@ -1007,17 +1003,6 @@
       up.apply(this.player);
       levelupScreen.classList.add('hidden');
       this.levelingUp = false;
-      // A rush's guaranteed level-ups (§ RUSH_LEVEL_UPS) chain straight
-      // into the next one instead of actually resuming play in between -
-      // the player still gets to pick each one, just back to back.
-      if (this.pendingForcedLevelUps > 0) {
-        this.pendingForcedLevelUps--;
-        this.player.level++;
-        this.player.xpNext = xpNextForLevel(this.player.level);
-        this.player.applyWeaponInnateEffect();
-        this.onLevelUp();
-        return;
-      }
       // Grant a brief invulnerability window instead of gating movement
       // behind a "tap to resume" screen (see RESUME_INVULN_DURATION).
       this.player.invulnTimer = Math.max(this.player.invulnTimer, RESUME_INVULN_DURATION);
@@ -1185,15 +1170,13 @@
         this.rushTimer -= dt;
         if (this.rushTimer <= 0) {
           this.rushState = 'idle';
-          // Guaranteed payoff: RUSH_LEVEL_UPS level-ups regardless of
-          // current XP. Only the first is triggered directly here -
-          // pickUpgrade() chains straight into the next one instead of
-          // handing control back to the player in between.
-          this.pendingForcedLevelUps += RUSH_LEVEL_UPS - 1;
-          this.player.level++;
-          this.player.xpNext = xpNextForLevel(this.player.level);
-          this.player.applyWeaponInnateEffect();
-          this.onLevelUp();
+          // Payoff: heal RUSH_HEAL_FRAC of maxHp and sweep every gem
+          // currently on screen straight into XP, rewarding the player for
+          // having just weathered the burst instead of interrupting play
+          // with forced level-up picks.
+          this.player.hp = Math.min(this.player.maxHp, this.player.hp + this.player.maxHp * RUSH_HEAL_FRAC);
+          for (const g of this.gems) this.player.gainXp(g.value);
+          this.gems.length = 0;
         }
       }
 
