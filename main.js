@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.35.0';
+  const GAME_VERSION = '1.35.1';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -771,16 +771,6 @@
       desc: 'HP自然回復 +2 / 最大HP -15%',
       apply: p => {
         p.regen += 2;
-        p.maxHp = Math.max(STAT_LIMITS.minMaxHp, Math.round(p.maxHp * 0.85));
-        p.hp = Math.min(p.hp, p.maxHp);
-      },
-    },
-    {
-      id: 'trade-speed',
-      title: '俊足の代償',
-      desc: '移動速度 +30% / 最大HP -15%',
-      apply: p => {
-        p.speedMult *= 1.3;
         p.maxHp = Math.max(STAT_LIMITS.minMaxHp, Math.round(p.maxHp * 0.85));
         p.hp = Math.min(p.hp, p.maxHp);
       },
