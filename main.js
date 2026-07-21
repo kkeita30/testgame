@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.6';
+  const GAME_VERSION = '1.36.7';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -929,7 +929,12 @@
   // directly (there's no stack count to raise instead). Detonating a
   // bombified enemy can itself kill neighboring bombified enemies, chaining
   // into further detonations - see the resolution loop in update().
-  const BOMBIFY_DURATION = 5;
+  // Duration cut 5s -> 3s (v1.36.7): re-hitting the same enemy still
+  // refreshes the timer without limit, but the shorter window means a
+  // build has to keep focusing fire on one enemy to have a real chance of
+  // killing it while still bombified, rather than tagging a bunch of
+  // enemies once and letting the crowd's natural kill pace trigger it.
+  const BOMBIFY_DURATION = 3;
   const BOMBIFY_RADIUS = 180;
   function bombifyDmgPctForLevel(level) { return 0.3 + 0.1 * (level - 1); }
 
@@ -1015,6 +1020,12 @@
       maxLevel: 5,
       getLevel: p => p.bombifyLevel,
       levelUp: p => { p.bombifyLevel++; },
+      // Gated behind 爆発 being fully ranked up (v1.36.7) - on its own,
+      // stacking with poison/frenzy/explosion made it too strong too early.
+      // Requiring the player to already have committed to explosion's own
+      // maxLevel first pushes it later into a run and onto builds that
+      // have already invested in AoE.
+      available: p => p.explosionLevel >= 5,
       introDesc: `着弾した敵を${BOMBIFY_DURATION}秒間爆弾化する。生存中は特に効果はないが、爆弾化状態のまま倒された敵は、その敵自身の最大HPの${Math.round(bombifyDmgPctForLevel(1) * 100)}%を周囲(半径${BOMBIFY_RADIUS}px)の他の敵に爆発ダメージとして与える。重ね掛けはされず、再度攻撃が当たると持続時間が最大まで更新される`,
       upgradeDesc: level => `爆弾化ダメージが増加する(敵自身の最大HPの${Math.round(bombifyDmgPctForLevel(level) * 100)}% → ${Math.round(bombifyDmgPctForLevel(level + 1) * 100)}%)`,
     },
@@ -1117,7 +1128,12 @@
     onLevelUp() {
       this.levelingUp = true;
       const picks = [];
-      const notMaxedEffects = BULLET_EFFECTS.filter(eff => eff.getLevel(this.player) < eff.maxLevel);
+      // `available` is the same opt-in gate used by UPGRADE_POOL/
+      // TRADEOFF_POOL below - most BULLET_EFFECTS have no such prerequisite,
+      // only bombify does (requires explosion maxed - see its definition).
+      const notMaxedEffects = BULLET_EFFECTS.filter(eff =>
+        eff.getLevel(this.player) < eff.maxLevel && (!eff.available || eff.available(this.player))
+      );
       // Most UPGRADE_POOL/TRADEOFF_POOL entries have no cap and stay useful
       // forever, so `available` is opt-in (defaults to always-true) rather
       // than every entry needing to declare one - only atkspeed/trade-atkspeed
