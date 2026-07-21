@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.0';
+  const GAME_VERSION = '1.36.1';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -409,6 +409,7 @@
       this.chainLevel = 0;
       this.slowLevel = 0;
       this.interceptLevel = 0;
+      this.poisonLevel = 0;
 
       // Double-tap special ability, defined per character (§ CHARACTERS).
       // null until a character with one is applied below.
@@ -660,6 +661,12 @@
       this.hitFlash = 0;
       this.contactCd = 0;
       this.slowTimer = 0;
+      // Poison (v1.36.1): poisonTimer counts down from POISON_DURATION and
+      // is never refreshed/extended by later hits - only poisonStacks goes
+      // up (capped at POISON_MAX_STACKS), raising the tick damage instead.
+      // Both clear together once poisonTimer reaches 0 (see update()).
+      this.poisonTimer = 0;
+      this.poisonStacks = 0;
       // Set by the emergency-bomb special so its mass-kill burst is exempt
       // from GEM_CAP below - the whole point of that ability is stockpiling
       // gems for one big level-up burst, which the cap would otherwise gut.
@@ -668,7 +675,7 @@
   }
 
   class Projectile {
-    constructor(x, y, vx, vy, damage, pierce, radius, explosionRadius, chainHops, slowDuration) {
+    constructor(x, y, vx, vy, damage, pierce, radius, explosionRadius, chainHops, slowDuration, poisons) {
       this.x = x; this.y = y;
       this.vx = vx; this.vy = vy;
       this.damage = damage;
@@ -679,6 +686,7 @@
       this.explosionRadius = explosionRadius || 0;
       this.chainHops = chainHops || 0;
       this.slowDuration = slowDuration || 0;
+      this.poisons = poisons || false;
     }
   }
 
@@ -836,9 +844,27 @@
   // each active status gets a small dot drawn above the enemy instead - see
   // draw(). Keyed by status name so future statuses (e.g. poison) just add
   // an entry here and a condition in draw() without touching enemy color.
-  const STATUS_DOT_COLORS = { slow: '#7ec8ff' };
+  const STATUS_DOT_COLORS = { slow: '#7ec8ff', poison: '#39d353' };
   function explosionRadiusForLevel(level) { return 50 + 20 * (level - 1); }
   function slowDurationForLevel(level) { return 1.0 + 0.5 * (level - 1); }
+
+  // Poison (v1.36.1): a fixed-length damage-over-time status, independent
+  // of the player's own damage stat - tick damage is a percent of the
+  // POISONED ENEMY's own maxHp, so it stays meaningful against both fragile
+  // swarm enemies and huge single-target HP pools (bosses) alike, the same
+  // niche explosion/chain fill for AoE/crowd (§5's boss design note).
+  // Re-hitting an already-poisoned enemy adds a stack (more tick damage)
+  // but does NOT restart POISON_DURATION - only the first hit while unpoisoned
+  // sets that timer, so stacking rewards attack speed without also letting
+  // rapid hits keep an enemy poisoned indefinitely.
+  const POISON_DURATION = 5;
+  // Capped rather than unbounded: an uncapped stack count would both let
+  // DPS runaway on any fast-firing build (each stack adds a further
+  // %-of-maxHp/sec tick) and, since stacks are shown as one dot each (see
+  // draw()), clutter the screen with dots well past the point of being
+  // readable at a glance.
+  const POISON_MAX_STACKS = 5;
+  function poisonDmgPctForLevel(level) { return 0.03 + 0.01 * (level - 1); }
 
   // Intercept: a passive aura around the player, independent of any bullet
   // hit, that slows enemies which get too close. Level raises how many
@@ -897,6 +923,15 @@
       levelUp: p => { p.pierce++; },
       introDesc: '弾が敵を貫通するようになる',
       upgradeDesc: level => `貫通数が増加する(${level} → ${level + 1})`,
+    },
+    {
+      id: 'poison',
+      name: '猛毒',
+      maxLevel: 5,
+      getLevel: p => p.poisonLevel,
+      levelUp: p => { p.poisonLevel++; },
+      introDesc: `着弾した敵を${POISON_DURATION}秒間の毒状態にし、敵自身の最大HPの${Math.round(poisonDmgPctForLevel(1) * 100)}%を毎秒毒ダメージとして与えるようになる(毒状態中に再度攻撃が当たると重ね掛けされ、毒ダメージが増加する。持続時間は延長されない)`,
+      upgradeDesc: level => `毒ダメージが増加する(最大HPの${Math.round(poisonDmgPctForLevel(level) * 100)}%/秒 → ${Math.round(poisonDmgPctForLevel(level + 1) * 100)}%/秒、1スタックあたり)`,
     },
   ];
 
@@ -1163,6 +1198,7 @@
       const explosionRadius = p.explosionLevel > 0 ? explosionRadiusForLevel(p.explosionLevel) : 0;
       const chainHops = p.chainLevel;
       const slowDuration = p.slowLevel > 0 ? slowDurationForLevel(p.slowLevel) : 0;
+      const poisons = p.poisonLevel > 0;
       // Some specials (e.g. speed-type's overdrive) include a timed damage
       // buff, declared on the special itself (buffDamageMult) rather than
       // hardcoded here. Baked into the shot at fire time, same as p.damage
@@ -1176,7 +1212,7 @@
         const ang = Math.atan2(target.y - p.y, target.x - p.x) + rand(-0.05, 0.05);
         const vx = Math.cos(ang) * p.projSpeed;
         const vy = Math.sin(ang) * p.projSpeed;
-        this.projectiles.push(new Projectile(p.x, p.y, vx, vy, shotDamage, p.pierce, 5, explosionRadius, chainHops, slowDuration));
+        this.projectiles.push(new Projectile(p.x, p.y, vx, vy, shotDamage, p.pierce, 5, explosionRadius, chainHops, slowDuration, poisons));
       }
     }
 
@@ -1358,6 +1394,16 @@
         if (e.hitFlash > 0) e.hitFlash -= dt;
         if (e.contactCd > 0) e.contactCd -= dt;
         if (e.slowTimer > 0) e.slowTimer -= dt;
+        if (e.poisonTimer > 0) {
+          // Tick damage is a percent of the enemy's OWN maxHp (see
+          // poisonDmgPctForLevel), read at the player's current poison
+          // level rather than snapshotted at the hit that applied/stacked
+          // it - ranking up poison immediately strengthens ticks already in
+          // progress, same spirit as regen using the player's current rate.
+          e.hp -= e.maxHp * poisonDmgPctForLevel(p.poisonLevel) * e.poisonStacks * dt;
+          e.poisonTimer -= dt;
+          if (e.poisonTimer <= 0) e.poisonStacks = 0;
+        }
 
         if (d < e.radius + p.radius && e.contactCd <= 0) {
           // Slowed enemies also hit softer - the status should meaningfully
@@ -1391,6 +1437,10 @@
             e.hitFlash = 0.12;
             proj.hitSet.add(e);
             if (proj.slowDuration > 0) e.slowTimer = Math.max(e.slowTimer, proj.slowDuration);
+            if (proj.poisons) {
+              if (e.poisonTimer <= 0) { e.poisonTimer = POISON_DURATION; e.poisonStacks = 1; }
+              else e.poisonStacks = Math.min(POISON_MAX_STACKS, e.poisonStacks + 1);
+            }
 
             if (proj.explosionRadius > 0) {
               for (const other of this.enemies) {
@@ -1639,6 +1689,9 @@
         // today, but the list naturally grows as more statuses are added.
         const activeStatusDots = [];
         if (e.slowTimer > 0) activeStatusDots.push(STATUS_DOT_COLORS.slow);
+        // Poison stacks: one dot per stack, so the stack count reads at a
+        // glance rather than needing a number readout.
+        for (let i = 0; i < e.poisonStacks; i++) activeStatusDots.push(STATUS_DOT_COLORS.poison);
         if (activeStatusDots.length > 0) {
           const dotRadius = 3;
           const dotSpacing = 9;
@@ -1792,6 +1845,7 @@
     if (p.slowLevel > 0) bulletLines.push(`低速 Lv.${p.slowLevel}`);
     if (p.interceptLevel > 0) bulletLines.push(`迎撃 Lv.${p.interceptLevel}`);
     if (p.pierce > 0) bulletLines.push(`貫通 Lv.${p.pierce}`);
+    if (p.poisonLevel > 0) bulletLines.push(`猛毒 Lv.${p.poisonLevel}`);
     pauseStatsEl.innerHTML = `
       <p>HP: ${Math.ceil(p.hp)} / ${p.maxHp}</p>
       <p>レベル: ${p.level}</p>
