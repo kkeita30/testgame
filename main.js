@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.13';
+  const GAME_VERSION = '1.36.14';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -175,6 +175,7 @@
   const killRateEl = document.getElementById('kill-rate');
   const specialIndicatorEl = document.getElementById('special-indicator');
   const rushAlertEl = document.getElementById('rush-alert');
+  const threatVignetteEl = document.getElementById('threat-vignette');
   const killsEl = document.getElementById('kills');
   const startScreen = document.getElementById('start-screen');
   const characterSelectScreen = document.getElementById('character-select-screen');
@@ -973,6 +974,14 @@
   const WEAKEN_DURATION = 5;
   function weakenDmgMultForLevel(level) { return 1 - (0.3 + 0.1 * (level - 1)); }
 
+  // Threat vignette: difficulty-driven enemy stats scale flexibly enough
+  // that a player can't eyeball "difficulty N means this much contact
+  // damage" - so instead of a numeric readout, warn directly whenever an
+  // enemy within THREAT_RADIUS could one-shot the player at its current
+  // effective damage (frenzy/weaken multipliers included), checked every
+  // frame in the same loop that already computes those multipliers.
+  const THREAT_RADIUS = 220;
+
   // Intercept: a passive aura around the player, independent of any bullet
   // hit, that slows enemies which get too close. Level raises how many
   // enemies it can affect at once (nearest-first); its duration piggybacks
@@ -1146,6 +1155,7 @@
       // fight is actually going.
       this.difficulty = 1;
       this.wave = 1;
+      this.threatNearby = false;
       this.levelCheckTimer = DIFFICULTY_CHECK_INTERVAL;
       this.totalSpawned = 0;
       this.spawnedAtCheckpoint = 0;
@@ -1573,6 +1583,7 @@
 
       // enemies
       const rushSpeedMult = this.rushState === 'active' ? RUSH_SPEED_MULT : 1;
+      let threatNearby = false;
       for (const e of this.enemies) {
         const d = dist(e.x, e.y, p.x, p.y) || 1;
         const frenzySpeedMult = e.frenzyTimer > 0 ? FRENZY_SPEED_MULT : 1;
@@ -1598,15 +1609,20 @@
         if (e.bombifyTimer > 0) e.bombifyTimer -= dt; // no effect while alive - see the detonation-resolution block below
         if (e.weakenTimer > 0) e.weakenTimer -= dt;
 
+        // Frenzied enemies hit harder, weakened enemies hit softer - both
+        // stack multiplicatively in the unlikely case a build applies both
+        // to the same enemy. Slow itself no longer touches damage (that's
+        // weaken's job now, split apart in v1.36.8). Computed once here so
+        // both the contact-damage check and the threat-vignette check below
+        // agree on the same effective damage value.
+        const frenzyDmgMult = e.frenzyTimer > 0 ? 1 + e.frenzyStacks * FRENZY_DMG_MULT_PER_STACK : 1;
+        const weakenDmgMult = e.weakenTimer > 0 ? weakenDmgMultForLevel(p.weakenLevel) : 1;
+        const effDmg = e.dmg * frenzyDmgMult * weakenDmgMult;
+
+        if (d < THREAT_RADIUS && effDmg >= p.hp) threatNearby = true;
+
         if (d < e.radius + p.radius && e.contactCd <= 0) {
-          // Frenzied enemies hit harder, weakened enemies hit softer - both
-          // stack multiplicatively in the unlikely case a build applies
-          // both to the same enemy. Slow itself no longer touches damage
-          // (that's weaken's job now, split apart in v1.36.8).
-          const frenzyDmgMult = e.frenzyTimer > 0 ? 1 + e.frenzyStacks * FRENZY_DMG_MULT_PER_STACK : 1;
-          const weakenDmgMult = e.weakenTimer > 0 ? weakenDmgMultForLevel(p.weakenLevel) : 1;
-          const dmg = e.dmg * frenzyDmgMult * weakenDmgMult;
-          p.takeDamage(dmg);
+          p.takeDamage(effDmg);
           // Passive hook for characters like Tank whose passive reacts to
           // being hit (e.g. reflect damage). Fires on the contact event
           // itself, not gated on invulnerability - the enemy touched the
@@ -1616,6 +1632,7 @@
           this.shakeTime = 0.15;
         }
       }
+      this.threatNearby = threatNearby;
 
       // Frenzy friendly fire: a frenzied enemy also deals its (boosted)
       // contact damage to whichever OTHER enemy it physically touches, not
@@ -1880,6 +1897,8 @@
       } else {
         rushAlertEl.classList.add('hidden');
       }
+
+      threatVignetteEl.classList.toggle('active', this.threatNearby);
     }
 
     draw() {
