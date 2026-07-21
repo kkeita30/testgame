@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.9';
+  const GAME_VERSION = '1.36.10';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -620,17 +620,24 @@
     const base = 1 + p.pierce * 0.15;
     // Chain is effectively "hit more enemies per shot", the same crowd-
     // clearing role pierce plays, so it feeds the same multiplier.
-    return base * (1 + p.chainLevel * 0.15);
+    const crowdBase = base * (1 + p.chainLevel * 0.15);
+    // Bombify (v1.36.10) is a genuine AoE payoff (a percent of the target's
+    // own maxHp splashed to every other enemy in a wide radius, with
+    // chain-reaction potential - see §4-3) even though it's not framed as a
+    // per-hit crowd-clearing tool like pierce/chain, so it feeds the same
+    // spawn-pace scaling those do rather than sitting outside it for free.
+    return crowdBase * (1 + p.bombifyLevel * 0.15);
   }
   function survivalPowerMult(p) {
     // Max HP's own contribution is dampened (only half the overshoot
     // counts) - at full weight, stacking HP mostly just fed back into
     // harder-hitting enemies and cancelled out its own survivability gain.
-    // Slow/intercept count at full weight since they reduce how often the
-    // player actually gets hit at all, not just how tanky a hit is.
+    // Slow/intercept/weaken count at full weight since they reduce how
+    // often the player actually gets hit at all, or how hard, rather than
+    // just how tanky a hit is.
     const hpExtra = Math.max(0, p.maxHp / BASELINE_STATS.maxHp - 1) * 0.5;
     const base = 1 + hpExtra;
-    return base * (1 + p.slowLevel * 0.15) * (1 + p.interceptLevel * 0.15);
+    return base * (1 + p.slowLevel * 0.15) * (1 + p.interceptLevel * 0.15) * (1 + p.weakenLevel * 0.15);
   }
 
   // The weapon can only target enemies within this radius. Tied to the
