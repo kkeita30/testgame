@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.8';
+  const GAME_VERSION = '1.36.9';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -1358,6 +1358,27 @@
       }
     }
 
+    // Applies every status effect a projectile carries (slow/poison/
+    // frenzy/bombify/weaken) to one target enemy. Shared between the
+    // primary hit and each chain hop (see update()) so the two paths can't
+    // silently drift apart as new status effects get added - chain used to
+    // only forward slow (and, via a separate check, explosion), leaving
+    // poison/frenzy/bombify/weaken unable to ever spread through it.
+    applyOnHitStatuses(proj, target) {
+      const p = this.player;
+      if (proj.slowDuration > 0) target.slowTimer = Math.max(target.slowTimer, proj.slowDuration);
+      if (proj.poisons) {
+        if (target.poisonTimer <= 0) { target.poisonTimer = POISON_DURATION; target.poisonStacks = 1; }
+        else target.poisonStacks = Math.min(poisonMaxStacksForLevel(p.poisonLevel), target.poisonStacks + 1);
+      }
+      if (proj.frenzies) {
+        if (target.frenzyTimer <= 0) { target.frenzyTimer = FRENZY_DURATION; target.frenzyStacks = 1; }
+        else target.frenzyStacks = Math.min(frenzyMaxStacksForLevel(p.frenzyLevel), target.frenzyStacks + 1);
+      }
+      if (proj.bombifies) target.bombifyTimer = BOMBIFY_DURATION; // no stacking - just (re)starts at full duration
+      if (proj.weakens) target.weakenTimer = WEAKEN_DURATION; // no stacking - just (re)starts at full duration
+    }
+
     update(dt) {
       if (this.over || this.levelingUp || paused) return;
       this.time += dt;
@@ -1612,17 +1633,7 @@
             e.hp -= proj.damage;
             e.hitFlash = 0.12;
             proj.hitSet.add(e);
-            if (proj.slowDuration > 0) e.slowTimer = Math.max(e.slowTimer, proj.slowDuration);
-            if (proj.poisons) {
-              if (e.poisonTimer <= 0) { e.poisonTimer = POISON_DURATION; e.poisonStacks = 1; }
-              else e.poisonStacks = Math.min(poisonMaxStacksForLevel(p.poisonLevel), e.poisonStacks + 1);
-            }
-            if (proj.frenzies) {
-              if (e.frenzyTimer <= 0) { e.frenzyTimer = FRENZY_DURATION; e.frenzyStacks = 1; }
-              else e.frenzyStacks = Math.min(frenzyMaxStacksForLevel(p.frenzyLevel), e.frenzyStacks + 1);
-            }
-            if (proj.bombifies) e.bombifyTimer = BOMBIFY_DURATION; // no stacking - just (re)starts at full duration
-            if (proj.weakens) e.weakenTimer = WEAKEN_DURATION; // no stacking - just (re)starts at full duration
+            this.applyOnHitStatuses(proj, e);
 
             if (proj.explosionRadius > 0) {
               for (const other of this.enemies) {
@@ -1648,7 +1659,7 @@
                 if (!nearest) break;
                 nearest.hp -= proj.damage * CHAIN_DAMAGE_PCT;
                 nearest.hitFlash = 0.12;
-                if (proj.slowDuration > 0) nearest.slowTimer = Math.max(nearest.slowTimer, proj.slowDuration);
+                this.applyOnHitStatuses(proj, nearest);
                 this.chainZaps.push(new ChainZap(fromX, fromY, nearest.x, nearest.y));
 
                 // Chain's role is spreading damage/status to more targets,
