@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.1';
+  const GAME_VERSION = '1.36.2';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -751,7 +751,15 @@
   // folded into the base stats instead (see Player constructor).
   const UPGRADE_POOL = [
     { id: 'damage', title: 'ダメージ強化', desc: '攻撃ダメージ +50%', apply: p => p.damage = Math.round(p.damage * 1.5) },
-    { id: 'atkspeed', title: '攻撃速度アップ', desc: '攻撃間隔 -20%', apply: p => p.atkCooldown = Math.max(0.15, p.atkCooldown * 0.8) },
+    {
+      id: 'atkspeed',
+      title: '攻撃速度アップ',
+      desc: '攻撃間隔 -20%',
+      apply: p => p.atkCooldown = Math.max(STAT_LIMITS.minAtkCooldown, p.atkCooldown * 0.8),
+      // Once atkCooldown is already at its floor, this upgrade does nothing
+      // at all - stop offering it rather than presenting a dead choice.
+      available: p => p.atkCooldown > STAT_LIMITS.minAtkCooldown,
+    },
     {
       id: 'maxhp',
       title: '最大HPアップ',
@@ -796,6 +804,12 @@
         p.atkCooldown = Math.max(STAT_LIMITS.minAtkCooldown, p.atkCooldown / 1.45);
         p.damage = Math.max(STAT_LIMITS.minDamage, Math.round(p.damage * 0.8));
       },
+      // Unlike the other tradeoffs (where the downside saturates and the
+      // upside keeps paying off for free, see STAT_LIMITS comment), here
+      // it's the upside (atkCooldown) that has the floor - once already at
+      // minAtkCooldown, this card would be a real damage cut for zero
+      // benefit, so stop offering it once that floor is reached.
+      available: p => p.atkCooldown > STAT_LIMITS.minAtkCooldown,
     },
     {
       id: 'trade-regen',
@@ -1033,9 +1047,14 @@
       this.levelingUp = true;
       const picks = [];
       const notMaxedEffects = BULLET_EFFECTS.filter(eff => eff.getLevel(this.player) < eff.maxLevel);
+      // Most UPGRADE_POOL/TRADEOFF_POOL entries have no cap and stay useful
+      // forever, so `available` is opt-in (defaults to always-true) rather
+      // than every entry needing to declare one - only atkspeed/trade-atkspeed
+      // currently gate on it, since STAT_LIMITS.minAtkCooldown is a floor on
+      // their own upside rather than a downside that's fine to saturate.
       const pool = [
-        ...UPGRADE_POOL,
-        ...TRADEOFF_POOL,
+        ...UPGRADE_POOL.filter(up => !up.available || up.available(this.player)),
+        ...TRADEOFF_POOL.filter(up => !up.available || up.available(this.player)),
         ...notMaxedEffects.map(eff => bulletEffectUpgrade(eff, this.player)),
       ];
 
