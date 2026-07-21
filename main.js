@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.3';
+  const GAME_VERSION = '1.36.4';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -410,6 +410,7 @@
       this.slowLevel = 0;
       this.interceptLevel = 0;
       this.poisonLevel = 0;
+      this.frenzyLevel = 0;
 
       // Double-tap special ability, defined per character (§ CHARACTERS).
       // null until a character with one is applied below.
@@ -668,6 +669,12 @@
       // 0 (see update()).
       this.poisonTimer = 0;
       this.poisonStacks = 0;
+      // Frenzy (v1.36.4): same duration-doesn't-reset/rank-gates-stack-cap
+      // rules as poison, but the stacks buff the frenzied enemy's own
+      // damage instead of dealing damage directly - see FRENZY_SPEED_MULT/
+      // FRENZY_DMG_MULT_PER_STACK and the friendly-fire check in update().
+      this.frenzyTimer = 0;
+      this.frenzyStacks = 0;
       // Set by the emergency-bomb special so its mass-kill burst is exempt
       // from GEM_CAP below - the whole point of that ability is stockpiling
       // gems for one big level-up burst, which the cap would otherwise gut.
@@ -676,7 +683,7 @@
   }
 
   class Projectile {
-    constructor(x, y, vx, vy, damage, pierce, radius, explosionRadius, chainHops, slowDuration, poisons) {
+    constructor(x, y, vx, vy, damage, pierce, radius, explosionRadius, chainHops, slowDuration, poisons, frenzies) {
       this.x = x; this.y = y;
       this.vx = vx; this.vy = vy;
       this.damage = damage;
@@ -688,6 +695,7 @@
       this.chainHops = chainHops || 0;
       this.slowDuration = slowDuration || 0;
       this.poisons = poisons || false;
+      this.frenzies = frenzies || false;
     }
   }
 
@@ -859,7 +867,7 @@
   // each active status gets a small dot drawn above the enemy instead - see
   // draw(). Keyed by status name so future statuses (e.g. poison) just add
   // an entry here and a condition in draw() without touching enemy color.
-  const STATUS_DOT_COLORS = { slow: '#7ec8ff', poison: '#39d353' };
+  const STATUS_DOT_COLORS = { slow: '#7ec8ff', poison: '#39d353', frenzy: '#ff8c1a' };
   function explosionRadiusForLevel(level) { return 50 + 20 * (level - 1); }
   function slowDurationForLevel(level) { return 1.0 + 0.5 * (level - 1); }
 
@@ -884,6 +892,22 @@
   // clutter the screen with dots well past the point of being readable.
   const POISON_DMG_PCT = 0.04;
   function poisonMaxStacksForLevel(level) { return level; }
+
+  // Frenzy (v1.36.4): a high-risk status - it makes the afflicted enemy
+  // itself more dangerous (faster, harder-hitting), but a frenzied enemy
+  // also deals contact damage to whichever OTHER enemy it touches, not
+  // just the player. Landed well into a dense cluster, this can trigger
+  // enemy-on-enemy friendly fire that thins the swarm out on its own; badly
+  // placed, it just hands the enemy that reaches the player a much harder
+  // hit. Same duration/stacking rules as poison: FRENZY_DURATION doesn't
+  // reset on a later hit, only frenzyStacks (capped by
+  // frenzyMaxStacksForLevel) goes up, raising the damage multiplier.
+  // FRENZY_SPEED_MULT itself is flat - it applies in full the moment an
+  // enemy is frenzied at all, regardless of stack count.
+  const FRENZY_DURATION = 5;
+  const FRENZY_SPEED_MULT = 1.5;
+  const FRENZY_DMG_MULT_PER_STACK = 0.5;
+  function frenzyMaxStacksForLevel(level) { return level; }
 
   // Intercept: a passive aura around the player, independent of any bullet
   // hit, that slows enemies which get too close. Level raises how many
@@ -951,6 +975,15 @@
       levelUp: p => { p.poisonLevel++; },
       introDesc: `着弾した敵を${POISON_DURATION}秒間の毒状態にし、敵自身の最大HPの${Math.round(POISON_DMG_PCT * 100)}%を毎秒毒ダメージ(1スタックあたり)として与えるようになる。毒状態中に再度攻撃が当たると重ね掛けされ、毒ダメージが増加する(持続時間は延長されない)`,
       upgradeDesc: level => `毒の重ね掛け上限が増加する(最大${poisonMaxStacksForLevel(level)}スタック → 最大${poisonMaxStacksForLevel(level + 1)}スタック)`,
+    },
+    {
+      id: 'frenzy',
+      name: '狂乱',
+      maxLevel: 5,
+      getLevel: p => p.frenzyLevel,
+      levelUp: p => { p.frenzyLevel++; },
+      introDesc: `着弾した敵を${FRENZY_DURATION}秒間の狂乱状態にする。狂乱状態の敵は移動速度が${FRENZY_SPEED_MULT}倍になり、重ね掛け数に応じて攻撃力が増加する(1スタックあたり+${Math.round(FRENZY_DMG_MULT_PER_STACK * 100)}%)。狂乱状態の敵は、自機だけでなく接触した他の敵にもこの強化された攻撃力でダメージを与えるようになる(敵同士のフレンドリーファイア)。持続時間は重ね掛けで延長されない。ハイリスクな状態異常: 個々の敵は強化されるが、うまくいけば敵集団の自滅を誘発できる`,
+      upgradeDesc: level => `狂乱の重ね掛け上限が増加する(最大${frenzyMaxStacksForLevel(level)}スタック → 最大${frenzyMaxStacksForLevel(level + 1)}スタック)`,
     },
   ];
 
@@ -1223,6 +1256,7 @@
       const chainHops = p.chainLevel;
       const slowDuration = p.slowLevel > 0 ? slowDurationForLevel(p.slowLevel) : 0;
       const poisons = p.poisonLevel > 0;
+      const frenzies = p.frenzyLevel > 0;
       // Some specials (e.g. speed-type's overdrive) include a timed damage
       // buff, declared on the special itself (buffDamageMult) rather than
       // hardcoded here. Baked into the shot at fire time, same as p.damage
@@ -1236,7 +1270,7 @@
         const ang = Math.atan2(target.y - p.y, target.x - p.x) + rand(-0.05, 0.05);
         const vx = Math.cos(ang) * p.projSpeed;
         const vy = Math.sin(ang) * p.projSpeed;
-        this.projectiles.push(new Projectile(p.x, p.y, vx, vy, shotDamage, p.pierce, 5, explosionRadius, chainHops, slowDuration, poisons));
+        this.projectiles.push(new Projectile(p.x, p.y, vx, vy, shotDamage, p.pierce, 5, explosionRadius, chainHops, slowDuration, poisons, frenzies));
       }
     }
 
@@ -1412,7 +1446,8 @@
       const rushSpeedMult = this.rushState === 'active' ? RUSH_SPEED_MULT : 1;
       for (const e of this.enemies) {
         const d = dist(e.x, e.y, p.x, p.y) || 1;
-        const effSpeed = (e.slowTimer > 0 ? e.speed * SLOW_MULT : e.speed) * rushSpeedMult;
+        const frenzySpeedMult = e.frenzyTimer > 0 ? FRENZY_SPEED_MULT : 1;
+        const effSpeed = (e.slowTimer > 0 ? e.speed * SLOW_MULT : e.speed) * frenzySpeedMult * rushSpeedMult;
         e.x += (p.x - e.x) / d * effSpeed * dt;
         e.y += (p.y - e.y) / d * effSpeed * dt;
         if (e.hitFlash > 0) e.hitFlash -= dt;
@@ -1427,11 +1462,17 @@
           e.poisonTimer -= dt;
           if (e.poisonTimer <= 0) e.poisonStacks = 0;
         }
+        if (e.frenzyTimer > 0) {
+          e.frenzyTimer -= dt;
+          if (e.frenzyTimer <= 0) e.frenzyStacks = 0;
+        }
 
         if (d < e.radius + p.radius && e.contactCd <= 0) {
-          // Slowed enemies also hit softer - the status should meaningfully
-          // blunt an enemy, not just its approach speed.
-          const dmg = e.slowTimer > 0 ? e.dmg * SLOWED_DMG_MULT : e.dmg;
+          // Slowed enemies hit softer, frenzied enemies hit harder - both
+          // stack multiplicatively in the unlikely case a build applies
+          // both to the same enemy.
+          const frenzyDmgMult = e.frenzyTimer > 0 ? 1 + e.frenzyStacks * FRENZY_DMG_MULT_PER_STACK : 1;
+          const dmg = (e.slowTimer > 0 ? e.dmg * SLOWED_DMG_MULT : e.dmg) * frenzyDmgMult;
           p.takeDamage(dmg);
           // Passive hook for characters like Tank whose passive reacts to
           // being hit (e.g. reflect damage). Fires on the contact event
@@ -1440,6 +1481,29 @@
           if (p.passive && p.passive.onContactDamage) p.passive.onContactDamage(p, e, this);
           e.contactCd = 0.5;
           this.shakeTime = 0.15;
+        }
+      }
+
+      // Frenzy friendly fire: a frenzied enemy also deals its (boosted)
+      // contact damage to whichever OTHER enemy it physically touches, not
+      // just the player - this is the risk half of 狂乱's design (see
+      // FRENZY_DMG_MULT_PER_STACK). Shares contactCd with the player-contact
+      // check above, so a frenzied enemy can only land one hit (on the
+      // player or a neighbor, whichever it touches) per cooldown window.
+      // Only iterates frenzied enemies as the outer loop (cheap - normally
+      // a small subset of the swarm) rather than checking every pair.
+      for (const e of this.enemies) {
+        if (e.frenzyTimer <= 0 || e.contactCd > 0) continue;
+        const frenzyDmgMult = 1 + e.frenzyStacks * FRENZY_DMG_MULT_PER_STACK;
+        for (const other of this.enemies) {
+          if (other === e) continue;
+          const rr = e.radius + other.radius;
+          if (dist2(e.x, e.y, other.x, other.y) < rr * rr) {
+            other.hp -= e.dmg * frenzyDmgMult;
+            other.hitFlash = 0.12;
+            e.contactCd = 0.5;
+            break;
+          }
         }
       }
 
@@ -1463,6 +1527,10 @@
             if (proj.poisons) {
               if (e.poisonTimer <= 0) { e.poisonTimer = POISON_DURATION; e.poisonStacks = 1; }
               else e.poisonStacks = Math.min(poisonMaxStacksForLevel(p.poisonLevel), e.poisonStacks + 1);
+            }
+            if (proj.frenzies) {
+              if (e.frenzyTimer <= 0) { e.frenzyTimer = FRENZY_DURATION; e.frenzyStacks = 1; }
+              else e.frenzyStacks = Math.min(frenzyMaxStacksForLevel(p.frenzyLevel), e.frenzyStacks + 1);
             }
 
             if (proj.explosionRadius > 0) {
@@ -1712,9 +1780,10 @@
         // today, but the list naturally grows as more statuses are added.
         const activeStatusDots = [];
         if (e.slowTimer > 0) activeStatusDots.push(STATUS_DOT_COLORS.slow);
-        // Poison stacks: one dot per stack, so the stack count reads at a
-        // glance rather than needing a number readout.
+        // Poison/frenzy stacks: one dot per stack, so the stack count reads
+        // at a glance rather than needing a number readout.
         for (let i = 0; i < e.poisonStacks; i++) activeStatusDots.push(STATUS_DOT_COLORS.poison);
+        for (let i = 0; i < e.frenzyStacks; i++) activeStatusDots.push(STATUS_DOT_COLORS.frenzy);
         if (activeStatusDots.length > 0) {
           const dotRadius = 3;
           const dotSpacing = 9;
@@ -1869,6 +1938,7 @@
     if (p.interceptLevel > 0) bulletLines.push(`迎撃 Lv.${p.interceptLevel}`);
     if (p.pierce > 0) bulletLines.push(`貫通 Lv.${p.pierce}`);
     if (p.poisonLevel > 0) bulletLines.push(`猛毒 Lv.${p.poisonLevel}`);
+    if (p.frenzyLevel > 0) bulletLines.push(`狂乱 Lv.${p.frenzyLevel}`);
     pauseStatsEl.innerHTML = `
       <p>HP: ${Math.ceil(p.hp)} / ${p.maxHp}</p>
       <p>レベル: ${p.level}</p>
