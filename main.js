@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.11';
+  const GAME_VERSION = '1.36.12';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -569,7 +569,10 @@
   const RUSH_BURST_MULT = 2; // multiplies ENEMY_TYPES burst, not spawn-event frequency
   const RUSH_SPEED_MULT = 1.2;
   const RUSH_HP_MULT = 1.5; // multiplies HP of enemies spawned during an active rush
-  const RUSH_HEAL_FRAC = 0.5; // fraction of maxHp healed on rush end
+  // fraction of maxHp healed on rush end, ON TOP OF the WINDOW_HEAL_FRAC
+  // heal every window already gets (see update()) - together they total
+  // WINDOW_HEAL_FRAC + RUSH_HEAL_FRAC = 45% on a rush-concluding window.
+  const RUSH_HEAL_FRAC = 0.25;
   // Difficulty step size on the window a rush concludes in, in place of the
   // usual step, if that window's kill rate also cleared RUSH_KILL_RATE_THRESHOLD
   // (see DIFFICULTY_STEP_HIGH_KILL_RATE below, whose non-rush tier this sits
@@ -590,6 +593,12 @@
   // climb move a bit faster, now that the XP curve (v1.9.0) caps out and
   // stops slowing leveling down at high player levels.
   const DIFFICULTY_CHECK_INTERVAL = 50;
+  // Heals this fraction of maxHp on every difficulty-check window,
+  // regardless of rush (v1.36.12) - added after removing regen/生命転化 as
+  // pickable upgrades (v1.36.11) took away the player's only passive
+  // recovery tools. On a rush-concluding window this stacks with
+  // RUSH_HEAL_FRAC for 20% + 25% = 45% total.
+  const WINDOW_HEAL_FRAC = 0.2;
 
   // Kill-rate rubber-band step sizes for the two "extreme" tiers layered on
   // top of the original +-1/hold three-band system (see the cascade in
@@ -1408,6 +1417,13 @@
         const killsThisWindow = this.kills - this.killsAtCheckpoint;
         const killRate = spawnedThisWindow > 0 ? killsThisWindow / spawnedThisWindow : 1;
 
+        // Every window heals a flat WINDOW_HEAL_FRAC of maxHp, regardless
+        // of performance or rush - the closest thing to a passive recovery
+        // tool left now that regen/生命転化 aren't pickable upgrades
+        // (v1.36.11). A rush-concluding window adds RUSH_HEAL_FRAC on top
+        // (see below) for a bigger combined heal.
+        this.player.hp = Math.min(this.player.maxHp, this.player.hp + this.player.maxHp * WINDOW_HEAL_FRAC);
+
         // RUSH_DURATION is sized so an active rush always concludes exactly
         // on this window boundary (see its definition) - a still-'active'
         // state here means this window fully contained that rush's burst.
@@ -1425,10 +1441,11 @@
 
         if (rushConcluding) {
           this.rushState = 'idle';
-          // Payoff: heal RUSH_HEAL_FRAC of maxHp and sweep every gem
-          // currently on screen straight into XP, rewarding the player for
-          // having just weathered the burst instead of interrupting play
-          // with forced level-up picks.
+          // Payoff: heal an additional RUSH_HEAL_FRAC of maxHp (on top of
+          // the WINDOW_HEAL_FRAC heal above, for 45% total) and sweep every
+          // gem currently on screen straight into XP, rewarding the player
+          // for having just weathered the burst instead of interrupting
+          // play with forced level-up picks.
           this.player.hp = Math.min(this.player.maxHp, this.player.hp + this.player.maxHp * RUSH_HEAL_FRAC);
           for (const g of this.gems) this.player.gainXp(g.value);
           this.gems.length = 0;
