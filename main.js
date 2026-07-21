@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.35.8';
+  const GAME_VERSION = '1.36.0';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -829,6 +829,14 @@
   const CHAIN_TRIGGER_CHANCE = 0.5;
   const SLOW_MULT = 0.5;
   const SLOWED_DMG_MULT = 0.5; // a slowed enemy's contact damage is also halved
+
+  // Status-effect indicator dots (v1.36.0): rather than recoloring an
+  // enemy's own body per status (which only ever supported showing one
+  // status at a time, and fought with hitFlash for the same fillStyle),
+  // each active status gets a small dot drawn above the enemy instead - see
+  // draw(). Keyed by status name so future statuses (e.g. poison) just add
+  // an entry here and a condition in draw() without touching enemy color.
+  const STATUS_DOT_COLORS = { slow: '#7ec8ff' };
   function explosionRadiusForLevel(level) { return 50 + 20 * (level - 1); }
   function slowDurationForLevel(level) { return 1.0 + 0.5 * (level - 1); }
 
@@ -1622,9 +1630,27 @@
         const sx = e.x + offX, sy = e.y + offY;
         if (sx < -40 || sx > W + 40 || sy < -40 || sy > H + 40) continue;
         ctx.beginPath();
-        ctx.fillStyle = e.hitFlash > 0 ? '#ffffff' : (e.slowTimer > 0 ? '#7ec8ff' : e.color);
+        ctx.fillStyle = e.hitFlash > 0 ? '#ffffff' : e.color;
         ctx.arc(sx, sy, e.radius, 0, TAU);
         ctx.fill();
+
+        // Status-effect dots, drawn in a row above the enemy instead of
+        // recoloring its body (see STATUS_DOT_COLORS) - only 'slow' exists
+        // today, but the list naturally grows as more statuses are added.
+        const activeStatusDots = [];
+        if (e.slowTimer > 0) activeStatusDots.push(STATUS_DOT_COLORS.slow);
+        if (activeStatusDots.length > 0) {
+          const dotRadius = 3;
+          const dotSpacing = 9;
+          const dotY = sy - e.radius - 8;
+          const rowStartX = sx - (activeStatusDots.length - 1) * dotSpacing / 2;
+          for (let i = 0; i < activeStatusDots.length; i++) {
+            ctx.beginPath();
+            ctx.fillStyle = activeStatusDots[i];
+            ctx.arc(rowStartX + i * dotSpacing, dotY, dotRadius, 0, TAU);
+            ctx.fill();
+          }
+        }
       }
 
       // particles - drawn above enemies so death/explosion bursts read
