@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.16';
+  const GAME_VERSION = '1.36.17';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -376,12 +376,12 @@
     },
     {
       id: 'wide',
-      name: '薙刀',
-      desc: `近距離専用の幅広い斬撃。射程は「迎撃」よりわずかに長い程度(${WIDE_ATTACK_RANGE}px)だが、範囲内の敵を一度に全て攻撃でき、威力も高め(通常武器の${WIDE_DAMAGE_MULT}倍)。マルチショットは持たない代わりに、ランクアップで斬撃の幅が広がっていく。`,
+      name: 'パルスウェーブ',
+      desc: `近距離専用、自機の前後に同時に放たれる衝撃波。射程は「迎撃」よりわずかに長い程度(${WIDE_ATTACK_RANGE}px)だが、前後の範囲内の敵を一度に全て攻撃でき、威力も高め(通常武器の${WIDE_DAMAGE_MULT}倍)。マルチショットは持たない代わりに、ランクアップで衝撃波の幅が広がっていく。`,
       apply: (p) => {},
       innateEffect: {
-        name: '広範囲斬撃',
-        desc: `自機レベルアップ${WEAPON_INNATE_LEVELS_PER_RANK}ごとにランクが上昇(最大Lv.${WEAPON_INNATE_MAX_RANK})し、斬撃の幅が広がる`,
+        name: '波動拡大',
+        desc: `自機レベルアップ${WEAPON_INNATE_LEVELS_PER_RANK}ごとにランクが上昇(最大Lv.${WEAPON_INNATE_MAX_RANK})し、衝撃波の幅が広がる`,
         applyRank(p, rank) { p.wideHalfWidth = wideHalfWidthForRank(rank); },
       },
     },
@@ -1442,6 +1442,12 @@
     // single nearest in-range enemy, same "ignore anything out of reach"
     // rule as the standard weapon, but gated to WIDE_ATTACK_RANGE (much
     // shorter than weaponRange()) so this weapon only works at melee range.
+    // Backshot (v1.36.17): the identical sweep also fires in the exact
+    // opposite direction at the same time, covering the player's blind
+    // spot - deliberately added as a second direction rather than a longer
+    // WIDE_ATTACK_RANGE, so the weapon's "high-risk, must get in close"
+    // identity survives while its biggest practical gap (an enemy closing
+    // in from directly behind) gets covered.
     fireWideSweep() {
       const p = this.player;
       const range2 = WIDE_ATTACK_RANGE * WIDE_ATTACK_RANGE;
@@ -1456,11 +1462,12 @@
       const aimAngle = Math.atan2(nearest.y - p.y, nearest.x - p.x);
       const halfWidth = p.wideHalfWidth;
       // Rotate each candidate into the sweep's local frame (forward =
-      // +localX) so the cone becomes a simple axis-aligned box test:
-      // forward reach up to WIDE_ATTACK_RANGE, lateral spread up to
-      // halfWidth on either side (plus the enemy's own radius, so an enemy
-      // just grazing the edge still counts, matching the +radius margin
-      // used elsewhere for circular hit tests).
+      // +localX) so both the front cone and its mirrored backshot become
+      // simple axis-aligned box tests: front reach up to WIDE_ATTACK_RANGE
+      // in +localX, back reach the same distance in -localX, lateral
+      // spread up to halfWidth on either side of the axis (plus the
+      // enemy's own radius, so an enemy just grazing the edge still
+      // counts, matching the +radius margin used elsewhere).
       const cosA = Math.cos(-aimAngle), sinA = Math.sin(-aimAngle);
 
       const buffDamageMult = p.specialBuffTimer > 0 && p.special && p.special.buffDamageMult != null
@@ -1485,14 +1492,17 @@
         const dx = e.x - p.x, dy = e.y - p.y;
         const localX = dx * cosA - dy * sinA;
         const localY = dx * sinA + dy * cosA;
-        if (localX < -e.radius || localX > WIDE_ATTACK_RANGE + e.radius) continue;
         if (Math.abs(localY) > halfWidth + e.radius) continue;
+        const inFront = localX >= -e.radius && localX <= WIDE_ATTACK_RANGE + e.radius;
+        const inBack = localX <= e.radius && localX >= -WIDE_ATTACK_RANGE - e.radius;
+        if (!inFront && !inBack) continue;
         hitAny = true;
         this.resolveProjectileHit(virtualProj, e);
       }
       if (!hitAny) return;
 
       this.sweepEffects.push(new SweepEffect(p.x, p.y, aimAngle, WIDE_ATTACK_RANGE, halfWidth));
+      this.sweepEffects.push(new SweepEffect(p.x, p.y, aimAngle + Math.PI, WIDE_ATTACK_RANGE, halfWidth));
       this.shakeTime = Math.max(this.shakeTime, 0.08);
     }
 
