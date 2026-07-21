@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.15';
+  const GAME_VERSION = '1.36.16';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -1083,6 +1083,11 @@
       levelUp: p => { p.pierce++; },
       introDesc: '弾が敵を貫通するようになる',
       upgradeDesc: level => `貫通数が増加する(${level} → ${level + 1})`,
+      // Wide weapon hits every enemy in its cone in one go and has no
+      // travel/pierce lifecycle at all (§7-4-1) - pierce would be a
+      // completely dead pick for it, so hide it entirely rather than
+      // presenting a choice that does nothing.
+      available: p => !p.weapon || p.weapon.id !== 'wide',
     },
     {
       id: 'poison',
@@ -2130,23 +2135,30 @@
         ctx.fill();
       }
 
-      // wide weapon sweep flashes - a fading wedge sized to match the
-      // actual hitbox (range x halfWidth) so the flash lines up with what
-      // could actually get hit (see Game.fireWideSweep).
+      // wide weapon sweep flashes - concentric crescent arcs facing the
+      // swing's direction (the "))) " look originally envisioned), rather
+      // than drawing the literal rectangular hitbox shape itself. The angle
+      // spanned by each arc is derived from the same range/halfWidth the
+      // hit test actually uses, so a wider rank visibly reads as a wider
+      // sweep even though the arcs themselves are a stylization, not the
+      // hitbox outline (see Game.fireWideSweep).
       for (const sw of this.sweepEffects) {
         const sx = sw.x + offX, sy = sw.y + offY;
+        const alpha = clamp(sw.life / sw.maxLife, 0, 1);
+        const angHalf = Math.atan2(sw.halfWidth, sw.range);
         ctx.save();
         ctx.translate(sx, sy);
         ctx.rotate(sw.angle);
-        ctx.globalAlpha = clamp(sw.life / sw.maxLife, 0, 1) * 0.55;
-        ctx.fillStyle = '#ffe45a';
-        ctx.beginPath();
-        ctx.moveTo(0, -sw.halfWidth);
-        ctx.lineTo(sw.range, -sw.halfWidth);
-        ctx.lineTo(sw.range, sw.halfWidth);
-        ctx.lineTo(0, sw.halfWidth);
-        ctx.closePath();
-        ctx.fill();
+        ctx.strokeStyle = '#ffe45a';
+        ctx.lineCap = 'round';
+        for (let i = 0; i < 3; i++) {
+          const r = sw.range * (0.5 + i * 0.18);
+          ctx.globalAlpha = alpha * (0.8 - i * 0.2);
+          ctx.lineWidth = 3;
+          ctx.beginPath();
+          ctx.arc(0, 0, r, -angHalf, angHalf);
+          ctx.stroke();
+        }
         ctx.restore();
       }
 
