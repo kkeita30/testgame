@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.4';
+  const GAME_VERSION = '1.36.5';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -411,6 +411,9 @@
       this.interceptLevel = 0;
       this.poisonLevel = 0;
       this.frenzyLevel = 0;
+      // Named bombifyLevel (not "bomb") to avoid confusion with the
+      // unrelated "emergency bomb" special ability (§ CHARACTERS).
+      this.bombifyLevel = 0;
 
       // Double-tap special ability, defined per character (§ CHARACTERS).
       // null until a character with one is applied below.
@@ -675,6 +678,12 @@
       // FRENZY_DMG_MULT_PER_STACK and the friendly-fire check in update().
       this.frenzyTimer = 0;
       this.frenzyStacks = 0;
+      // Bombify (v1.36.5): no stack counter (doesn't stack) - a later hit
+      // while already bombified just refreshes bombifyTimer back to
+      // BOMBIFY_DURATION, since there's no stack benefit to reward instead.
+      // Detonation (on death while bombifyTimer > 0) is resolved in
+      // update(), not here.
+      this.bombifyTimer = 0;
       // Set by the emergency-bomb special so its mass-kill burst is exempt
       // from GEM_CAP below - the whole point of that ability is stockpiling
       // gems for one big level-up burst, which the cap would otherwise gut.
@@ -683,7 +692,7 @@
   }
 
   class Projectile {
-    constructor(x, y, vx, vy, damage, pierce, radius, explosionRadius, chainHops, slowDuration, poisons, frenzies) {
+    constructor(x, y, vx, vy, damage, pierce, radius, explosionRadius, chainHops, slowDuration, poisons, frenzies, bombifies) {
       this.x = x; this.y = y;
       this.vx = vx; this.vy = vy;
       this.damage = damage;
@@ -696,6 +705,7 @@
       this.slowDuration = slowDuration || 0;
       this.poisons = poisons || false;
       this.frenzies = frenzies || false;
+      this.bombifies = bombifies || false;
     }
   }
 
@@ -867,7 +877,7 @@
   // each active status gets a small dot drawn above the enemy instead - see
   // draw(). Keyed by status name so future statuses (e.g. poison) just add
   // an entry here and a condition in draw() without touching enemy color.
-  const STATUS_DOT_COLORS = { slow: '#7ec8ff', poison: '#39d353', frenzy: '#ff8c1a' };
+  const STATUS_DOT_COLORS = { slow: '#7ec8ff', poison: '#39d353', frenzy: '#ff8c1a', bombify: '#ff3b3b' };
   function explosionRadiusForLevel(level) { return 50 + 20 * (level - 1); }
   function slowDurationForLevel(level) { return 1.0 + 0.5 * (level - 1); }
 
@@ -908,6 +918,20 @@
   const FRENZY_SPEED_MULT = 1.5;
   const FRENZY_DMG_MULT_PER_STACK = 0.5;
   function frenzyMaxStacksForLevel(level) { return level; }
+
+  // Bombify (v1.36.5): unlike poison/frenzy, this status doesn't stack at
+  // all and has no effect while the target is alive - a later hit while
+  // already bombified just refreshes bombifyTimer back to full rather than
+  // adding a stack. Its entire payoff is conditional: if the target dies
+  // while bombifyTimer > 0, it detonates for a percent of ITS OWN maxHp
+  // (like poison, so it scales naturally with difficulty/enemy type) to
+  // every other enemy within BOMBIFY_RADIUS. Rank raises that percent
+  // directly (there's no stack count to raise instead). Detonating a
+  // bombified enemy can itself kill neighboring bombified enemies, chaining
+  // into further detonations - see the resolution loop in update().
+  const BOMBIFY_DURATION = 5;
+  const BOMBIFY_RADIUS = 180;
+  function bombifyDmgPctForLevel(level) { return 0.3 + 0.1 * (level - 1); }
 
   // Intercept: a passive aura around the player, independent of any bullet
   // hit, that slows enemies which get too close. Level raises how many
@@ -984,6 +1008,15 @@
       levelUp: p => { p.frenzyLevel++; },
       introDesc: `着弾した敵を${FRENZY_DURATION}秒間の狂乱状態にする。狂乱状態の敵は移動速度が${FRENZY_SPEED_MULT}倍になり、重ね掛け数に応じて攻撃力が増加する(1スタックあたり+${Math.round(FRENZY_DMG_MULT_PER_STACK * 100)}%)。狂乱状態の敵は、自機だけでなく接触した他の敵にもこの強化された攻撃力でダメージを与えるようになる(敵同士のフレンドリーファイア)。持続時間は重ね掛けで延長されない。ハイリスクな状態異常: 個々の敵は強化されるが、うまくいけば敵集団の自滅を誘発できる`,
       upgradeDesc: level => `狂乱の重ね掛け上限が増加する(最大${frenzyMaxStacksForLevel(level)}スタック → 最大${frenzyMaxStacksForLevel(level + 1)}スタック)`,
+    },
+    {
+      id: 'bombify',
+      name: '爆弾化',
+      maxLevel: 5,
+      getLevel: p => p.bombifyLevel,
+      levelUp: p => { p.bombifyLevel++; },
+      introDesc: `着弾した敵を${BOMBIFY_DURATION}秒間爆弾化する。生存中は特に効果はないが、爆弾化状態のまま倒された敵は、その敵自身の最大HPの${Math.round(bombifyDmgPctForLevel(1) * 100)}%を周囲(半径${BOMBIFY_RADIUS}px)の他の敵に爆発ダメージとして与える。重ね掛けはされず、再度攻撃が当たると持続時間が最大まで更新される`,
+      upgradeDesc: level => `爆弾化ダメージが増加する(敵自身の最大HPの${Math.round(bombifyDmgPctForLevel(level) * 100)}% → ${Math.round(bombifyDmgPctForLevel(level + 1) * 100)}%)`,
     },
   ];
 
@@ -1257,6 +1290,7 @@
       const slowDuration = p.slowLevel > 0 ? slowDurationForLevel(p.slowLevel) : 0;
       const poisons = p.poisonLevel > 0;
       const frenzies = p.frenzyLevel > 0;
+      const bombifies = p.bombifyLevel > 0;
       // Some specials (e.g. speed-type's overdrive) include a timed damage
       // buff, declared on the special itself (buffDamageMult) rather than
       // hardcoded here. Baked into the shot at fire time, same as p.damage
@@ -1270,7 +1304,7 @@
         const ang = Math.atan2(target.y - p.y, target.x - p.x) + rand(-0.05, 0.05);
         const vx = Math.cos(ang) * p.projSpeed;
         const vy = Math.sin(ang) * p.projSpeed;
-        this.projectiles.push(new Projectile(p.x, p.y, vx, vy, shotDamage, p.pierce, 5, explosionRadius, chainHops, slowDuration, poisons, frenzies));
+        this.projectiles.push(new Projectile(p.x, p.y, vx, vy, shotDamage, p.pierce, 5, explosionRadius, chainHops, slowDuration, poisons, frenzies, bombifies));
       }
     }
 
@@ -1466,6 +1500,7 @@
           e.frenzyTimer -= dt;
           if (e.frenzyTimer <= 0) e.frenzyStacks = 0;
         }
+        if (e.bombifyTimer > 0) e.bombifyTimer -= dt; // no effect while alive - see the detonation-resolution block below
 
         if (d < e.radius + p.radius && e.contactCd <= 0) {
           // Slowed enemies hit softer, frenzied enemies hit harder - both
@@ -1532,6 +1567,7 @@
               if (e.frenzyTimer <= 0) { e.frenzyTimer = FRENZY_DURATION; e.frenzyStacks = 1; }
               else e.frenzyStacks = Math.min(frenzyMaxStacksForLevel(p.frenzyLevel), e.frenzyStacks + 1);
             }
+            if (proj.bombifies) e.bombifyTimer = BOMBIFY_DURATION; // no stacking - just (re)starts at full duration
 
             if (proj.explosionRadius > 0) {
               for (const other of this.enemies) {
@@ -1584,6 +1620,35 @@
             if (proj.pierce <= 0) { proj.life = 0; break; }
             proj.pierce -= 1;
           }
+        }
+      }
+
+      // Bombify detonation: any bombified enemy that ends this frame at
+      // hp<=0 (from a projectile, poison, frenzy friendly fire, or an
+      // earlier detonation this same frame) explodes for a percent of its
+      // OWN maxHp to every other enemy within BOMBIFY_RADIUS. Resolved in a
+      // loop rather than a single pass so a detonation that drops another
+      // bombified enemy to 0 chains into that enemy's own detonation too,
+      // regardless of array order - it keeps re-scanning until nothing new
+      // qualifies. `detonated` guards against processing the same enemy
+      // twice as the outer loop re-scans.
+      const detonated = new Set();
+      let moreToDetonate = true;
+      while (moreToDetonate) {
+        moreToDetonate = false;
+        for (const e of this.enemies) {
+          if (e.hp > 0 || e.bombifyTimer <= 0 || detonated.has(e)) continue;
+          detonated.add(e);
+          const bombDmg = e.maxHp * bombifyDmgPctForLevel(p.bombifyLevel);
+          for (const other of this.enemies) {
+            if (other === e) continue;
+            if (dist2(other.x, other.y, e.x, e.y) <= BOMBIFY_RADIUS * BOMBIFY_RADIUS) {
+              other.hp -= bombDmg;
+              other.hitFlash = 0.12;
+            }
+          }
+          for (let i = 0; i < 10; i++) this.particles.push(new Particle(e.x, e.y, STATUS_DOT_COLORS.bombify, 3));
+          moreToDetonate = true;
         }
       }
 
@@ -1784,6 +1849,8 @@
         // at a glance rather than needing a number readout.
         for (let i = 0; i < e.poisonStacks; i++) activeStatusDots.push(STATUS_DOT_COLORS.poison);
         for (let i = 0; i < e.frenzyStacks; i++) activeStatusDots.push(STATUS_DOT_COLORS.frenzy);
+        // Bombify doesn't stack, so just a single dot like slow.
+        if (e.bombifyTimer > 0) activeStatusDots.push(STATUS_DOT_COLORS.bombify);
         if (activeStatusDots.length > 0) {
           const dotRadius = 3;
           const dotSpacing = 9;
@@ -1939,6 +2006,7 @@
     if (p.pierce > 0) bulletLines.push(`貫通 Lv.${p.pierce}`);
     if (p.poisonLevel > 0) bulletLines.push(`猛毒 Lv.${p.poisonLevel}`);
     if (p.frenzyLevel > 0) bulletLines.push(`狂乱 Lv.${p.frenzyLevel}`);
+    if (p.bombifyLevel > 0) bulletLines.push(`爆弾化 Lv.${p.bombifyLevel}`);
     pauseStatsEl.innerHTML = `
       <p>HP: ${Math.ceil(p.hp)} / ${p.maxHp}</p>
       <p>レベル: ${p.level}</p>
