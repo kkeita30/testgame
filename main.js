@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.12';
+  const GAME_VERSION = '1.36.13';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -1145,6 +1145,7 @@
       // (or walked back) instead of ratcheting up regardless of how the
       // fight is actually going.
       this.difficulty = 1;
+      this.wave = 1;
       this.levelCheckTimer = DIFFICULTY_CHECK_INTERVAL;
       this.totalSpawned = 0;
       this.spawnedAtCheckpoint = 0;
@@ -1413,6 +1414,7 @@
       this.levelCheckTimer -= dt;
       if (this.levelCheckTimer <= 0) {
         this.levelCheckTimer += DIFFICULTY_CHECK_INTERVAL;
+        this.wave++;
         const spawnedThisWindow = this.totalSpawned - this.spawnedAtCheckpoint;
         const killsThisWindow = this.kills - this.killsAtCheckpoint;
         const killRate = spawnedThisWindow > 0 ? killsThisWindow / spawnedThisWindow : 1;
@@ -1833,7 +1835,7 @@
       hpText.textContent = `${Math.ceil(p.hp)}/${p.maxHp}`;
       xpBar.style.width = clamp(p.xp / p.xpNext, 0, 1) * 100 + '%';
       levelEl.textContent = `Lv.${p.level}`;
-      difficultyEl.textContent = `難易度${this.difficulty}`;
+      difficultyEl.textContent = `ウェーブ${this.wave} 残り${Math.ceil(this.levelCheckTimer)}秒 難易度${this.difficulty}`;
       // Live view of the same window the difficulty checkpoint judges -
       // shows "--" until at least one enemy has spawned in the current
       // window, since dividing by zero spawns has no meaningful rate yet.
