@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.10';
+  const GAME_VERSION = '1.36.11';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -807,14 +807,22 @@
         p.hp = Math.min(p.maxHp, p.hp + added);
       },
     },
-    { id: 'regen', title: 'リジェネ', desc: '毎秒HP自然回復 +1', apply: p => p.regen += 1 },
   ];
+
+  // Regen as a choosable upgrade/tradeoff was removed (v1.36.11) - with hits
+  // this infrequent, even +1/sec was enough to fully out-heal an occasional
+  // graze as long as the player just kept dodging, making it feel too
+  // strong for something with no real downside (or, on 生命転化's side, a
+  // downside that didn't actually address the same problem). Player.regen
+  // itself and its tick in update() are intentionally left in place - a
+  // future character passive/special can still grant it directly without
+  // it being a pickable upgrade.
 
   // Floors/ceilings for the tradeoff upgrades below, so stacking the same
   // downside repeatedly can't reduce a stat to uselessness (or, on the
   // cooldown side, to unplayable slowness). Once a stat is saturated at its
   // limit, further picks of that tradeoff still grant the upside "for free".
-  const STAT_LIMITS = { minDamage: 3, maxAtkCooldown: 1.4, minAtkCooldown: 0.15, minMaxHp: 40 };
+  const STAT_LIMITS = { minDamage: 3, maxAtkCooldown: 1.4, minAtkCooldown: 0.15 };
 
   // Each grants a strong upside alongside a real downside, for players who
   // want to commit to a build rather than only stacking safe, one-sided
@@ -843,16 +851,6 @@
       // minAtkCooldown, this card would be a real damage cut for zero
       // benefit, so stop offering it once that floor is reached.
       available: p => p.atkCooldown > STAT_LIMITS.minAtkCooldown,
-    },
-    {
-      id: 'trade-regen',
-      title: '生命転化',
-      desc: 'HP自然回復 +2 / 最大HP -15%',
-      apply: p => {
-        p.regen += 2;
-        p.maxHp = Math.max(STAT_LIMITS.minMaxHp, Math.round(p.maxHp * 0.85));
-        p.hp = Math.min(p.hp, p.maxHp);
-      },
     },
     {
       id: 'trade-maxhp',
