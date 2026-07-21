@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.2';
+  const GAME_VERSION = '1.36.3';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -663,8 +663,9 @@
       this.slowTimer = 0;
       // Poison (v1.36.1): poisonTimer counts down from POISON_DURATION and
       // is never refreshed/extended by later hits - only poisonStacks goes
-      // up (capped at POISON_MAX_STACKS), raising the tick damage instead.
-      // Both clear together once poisonTimer reaches 0 (see update()).
+      // up (capped at poisonMaxStacksForLevel(p.poisonLevel)), raising the
+      // tick damage instead. Both clear together once poisonTimer reaches
+      // 0 (see update()).
       this.poisonTimer = 0;
       this.poisonStacks = 0;
       // Set by the emergency-bomb special so its mass-kill burst is exempt
@@ -862,23 +863,27 @@
   function explosionRadiusForLevel(level) { return 50 + 20 * (level - 1); }
   function slowDurationForLevel(level) { return 1.0 + 0.5 * (level - 1); }
 
-  // Poison (v1.36.1): a fixed-length damage-over-time status, independent
-  // of the player's own damage stat - tick damage is a percent of the
-  // POISONED ENEMY's own maxHp, so it stays meaningful against both fragile
-  // swarm enemies and huge single-target HP pools (bosses) alike, the same
-  // niche explosion/chain fill for AoE/crowd (§5's boss design note).
-  // Re-hitting an already-poisoned enemy adds a stack (more tick damage)
-  // but does NOT restart POISON_DURATION - only the first hit while unpoisoned
-  // sets that timer, so stacking rewards attack speed without also letting
-  // rapid hits keep an enemy poisoned indefinitely.
+  // Poison (v1.36.1, stacking rework v1.36.3): a fixed-length damage-over-
+  // time status, independent of the player's own damage stat - tick damage
+  // is a percent of the POISONED ENEMY's own maxHp, so it stays meaningful
+  // against both fragile swarm enemies and huge single-target HP pools
+  // (bosses) alike, the same niche explosion/chain fill for AoE/crowd
+  // (§5's boss design note). Re-hitting an already-poisoned enemy adds a
+  // stack (more tick damage) but does NOT restart POISON_DURATION - only
+  // the first hit while unpoisoned sets that timer, so stacking rewards
+  // attack speed without also letting rapid hits keep an enemy poisoned
+  // indefinitely.
   const POISON_DURATION = 5;
-  // Capped rather than unbounded: an uncapped stack count would both let
-  // DPS runaway on any fast-firing build (each stack adds a further
-  // %-of-maxHp/sec tick) and, since stacks are shown as one dot each (see
-  // draw()), clutter the screen with dots well past the point of being
-  // readable at a glance.
-  const POISON_MAX_STACKS = 5;
-  function poisonDmgPctForLevel(level) { return 0.03 + 0.01 * (level - 1); }
+  // Per-stack tick rate is a flat constant rather than scaling with rank
+  // (v1.36.3) - ranking up instead raises how many stacks can pile up (see
+  // poisonMaxStacksForLevel), so power still grows with level but through
+  // stacking headroom rather than a per-tick multiplier. A capped stack
+  // count (still true after this change) matters for the same two reasons
+  // as before: an unbounded count would let DPS runaway on any fast-firing
+  // build, and since stacks are shown as one dot each (see draw()), would
+  // clutter the screen with dots well past the point of being readable.
+  const POISON_DMG_PCT = 0.04;
+  function poisonMaxStacksForLevel(level) { return level; }
 
   // Intercept: a passive aura around the player, independent of any bullet
   // hit, that slows enemies which get too close. Level raises how many
@@ -944,8 +949,8 @@
       maxLevel: 5,
       getLevel: p => p.poisonLevel,
       levelUp: p => { p.poisonLevel++; },
-      introDesc: `着弾した敵を${POISON_DURATION}秒間の毒状態にし、敵自身の最大HPの${Math.round(poisonDmgPctForLevel(1) * 100)}%を毎秒毒ダメージとして与えるようになる(毒状態中に再度攻撃が当たると重ね掛けされ、毒ダメージが増加する。持続時間は延長されない)`,
-      upgradeDesc: level => `毒ダメージが増加する(最大HPの${Math.round(poisonDmgPctForLevel(level) * 100)}%/秒 → ${Math.round(poisonDmgPctForLevel(level + 1) * 100)}%/秒、1スタックあたり)`,
+      introDesc: `着弾した敵を${POISON_DURATION}秒間の毒状態にし、敵自身の最大HPの${Math.round(POISON_DMG_PCT * 100)}%を毎秒毒ダメージ(1スタックあたり)として与えるようになる。毒状態中に再度攻撃が当たると重ね掛けされ、毒ダメージが増加する(持続時間は延長されない)`,
+      upgradeDesc: level => `毒の重ね掛け上限が増加する(最大${poisonMaxStacksForLevel(level)}スタック → 最大${poisonMaxStacksForLevel(level + 1)}スタック)`,
     },
   ];
 
@@ -1414,12 +1419,11 @@
         if (e.contactCd > 0) e.contactCd -= dt;
         if (e.slowTimer > 0) e.slowTimer -= dt;
         if (e.poisonTimer > 0) {
-          // Tick damage is a percent of the enemy's OWN maxHp (see
-          // poisonDmgPctForLevel), read at the player's current poison
-          // level rather than snapshotted at the hit that applied/stacked
-          // it - ranking up poison immediately strengthens ticks already in
-          // progress, same spirit as regen using the player's current rate.
-          e.hp -= e.maxHp * poisonDmgPctForLevel(p.poisonLevel) * e.poisonStacks * dt;
+          // Tick damage is a percent of the enemy's OWN maxHp at a flat
+          // rate (POISON_DMG_PCT) per stack - rank only affects how many
+          // stacks can pile up (see poisonMaxStacksForLevel, applied where
+          // stacks are added on hit), not this per-tick rate itself.
+          e.hp -= e.maxHp * POISON_DMG_PCT * e.poisonStacks * dt;
           e.poisonTimer -= dt;
           if (e.poisonTimer <= 0) e.poisonStacks = 0;
         }
@@ -1458,7 +1462,7 @@
             if (proj.slowDuration > 0) e.slowTimer = Math.max(e.slowTimer, proj.slowDuration);
             if (proj.poisons) {
               if (e.poisonTimer <= 0) { e.poisonTimer = POISON_DURATION; e.poisonStacks = 1; }
-              else e.poisonStacks = Math.min(POISON_MAX_STACKS, e.poisonStacks + 1);
+              else e.poisonStacks = Math.min(poisonMaxStacksForLevel(p.poisonLevel), e.poisonStacks + 1);
             }
 
             if (proj.explosionRadius > 0) {
