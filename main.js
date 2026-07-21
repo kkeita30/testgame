@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.7';
+  const GAME_VERSION = '1.36.8';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -414,6 +414,7 @@
       // Named bombifyLevel (not "bomb") to avoid confusion with the
       // unrelated "emergency bomb" special ability (§ CHARACTERS).
       this.bombifyLevel = 0;
+      this.weakenLevel = 0;
 
       // Double-tap special ability, defined per character (§ CHARACTERS).
       // null until a character with one is applied below.
@@ -684,6 +685,11 @@
       // Detonation (on death while bombifyTimer > 0) is resolved in
       // update(), not here.
       this.bombifyTimer = 0;
+      // Weaken (v1.36.8): no stack counter either, same refresh-on-rehit
+      // rule as bombify. Reduces this enemy's own dealt contact damage
+      // (both to the player and, if also frenzied, to other enemies) while
+      // active - see weakenDmgMultForLevel and its uses in update().
+      this.weakenTimer = 0;
       // Set by the emergency-bomb special so its mass-kill burst is exempt
       // from GEM_CAP below - the whole point of that ability is stockpiling
       // gems for one big level-up burst, which the cap would otherwise gut.
@@ -692,7 +698,7 @@
   }
 
   class Projectile {
-    constructor(x, y, vx, vy, damage, pierce, radius, explosionRadius, chainHops, slowDuration, poisons, frenzies, bombifies) {
+    constructor(x, y, vx, vy, damage, pierce, radius, explosionRadius, chainHops, slowDuration, poisons, frenzies, bombifies, weakens) {
       this.x = x; this.y = y;
       this.vx = vx; this.vy = vy;
       this.damage = damage;
@@ -706,6 +712,7 @@
       this.poisons = poisons || false;
       this.frenzies = frenzies || false;
       this.bombifies = bombifies || false;
+      this.weakens = weakens || false;
     }
   }
 
@@ -869,7 +876,9 @@
   // didn't care about either way.
   const CHAIN_TRIGGER_CHANCE = 0.5;
   const SLOW_MULT = 0.5;
-  const SLOWED_DMG_MULT = 0.5; // a slowed enemy's contact damage is also halved
+  // The attack-power reduction that used to be bundled into slow was split
+  // out into its own status, 衰弱/weaken (v1.36.8) - slow now only affects
+  // movement speed, nothing else.
 
   // Status-effect indicator dots (v1.36.0): rather than recoloring an
   // enemy's own body per status (which only ever supported showing one
@@ -877,7 +886,7 @@
   // each active status gets a small dot drawn above the enemy instead - see
   // draw(). Keyed by status name so future statuses (e.g. poison) just add
   // an entry here and a condition in draw() without touching enemy color.
-  const STATUS_DOT_COLORS = { slow: '#7ec8ff', poison: '#39d353', frenzy: '#ff8c1a', bombify: '#ff3b3b' };
+  const STATUS_DOT_COLORS = { slow: '#7ec8ff', poison: '#39d353', frenzy: '#ff8c1a', bombify: '#ff3b3b', weaken: '#aaaaaa' };
   function explosionRadiusForLevel(level) { return 50 + 20 * (level - 1); }
   function slowDurationForLevel(level) { return 1.0 + 0.5 * (level - 1); }
 
@@ -937,6 +946,18 @@
   const BOMBIFY_DURATION = 3;
   const BOMBIFY_RADIUS = 180;
   function bombifyDmgPctForLevel(level) { return 0.3 + 0.1 * (level - 1); }
+
+  // Weaken (v1.36.8): split out of slow, which used to also halve a
+  // slowed enemy's contact damage - that coupling meant taking slow always
+  // meant taking a damage debuff too, with no way to get one without the
+  // other. Weaken is now its own gated pick (like bombify, only appears
+  // once slow is maxed) so a player who wants the offense-suppression
+  // effect specifically has to actually invest in it. Same non-stacking,
+  // refresh-on-rehit design as bombify: no stack count, a later hit just
+  // resets weakenTimer to WEAKEN_DURATION. Rank raises the damage
+  // reduction directly, reusing bombify's exact 30%->70% curve.
+  const WEAKEN_DURATION = 5;
+  function weakenDmgMultForLevel(level) { return 1 - (0.3 + 0.1 * (level - 1)); }
 
   // Intercept: a passive aura around the player, independent of any bullet
   // hit, that slows enemies which get too close. Level raises how many
@@ -1028,6 +1049,17 @@
       available: p => p.explosionLevel >= 5,
       introDesc: `着弾した敵を${BOMBIFY_DURATION}秒間爆弾化する。生存中は特に効果はないが、爆弾化状態のまま倒された敵は、その敵自身の最大HPの${Math.round(bombifyDmgPctForLevel(1) * 100)}%を周囲(半径${BOMBIFY_RADIUS}px)の他の敵に爆発ダメージとして与える。重ね掛けはされず、再度攻撃が当たると持続時間が最大まで更新される`,
       upgradeDesc: level => `爆弾化ダメージが増加する(敵自身の最大HPの${Math.round(bombifyDmgPctForLevel(level) * 100)}% → ${Math.round(bombifyDmgPctForLevel(level + 1) * 100)}%)`,
+    },
+    {
+      id: 'weaken',
+      name: '衰弱',
+      maxLevel: 5,
+      getLevel: p => p.weakenLevel,
+      levelUp: p => { p.weakenLevel++; },
+      // Gated behind 低速 being fully ranked up, same idea as bombify/爆発.
+      available: p => p.slowLevel >= 5,
+      introDesc: `着弾した敵を${WEAKEN_DURATION}秒間衰弱状態にし、攻撃力を${Math.round((1 - weakenDmgMultForLevel(1)) * 100)}%低下させる。重ね掛けはされず、再度攻撃が当たると持続時間が最大まで更新される`,
+      upgradeDesc: level => `衰弱による攻撃力低下率が増加する(${Math.round((1 - weakenDmgMultForLevel(level)) * 100)}% → ${Math.round((1 - weakenDmgMultForLevel(level + 1)) * 100)}%)`,
     },
   ];
 
@@ -1130,7 +1162,8 @@
       const picks = [];
       // `available` is the same opt-in gate used by UPGRADE_POOL/
       // TRADEOFF_POOL below - most BULLET_EFFECTS have no such prerequisite,
-      // only bombify does (requires explosion maxed - see its definition).
+      // only bombify/weaken do (require explosion/slow maxed respectively -
+      // see their definitions).
       const notMaxedEffects = BULLET_EFFECTS.filter(eff =>
         eff.getLevel(this.player) < eff.maxLevel && (!eff.available || eff.available(this.player))
       );
@@ -1307,6 +1340,7 @@
       const poisons = p.poisonLevel > 0;
       const frenzies = p.frenzyLevel > 0;
       const bombifies = p.bombifyLevel > 0;
+      const weakens = p.weakenLevel > 0;
       // Some specials (e.g. speed-type's overdrive) include a timed damage
       // buff, declared on the special itself (buffDamageMult) rather than
       // hardcoded here. Baked into the shot at fire time, same as p.damage
@@ -1320,7 +1354,7 @@
         const ang = Math.atan2(target.y - p.y, target.x - p.x) + rand(-0.05, 0.05);
         const vx = Math.cos(ang) * p.projSpeed;
         const vy = Math.sin(ang) * p.projSpeed;
-        this.projectiles.push(new Projectile(p.x, p.y, vx, vy, shotDamage, p.pierce, 5, explosionRadius, chainHops, slowDuration, poisons, frenzies, bombifies));
+        this.projectiles.push(new Projectile(p.x, p.y, vx, vy, shotDamage, p.pierce, 5, explosionRadius, chainHops, slowDuration, poisons, frenzies, bombifies, weakens));
       }
     }
 
@@ -1517,13 +1551,16 @@
           if (e.frenzyTimer <= 0) e.frenzyStacks = 0;
         }
         if (e.bombifyTimer > 0) e.bombifyTimer -= dt; // no effect while alive - see the detonation-resolution block below
+        if (e.weakenTimer > 0) e.weakenTimer -= dt;
 
         if (d < e.radius + p.radius && e.contactCd <= 0) {
-          // Slowed enemies hit softer, frenzied enemies hit harder - both
+          // Frenzied enemies hit harder, weakened enemies hit softer - both
           // stack multiplicatively in the unlikely case a build applies
-          // both to the same enemy.
+          // both to the same enemy. Slow itself no longer touches damage
+          // (that's weaken's job now, split apart in v1.36.8).
           const frenzyDmgMult = e.frenzyTimer > 0 ? 1 + e.frenzyStacks * FRENZY_DMG_MULT_PER_STACK : 1;
-          const dmg = (e.slowTimer > 0 ? e.dmg * SLOWED_DMG_MULT : e.dmg) * frenzyDmgMult;
+          const weakenDmgMult = e.weakenTimer > 0 ? weakenDmgMultForLevel(p.weakenLevel) : 1;
+          const dmg = e.dmg * frenzyDmgMult * weakenDmgMult;
           p.takeDamage(dmg);
           // Passive hook for characters like Tank whose passive reacts to
           // being hit (e.g. reflect damage). Fires on the contact event
@@ -1546,11 +1583,12 @@
       for (const e of this.enemies) {
         if (e.frenzyTimer <= 0 || e.contactCd > 0) continue;
         const frenzyDmgMult = 1 + e.frenzyStacks * FRENZY_DMG_MULT_PER_STACK;
+        const weakenDmgMult = e.weakenTimer > 0 ? weakenDmgMultForLevel(p.weakenLevel) : 1;
         for (const other of this.enemies) {
           if (other === e) continue;
           const rr = e.radius + other.radius;
           if (dist2(e.x, e.y, other.x, other.y) < rr * rr) {
-            other.hp -= e.dmg * frenzyDmgMult;
+            other.hp -= e.dmg * frenzyDmgMult * weakenDmgMult;
             other.hitFlash = 0.12;
             e.contactCd = 0.5;
             break;
@@ -1584,6 +1622,7 @@
               else e.frenzyStacks = Math.min(frenzyMaxStacksForLevel(p.frenzyLevel), e.frenzyStacks + 1);
             }
             if (proj.bombifies) e.bombifyTimer = BOMBIFY_DURATION; // no stacking - just (re)starts at full duration
+            if (proj.weakens) e.weakenTimer = WEAKEN_DURATION; // no stacking - just (re)starts at full duration
 
             if (proj.explosionRadius > 0) {
               for (const other of this.enemies) {
@@ -1865,8 +1904,9 @@
         // at a glance rather than needing a number readout.
         for (let i = 0; i < e.poisonStacks; i++) activeStatusDots.push(STATUS_DOT_COLORS.poison);
         for (let i = 0; i < e.frenzyStacks; i++) activeStatusDots.push(STATUS_DOT_COLORS.frenzy);
-        // Bombify doesn't stack, so just a single dot like slow.
+        // Bombify/weaken don't stack, so just a single dot each like slow.
         if (e.bombifyTimer > 0) activeStatusDots.push(STATUS_DOT_COLORS.bombify);
+        if (e.weakenTimer > 0) activeStatusDots.push(STATUS_DOT_COLORS.weaken);
         if (activeStatusDots.length > 0) {
           const dotRadius = 3;
           const dotSpacing = 9;
@@ -2023,6 +2063,7 @@
     if (p.poisonLevel > 0) bulletLines.push(`猛毒 Lv.${p.poisonLevel}`);
     if (p.frenzyLevel > 0) bulletLines.push(`狂乱 Lv.${p.frenzyLevel}`);
     if (p.bombifyLevel > 0) bulletLines.push(`爆弾化 Lv.${p.bombifyLevel}`);
+    if (p.weakenLevel > 0) bulletLines.push(`衰弱 Lv.${p.weakenLevel}`);
     pauseStatsEl.innerHTML = `
       <p>HP: ${Math.ceil(p.hp)} / ${p.maxHp}</p>
       <p>レベル: ${p.level}</p>
