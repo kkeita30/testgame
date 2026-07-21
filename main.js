@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.14';
+  const GAME_VERSION = '1.36.15';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -334,6 +334,34 @@
     return Math.min(WEAPON_INNATE_MAX_RANK, Math.floor((level - 1) / WEAPON_INNATE_LEVELS_PER_RANK) + 1);
   }
 
+  // Intercept: a passive aura around the player, independent of any bullet
+  // hit, that slows enemies which get too close. Level raises how many
+  // enemies it can affect at once (nearest-first); its duration piggybacks
+  // on the slow bullet effect's rank if the player has it (same scaling),
+  // else falls back to a short base duration that's really just meant to
+  // survive one frame - it re-applies continuously while an enemy stays
+  // within range anyway.
+  const INTERCEPT_RADIUS = 60;
+  const INTERCEPT_BASE_DURATION = 0.4;
+  function interceptDuration(p) { return p.slowLevel > 0 ? slowDurationForLevel(p.slowLevel) : INTERCEPT_BASE_DURATION; }
+  function interceptTargetCount(level) { return level; }
+
+  // Wide weapon (v1.36.15): a short-range melee-style sweep that hits every
+  // enemy inside a cone in front of the player in one go, instead of firing
+  // a traveling Projectile. WIDE_ATTACK_RANGE piggybacks on INTERCEPT_RADIUS
+  // (already the game's established "close" distance), just a bit longer -
+  // the tradeoff for guaranteed multi-target coverage and above-average
+  // damage is that the player has to get in close to use it at all. Its
+  // innate effect (see WEAPONS below) widens the cone with rank instead of
+  // adding more shots, so this weapon never gets multishot's raw
+  // shot-count scaling. Declared here (ahead of its usual position among
+  // the other bullet-effect constants) because WEAPONS' desc strings below
+  // reference it directly at module-load time, not just from inside a
+  // later-called function.
+  const WIDE_ATTACK_RANGE = INTERCEPT_RADIUS + 30;
+  const WIDE_DAMAGE_MULT = 2.0;
+  function wideHalfWidthForRank(rank) { return 16 + 10 * (rank - 1); }
+
   const WEAPONS = [
     {
       id: 'standard',
@@ -344,6 +372,17 @@
         name: 'マルチショット',
         desc: `自機レベルアップ${WEAPON_INNATE_LEVELS_PER_RANK}ごとにランクが上昇(最大Lv.${WEAPON_INNATE_MAX_RANK})し、同時発射数がランクと同じ数になる`,
         applyRank(p, rank) { p.projCount = rank; },
+      },
+    },
+    {
+      id: 'wide',
+      name: '薙刀',
+      desc: `近距離専用の幅広い斬撃。射程は「迎撃」よりわずかに長い程度(${WIDE_ATTACK_RANGE}px)だが、範囲内の敵を一度に全て攻撃でき、威力も高め(通常武器の${WIDE_DAMAGE_MULT}倍)。マルチショットは持たない代わりに、ランクアップで斬撃の幅が広がっていく。`,
+      apply: (p) => {},
+      innateEffect: {
+        name: '広範囲斬撃',
+        desc: `自機レベルアップ${WEAPON_INNATE_LEVELS_PER_RANK}ごとにランクが上昇(最大Lv.${WEAPON_INNATE_MAX_RANK})し、斬撃の幅が広がる`,
+        applyRank(p, rank) { p.wideHalfWidth = wideHalfWidthForRank(rank); },
       },
     },
   ];
@@ -392,6 +431,9 @@
       this.projSpeed = 380;
       this.projCount = 1;
       this.pierce = 0;
+      // Wide weapon only (see WEAPONS/fireWideSweep) - unused by any other
+      // weapon, harmless default otherwise.
+      this.wideHalfWidth = 16;
       // Raised from 70 (v1.35.0) to fold in exactly what one pickup-range
       // upgrade pick used to add, now that the upgrade itself is gone.
       this.pickupRadius = 100;
@@ -785,6 +827,20 @@
     }
   }
 
+  // Brief fading wedge for the wide weapon's sweep (see Game.fireWideSweep),
+  // sized to match the actual hitbox (range x halfWidth) so what flashes on
+  // screen lines up with what could actually get hit.
+  class SweepEffect {
+    constructor(x, y, angle, range, halfWidth) {
+      this.x = x; this.y = y;
+      this.angle = angle;
+      this.range = range;
+      this.halfWidth = halfWidth;
+      this.life = 0.15;
+      this.maxLife = 0.15;
+    }
+  }
+
   // Move speed and pickup radius upgrades were removed (v1.35.0): neither
   // feeds into any difficulty-scaling axis (§6-2), and both had a
   // lopsided value curve - move speed is only good in moderation (too
@@ -982,18 +1038,6 @@
   // frame in the same loop that already computes those multipliers.
   const THREAT_RADIUS = 220;
 
-  // Intercept: a passive aura around the player, independent of any bullet
-  // hit, that slows enemies which get too close. Level raises how many
-  // enemies it can affect at once (nearest-first); its duration piggybacks
-  // on the slow bullet effect's rank if the player has it (same scaling),
-  // else falls back to a short base duration that's really just meant to
-  // survive one frame - it re-applies continuously while an enemy stays
-  // within range anyway.
-  const INTERCEPT_RADIUS = 60;
-  const INTERCEPT_BASE_DURATION = 0.4;
-  function interceptDuration(p) { return p.slowLevel > 0 ? slowDurationForLevel(p.slowLevel) : INTERCEPT_BASE_DURATION; }
-  function interceptTargetCount(level) { return level; }
-
   const BULLET_EFFECTS = [
     {
       id: 'explosion',
@@ -1137,6 +1181,7 @@
       this.gems = [];
       this.particles = [];
       this.chainZaps = [];
+      this.sweepEffects = [];
       this.camX = 0;
       this.camY = 0;
       this.time = 0;
@@ -1345,6 +1390,8 @@
       if (p.atkTimer > 0) return;
       if (this.enemies.length === 0) return;
 
+      if (p.weapon && p.weapon.id === 'wide') { this.fireWideSweep(); return; }
+
       // find nearest N enemies within weapon range - out-of-range enemies
       // (typically still off-screen) are ignored entirely rather than
       // being auto-targeted, so kills happen where the player can actually
@@ -1383,6 +1430,67 @@
       }
     }
 
+    // Wide weapon's attack (see WEAPONS): an instant cone-shaped sweep
+    // instead of a traveling Projectile - every enemy within
+    // WIDE_ATTACK_RANGE and inside the cone's width is hit in one go, no
+    // travel time and no pierce/hitSet lifecycle to track. Aims at the
+    // single nearest in-range enemy, same "ignore anything out of reach"
+    // rule as the standard weapon, but gated to WIDE_ATTACK_RANGE (much
+    // shorter than weaponRange()) so this weapon only works at melee range.
+    fireWideSweep() {
+      const p = this.player;
+      const range2 = WIDE_ATTACK_RANGE * WIDE_ATTACK_RANGE;
+      let nearest = null, nearestD2 = range2;
+      for (const e of this.enemies) {
+        const d2 = dist2(e.x, e.y, p.x, p.y);
+        if (d2 <= nearestD2) { nearest = e; nearestD2 = d2; }
+      }
+      if (!nearest) return;
+      p.atkTimer = p.atkCooldown;
+
+      const aimAngle = Math.atan2(nearest.y - p.y, nearest.x - p.x);
+      const halfWidth = p.wideHalfWidth;
+      // Rotate each candidate into the sweep's local frame (forward =
+      // +localX) so the cone becomes a simple axis-aligned box test:
+      // forward reach up to WIDE_ATTACK_RANGE, lateral spread up to
+      // halfWidth on either side (plus the enemy's own radius, so an enemy
+      // just grazing the edge still counts, matching the +radius margin
+      // used elsewhere for circular hit tests).
+      const cosA = Math.cos(-aimAngle), sinA = Math.sin(-aimAngle);
+
+      const buffDamageMult = p.specialBuffTimer > 0 && p.special && p.special.buffDamageMult != null
+        ? p.special.buffDamageMult : 1;
+      // Virtual "projectile" carrying the same bullet-effect flags a real
+      // shot would - never added to this.projectiles (no travel, no
+      // pierce/hitSet), just handed to resolveProjectileHit per struck
+      // enemy so both attack types share identical hit-resolution logic.
+      const virtualProj = {
+        damage: p.damage * buffDamageMult * WIDE_DAMAGE_MULT,
+        explosionRadius: p.explosionLevel > 0 ? explosionRadiusForLevel(p.explosionLevel) : 0,
+        chainHops: p.chainLevel,
+        slowDuration: p.slowLevel > 0 ? slowDurationForLevel(p.slowLevel) : 0,
+        poisons: p.poisonLevel > 0,
+        frenzies: p.frenzyLevel > 0,
+        bombifies: p.bombifyLevel > 0,
+        weakens: p.weakenLevel > 0,
+      };
+
+      let hitAny = false;
+      for (const e of this.enemies) {
+        const dx = e.x - p.x, dy = e.y - p.y;
+        const localX = dx * cosA - dy * sinA;
+        const localY = dx * sinA + dy * cosA;
+        if (localX < -e.radius || localX > WIDE_ATTACK_RANGE + e.radius) continue;
+        if (Math.abs(localY) > halfWidth + e.radius) continue;
+        hitAny = true;
+        this.resolveProjectileHit(virtualProj, e);
+      }
+      if (!hitAny) return;
+
+      this.sweepEffects.push(new SweepEffect(p.x, p.y, aimAngle, WIDE_ATTACK_RANGE, halfWidth));
+      this.shakeTime = Math.max(this.shakeTime, 0.08);
+    }
+
     // Applies every status effect a projectile carries (slow/poison/
     // frenzy/bombify/weaken) to one target enemy. Shared between the
     // primary hit and each chain hop (see update()) so the two paths can't
@@ -1402,6 +1510,67 @@
       }
       if (proj.bombifies) target.bombifyTimer = BOMBIFY_DURATION; // no stacking - just (re)starts at full duration
       if (proj.weakens) target.weakenTimer = WEAKEN_DURATION; // no stacking - just (re)starts at full duration
+    }
+
+    // Applies a single hit's damage, on-hit statuses, explosion splash, and
+    // chain propagation. Shared between a normal projectile's collision
+    // (see update()) and the wide weapon's instant sweep (fireWideSweep),
+    // which hits every enemy in its cone the same way but has no
+    // travel/pierce lifecycle of its own. `proj` only needs to duck-type
+    // the fields read here (damage/explosionRadius/chainHops/statuses) - it
+    // doesn't have to be a real Projectile instance.
+    resolveProjectileHit(proj, e) {
+      e.hp -= proj.damage;
+      e.hitFlash = 0.12;
+      this.applyOnHitStatuses(proj, e);
+
+      if (proj.explosionRadius > 0) {
+        for (const other of this.enemies) {
+          if (other === e) continue;
+          if (dist(other.x, other.y, e.x, e.y) <= proj.explosionRadius) {
+            other.hp -= proj.damage * EXPLOSION_DAMAGE_PCT;
+            other.hitFlash = 0.12;
+            for (let i = 0; i < 8; i++) this.particles.push(new Particle(e.x, e.y, '#ff4500', 2.5));
+          }
+        }
+      }
+
+      if (proj.chainHops > 0 && Math.random() < CHAIN_TRIGGER_CHANCE) {
+        const chained = new Set([e]);
+        let fromX = e.x, fromY = e.y;
+        for (let hop = 0; hop < proj.chainHops; hop++) {
+          let nearest = null, nearestD2 = CHAIN_RADIUS * CHAIN_RADIUS;
+          for (const cand of this.enemies) {
+            if (chained.has(cand)) continue;
+            const d2 = dist2(fromX, fromY, cand.x, cand.y);
+            if (d2 <= nearestD2) { nearest = cand; nearestD2 = d2; }
+          }
+          if (!nearest) break;
+          nearest.hp -= proj.damage * CHAIN_DAMAGE_PCT;
+          nearest.hitFlash = 0.12;
+          this.applyOnHitStatuses(proj, nearest);
+          this.chainZaps.push(new ChainZap(fromX, fromY, nearest.x, nearest.y));
+
+          // Chain's role is spreading damage/status to more targets, not
+          // diminishing whatever it spreads - so if explosion is also
+          // equipped, each chained hit detonates its own explosion too,
+          // using the player's full attack power (proj.damage) rather than
+          // chain's own reduced damage.
+          if (proj.explosionRadius > 0) {
+            for (const other of this.enemies) {
+              if (other === nearest || chained.has(other)) continue;
+              if (dist(other.x, other.y, nearest.x, nearest.y) <= proj.explosionRadius) {
+                other.hp -= proj.damage * EXPLOSION_DAMAGE_PCT;
+                other.hitFlash = 0.12;
+                for (let i = 0; i < 8; i++) this.particles.push(new Particle(nearest.x, nearest.y, '#ff4500', 2.5));
+              }
+            }
+          }
+
+          chained.add(nearest);
+          fromX = nearest.x; fromY = nearest.y;
+        }
+      }
     }
 
     update(dt) {
@@ -1671,59 +1840,8 @@
         for (const e of this.enemies) {
           if (proj.hitSet.has(e)) continue;
           if (dist2(proj.x, proj.y, e.x, e.y) < (proj.radius + e.radius) * (proj.radius + e.radius)) {
-            e.hp -= proj.damage;
-            e.hitFlash = 0.12;
             proj.hitSet.add(e);
-            this.applyOnHitStatuses(proj, e);
-
-            if (proj.explosionRadius > 0) {
-              for (const other of this.enemies) {
-                if (other === e) continue;
-                if (dist(other.x, other.y, e.x, e.y) <= proj.explosionRadius) {
-                  other.hp -= proj.damage * EXPLOSION_DAMAGE_PCT;
-                  other.hitFlash = 0.12;
-                  for (let i = 0; i < 8; i++) this.particles.push(new Particle(e.x, e.y, '#ff4500', 2.5));
-                }
-              }
-            }
-
-            if (proj.chainHops > 0 && Math.random() < CHAIN_TRIGGER_CHANCE) {
-              const chained = new Set([e]);
-              let fromX = e.x, fromY = e.y;
-              for (let hop = 0; hop < proj.chainHops; hop++) {
-                let nearest = null, nearestD2 = CHAIN_RADIUS * CHAIN_RADIUS;
-                for (const cand of this.enemies) {
-                  if (chained.has(cand)) continue;
-                  const d2 = dist2(fromX, fromY, cand.x, cand.y);
-                  if (d2 <= nearestD2) { nearest = cand; nearestD2 = d2; }
-                }
-                if (!nearest) break;
-                nearest.hp -= proj.damage * CHAIN_DAMAGE_PCT;
-                nearest.hitFlash = 0.12;
-                this.applyOnHitStatuses(proj, nearest);
-                this.chainZaps.push(new ChainZap(fromX, fromY, nearest.x, nearest.y));
-
-                // Chain's role is spreading damage/status to more targets,
-                // not diminishing whatever it spreads - so if explosion is
-                // also equipped, each chained hit detonates its own
-                // explosion too, using the player's full attack power
-                // (proj.damage) rather than chain's own reduced damage.
-                if (proj.explosionRadius > 0) {
-                  for (const other of this.enemies) {
-                    if (other === nearest || chained.has(other)) continue;
-                    if (dist(other.x, other.y, nearest.x, nearest.y) <= proj.explosionRadius) {
-                      other.hp -= proj.damage * EXPLOSION_DAMAGE_PCT;
-                      other.hitFlash = 0.12;
-                      for (let i = 0; i < 8; i++) this.particles.push(new Particle(nearest.x, nearest.y, '#ff4500', 2.5));
-                    }
-                  }
-                }
-
-                chained.add(nearest);
-                fromX = nearest.x; fromY = nearest.y;
-              }
-            }
-
+            this.resolveProjectileHit(proj, e);
             if (proj.pierce <= 0) { proj.life = 0; break; }
             proj.pierce -= 1;
           }
@@ -1836,6 +1954,10 @@
       // chain zaps
       for (const zap of this.chainZaps) zap.life -= dt;
       this.chainZaps = this.chainZaps.filter(zap => zap.life > 0);
+
+      // wide weapon sweep flashes
+      for (const sw of this.sweepEffects) sw.life -= dt;
+      this.sweepEffects = this.sweepEffects.filter(sw => sw.life > 0);
 
       if (this.shakeTime > 0) this.shakeTime -= dt;
 
@@ -2006,6 +2128,26 @@
         ctx.fillStyle = '#ffe45a';
         ctx.arc(sx, sy, proj.radius, 0, TAU);
         ctx.fill();
+      }
+
+      // wide weapon sweep flashes - a fading wedge sized to match the
+      // actual hitbox (range x halfWidth) so the flash lines up with what
+      // could actually get hit (see Game.fireWideSweep).
+      for (const sw of this.sweepEffects) {
+        const sx = sw.x + offX, sy = sw.y + offY;
+        ctx.save();
+        ctx.translate(sx, sy);
+        ctx.rotate(sw.angle);
+        ctx.globalAlpha = clamp(sw.life / sw.maxLife, 0, 1) * 0.55;
+        ctx.fillStyle = '#ffe45a';
+        ctx.beginPath();
+        ctx.moveTo(0, -sw.halfWidth);
+        ctx.lineTo(sw.range, -sw.halfWidth);
+        ctx.lineTo(sw.range, sw.halfWidth);
+        ctx.lineTo(0, sw.halfWidth);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
       }
 
       // player
