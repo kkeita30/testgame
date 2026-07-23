@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.22';
+  const GAME_VERSION = '1.36.23';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -776,6 +776,20 @@
     return Math.max(W, H) * 0.5 * WEAPON_RANGE_OVERSHOOT * p.rangeMult;
   }
 
+  // Camera zoom (v1.36.23): the 射程アップ upgrade raises rangeMult, which
+  // would otherwise let the standard/charge weapons' auto-aim reach well
+  // past what's actually visible on screen (weaponRange already extends
+  // slightly past the screen edge even at rangeMult=1 - see the overshoot
+  // comment above). Tying zoom directly to 1/rangeMult keeps that same
+  // "range reaches just past the visible edge" relationship intact
+  // regardless of how much rangeMult has grown, rather than the extra
+  // range being functionally invisible. rangeMult=1 (no range upgrades
+  // taken) gives scale=1 - pixel-identical to the game's behavior before
+  // this existed.
+  function viewScale(p) {
+    return 1 / p.rangeMult;
+  }
+
   class Enemy {
     constructor(type, x, y, hpMult, dmgMult) {
       const def = ENEMY_TYPES[type];
@@ -936,6 +950,19 @@
   const UPGRADE_POOL = [
     { id: 'damage', title: 'ダメージ強化', desc: '攻撃ダメージ +50%', apply: p => p.damage = Math.round(p.damage * 1.5) },
     {
+      id: 'range',
+      title: '射程アップ',
+      desc: '射程 +20%(視界も拡大)',
+      // rangeMult drives both weaponRange() (standard/charge weapons'
+      // auto-aim reach) and viewScale() (camera zoom, see draw()) - the
+      // two are deliberately the same multiplier, so a longer reach never
+      // extends past what the player can actually see.
+      apply: p => p.rangeMult = Math.min(STAT_LIMITS.maxRangeMult, p.rangeMult * 1.2),
+      // Once rangeMult is already at its cap, stop offering it rather than
+      // presenting a dead choice (same pattern as atkspeed's floor gate).
+      available: p => p.rangeMult < STAT_LIMITS.maxRangeMult,
+    },
+    {
       id: 'atkspeed',
       title: '攻撃速度アップ',
       desc: '攻撃間隔 -20%',
@@ -973,7 +1000,11 @@
   // downside repeatedly can't reduce a stat to uselessness (or, on the
   // cooldown side, to unplayable slowness). Once a stat is saturated at its
   // limit, further picks of that tradeoff still grant the upside "for free".
-  const STAT_LIMITS = { minDamage: 3, maxAtkCooldown: 1.4, minAtkCooldown: 0.15 };
+  // maxRangeMult caps how far the range upgrade can zoom the camera out -
+  // unlike damage/maxHp (safe to stack indefinitely), range is tied
+  // directly to camera zoom (viewScale), so an uncapped stack would
+  // eventually zoom out to the point of hurting readability/performance.
+  const STAT_LIMITS = { minDamage: 3, maxAtkCooldown: 1.4, minAtkCooldown: 0.15, maxRangeMult: 2.0 };
 
   // Each grants a strong upside alongside a real downside, for players who
   // want to commit to a build rather than only stacking safe, one-sided
@@ -2233,30 +2264,44 @@
         shakeY = rand(-4, 4);
       }
 
-      const offX = W / 2 - this.camX + shakeX;
-      const offY = H / 2 - this.camY + shakeY;
+      // Camera transform: everything below draws in plain world
+      // coordinates (matching the same units gameplay logic already uses
+      // elsewhere), with translation AND zoom handled once here instead of
+      // manually adding an offX/offY to every single coordinate. Shake is
+      // applied as a raw screen-pixel nudge OUTSIDE the zoom scale, so it
+      // reads as a constant-size camera jolt regardless of current zoom
+      // level, rather than shrinking/growing with it.
+      const scale = viewScale(this.player);
+      ctx.save();
+      ctx.translate(W / 2 + shakeX, H / 2 + shakeY);
+      ctx.scale(scale, scale);
+      ctx.translate(-this.camX, -this.camY);
 
-      // background grid
+      // background grid - swept across the currently visible world extent,
+      // which grows as scale shrinks (further zoomed out covers more world
+      // per screen), so the grid always fills the screen regardless of zoom.
       ctx.save();
       ctx.strokeStyle = 'rgba(255,255,255,0.05)';
-      ctx.lineWidth = 1;
+      ctx.lineWidth = 1 / scale;
       const gridSize = 64;
-      const startX = ((offX % gridSize) + gridSize) % gridSize;
-      const startY = ((offY % gridSize) + gridSize) % gridSize;
-      for (let x = startX; x < W; x += gridSize) {
-        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+      const viewHalfW = (W / 2) / scale;
+      const viewHalfH = (H / 2) / scale;
+      const left = this.camX - viewHalfW, right = this.camX + viewHalfW;
+      const top = this.camY - viewHalfH, bottom = this.camY + viewHalfH;
+      const startGX = Math.floor(left / gridSize) * gridSize;
+      const startGY = Math.floor(top / gridSize) * gridSize;
+      for (let x = startGX; x <= right; x += gridSize) {
+        ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, bottom); ctx.stroke();
       }
-      for (let y = startY; y < H; y += gridSize) {
-        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+      for (let y = startGY; y <= bottom; y += gridSize) {
+        ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(right, y); ctx.stroke();
       }
       ctx.restore();
 
       // gems
       for (const g of this.gems) {
-        const sx = g.x + offX, sy = g.y + offY;
-        if (sx < -20 || sx > W + 20 || sy < -20 || sy > H + 20) continue;
         ctx.save();
-        ctx.translate(sx, sy);
+        ctx.translate(g.x, g.y);
         ctx.rotate(Math.PI / 4);
         ctx.fillStyle = '#7fffd4';
         ctx.fillRect(-g.radius, -g.radius, g.radius * 2, g.radius * 2);
@@ -2265,11 +2310,9 @@
 
       // enemies
       for (const e of this.enemies) {
-        const sx = e.x + offX, sy = e.y + offY;
-        if (sx < -40 || sx > W + 40 || sy < -40 || sy > H + 40) continue;
         ctx.beginPath();
         ctx.fillStyle = e.hitFlash > 0 ? '#ffffff' : e.color;
-        ctx.arc(sx, sy, e.radius, 0, TAU);
+        ctx.arc(e.x, e.y, e.radius, 0, TAU);
         ctx.fill();
 
         // Status-effect dots, drawn in a row above the enemy instead of
@@ -2287,8 +2330,8 @@
         if (activeStatusDots.length > 0) {
           const dotRadius = 3;
           const dotSpacing = 9;
-          const dotY = sy - e.radius - 8;
-          const rowStartX = sx - (activeStatusDots.length - 1) * dotSpacing / 2;
+          const dotY = e.y - e.radius - 8;
+          const rowStartX = e.x - (activeStatusDots.length - 1) * dotSpacing / 2;
           for (let i = 0; i < activeStatusDots.length; i++) {
             ctx.beginPath();
             ctx.fillStyle = activeStatusDots[i];
@@ -2301,11 +2344,10 @@
       // particles - drawn above enemies so death/explosion bursts read
       // clearly instead of being hidden underneath enemy graphics
       for (const pt of this.particles) {
-        const sx = pt.x + offX, sy = pt.y + offY;
         ctx.globalAlpha = clamp(pt.life / pt.maxLife, 0, 1);
         ctx.fillStyle = pt.color;
         ctx.beginPath();
-        ctx.arc(sx, sy, pt.radius, 0, TAU);
+        ctx.arc(pt.x, pt.y, pt.radius, 0, TAU);
         ctx.fill();
         ctx.globalAlpha = 1;
       }
@@ -2316,18 +2358,17 @@
         ctx.strokeStyle = '#7ec8ff';
         ctx.lineWidth = 2;
         ctx.beginPath();
-        ctx.moveTo(zap.x1 + offX, zap.y1 + offY);
-        ctx.lineTo(zap.x2 + offX, zap.y2 + offY);
+        ctx.moveTo(zap.x1, zap.y1);
+        ctx.lineTo(zap.x2, zap.y2);
         ctx.stroke();
         ctx.globalAlpha = 1;
       }
 
       // projectiles
       for (const proj of this.projectiles) {
-        const sx = proj.x + offX, sy = proj.y + offY;
         ctx.beginPath();
         ctx.fillStyle = '#ffe45a';
-        ctx.arc(sx, sy, proj.radius, 0, TAU);
+        ctx.arc(proj.x, proj.y, proj.radius, 0, TAU);
         ctx.fill();
       }
 
@@ -2339,11 +2380,10 @@
       // sweep even though the arcs themselves are a stylization, not the
       // hitbox outline (see Game.fireWideSweep).
       for (const sw of this.sweepEffects) {
-        const sx = sw.x + offX, sy = sw.y + offY;
         const alpha = clamp(sw.life / sw.maxLife, 0, 1);
         const angHalf = Math.atan2(sw.halfWidth, sw.range);
         ctx.save();
-        ctx.translate(sx, sy);
+        ctx.translate(sw.x, sw.y);
         ctx.rotate(sw.angle);
         ctx.strokeStyle = '#ffe45a';
         ctx.lineCap = 'round';
@@ -2362,10 +2402,9 @@
       // actual hitbox (range x halfWidth), brighter/thicker the fuller the
       // charge was (see Game.fireChargeBeam).
       for (const b of this.beamEffects) {
-        const sx = b.x + offX, sy = b.y + offY;
         const lifeAlpha = clamp(b.life / b.maxLife, 0, 1);
         ctx.save();
-        ctx.translate(sx, sy);
+        ctx.translate(b.x, b.y);
         ctx.rotate(b.angle);
         ctx.globalAlpha = lifeAlpha * (0.5 + b.chargeFrac * 0.5);
         ctx.fillStyle = b.chargeFrac > 0.9 ? '#eaffff' : '#8ef0ff';
@@ -2381,17 +2420,16 @@
 
       // player
       const p = this.player;
-      const psx = p.x + offX, psy = p.y + offY;
       ctx.save();
       if (p.invulnTimer > 0 && Math.floor(this.time * 20) % 2 === 0) ctx.globalAlpha = 0.4;
       ctx.beginPath();
       ctx.fillStyle = '#3ad1ff';
-      ctx.arc(psx, psy, p.radius, 0, TAU);
+      ctx.arc(p.x, p.y, p.radius, 0, TAU);
       ctx.fill();
       // eyes to show facing
       ctx.fillStyle = '#0d0d12';
       ctx.beginPath();
-      ctx.arc(psx + p.facing * 5, psy - 4, 2.5, 0, TAU);
+      ctx.arc(p.x + p.facing * 5, p.y - 4, 2.5, 0, TAU);
       ctx.fill();
       ctx.restore();
 
@@ -2413,7 +2451,7 @@
         ctx.strokeStyle = !canFire ? '#888888' : chargeFrac > 0.9 ? '#eaffff' : '#8ef0ff';
         ctx.lineWidth = canFire ? 2 + chargeFrac * 3 : 2;
         ctx.beginPath();
-        ctx.arc(psx, psy, p.radius + 6 + chargeFrac * 10, 0, TAU);
+        ctx.arc(p.x, p.y, p.radius + 6 + chargeFrac * 10, 0, TAU);
         ctx.stroke();
         ctx.restore();
 
@@ -2435,7 +2473,7 @@
           const stage = Math.min(p.chargeMaxStages, Math.floor(p.chargeTime / CHARGE_TIME_PER_STAGE));
           const halfWidth = chargeHalfWidthForStage(Math.max(1, stage));
           ctx.save();
-          ctx.translate(psx, psy);
+          ctx.translate(p.x, p.y);
           ctx.rotate(aimAngle);
           ctx.globalAlpha = canFire ? 0.5 : 0.3;
           ctx.strokeStyle = canFire ? '#8ef0ff' : '#888888';
@@ -2452,6 +2490,8 @@
           ctx.restore();
         }
       }
+
+      ctx.restore();
     }
   }
 
@@ -2551,7 +2591,7 @@
       <p>HP: ${Math.ceil(p.hp)} / ${p.maxHp}</p>
       <p>レベル: ${p.level}</p>
       <p>ダメージ: ${p.damage} / 攻撃間隔: ${p.atkCooldown.toFixed(2)}秒</p>
-      <p>同時発射数: ${p.projCount}</p>
+      <p>同時発射数: ${p.projCount} / 射程: ${Math.round(p.rangeMult * 100)}%</p>
       <p>移動速度: ${Math.round(p.speed)}</p>
       <p>HP自然回復: ${p.regen}/秒 / 回収範囲: ${Math.round(p.pickupRadius)}</p>
       ${bulletLines.length ? `<p>弾丸効果: ${bulletLines.join(' / ')}</p>` : ''}
