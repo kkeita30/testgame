@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.19';
+  const GAME_VERSION = '1.36.20';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -383,14 +383,13 @@
   // atkTimer/atkCooldown as a per-shot cooldown at all. Holding the
   // move-input (the same press/hold gesture that drives movement, so
   // charging never costs mobility) builds up charge, capped at
-  // CHARGE_TIME_MAX; releasing fires an instant, infinite-pierce beam
-  // whose damage scales with however much charge was actually built up
-  // (see chargeDamageMultForFrac), then resets to 0 regardless of whether
-  // anything was hit - releasing with no target in range wastes the
-  // charge, which is the real cost of committing to a release at the
-  // wrong moment. The atkspeed upgrade still lowers atkCooldown as normal;
-  // here that translates to a faster charge rate (ATK_COOLDOWN_BASE /
-  // atkCooldown) rather than a shorter cooldown, so it's never a dead pick.
+  // CHARGE_TIME_MAX; releasing fires an instant, infinite-pierce beam,
+  // then resets chargeTime to 0 regardless of whether anything was hit -
+  // releasing with no target in range wastes the charge, which is the
+  // real cost of committing to a release at the wrong moment. The
+  // atkspeed upgrade still lowers atkCooldown as normal; here that
+  // translates to a faster charge rate (ATK_COOLDOWN_BASE / atkCooldown)
+  // rather than a shorter cooldown, so it's never a dead pick.
   const CHARGE_TIME_MAX = 2.0;
   // Below this, a release fires nothing at all (chargeTime just resets to
   // 0, same as any other release) - without it, rapidly tapping the screen
@@ -398,9 +397,16 @@
   // at all, since release itself is what triggers a shot. This forces a
   // minimum real hold before anything can fire, closing that loophole.
   const CHARGE_MIN_FIRE_TIME = 0.3;
-  const CHARGE_MIN_DAMAGE_MULT = 1.0;
-  const CHARGE_MAX_DAMAGE_MULT = 6.0;
-  function chargeDamageMultForFrac(frac) { return CHARGE_MIN_DAMAGE_MULT + (CHARGE_MAX_DAMAGE_MULT - CHARGE_MIN_DAMAGE_MULT) * frac; }
+  // Damage is a flat, relatively high multiplier regardless of charge
+  // stage (v1.36.20) - charge time no longer scales damage at all. What it
+  // scales instead is the beam's width (see chargeWidthMultForFrac): the
+  // longer you wait to release, the more enemies have accumulated on
+  // screen, so a longer hold buys wider coverage to actually clear them,
+  // rather than just a harder hit on however few are in a narrow beam.
+  const CHARGE_DAMAGE_MULT = 3.0;
+  const CHARGE_MIN_WIDTH_MULT = 1.0;
+  const CHARGE_MAX_WIDTH_MULT = 4.0;
+  function chargeWidthMultForFrac(frac) { return CHARGE_MIN_WIDTH_MULT + (CHARGE_MAX_WIDTH_MULT - CHARGE_MIN_WIDTH_MULT) * frac; }
   function chargeBeamHalfWidthForRank(rank) { return 8 + 4 * (rank - 1); }
 
   const WEAPONS = [
@@ -429,7 +435,7 @@
     {
       id: 'charge',
       name: 'チャージビーム',
-      desc: `画面を押し続けている間チャージが進み(移動操作と同じ操作なので、チャージ自体は移動を妨げない)、指を離すと無限貫通のビームを発射する。チャージ${CHARGE_MIN_FIRE_TIME}秒未満での即離しでは発射されない。連射は不可能だが、チャージ時間に応じて威力が最大${CHARGE_MAX_DAMAGE_MULT}倍まで上昇する(最大${CHARGE_TIME_MAX}秒)。攻撃速度アップグレードはチャージ速度の上昇として反映される。ランクアップでビームの幅が広がっていく。`,
+      desc: `画面を押し続けている間チャージが進み(移動操作と同じ操作なので、チャージ自体は移動を妨げない)、指を離すと無限貫通のビームを発射する。チャージ${CHARGE_MIN_FIRE_TIME}秒未満での即離しでは発射されない。連射は不可能だが、威力は常に高め(通常武器の${CHARGE_DAMAGE_MULT}倍)。その代わりチャージ時間に応じてビームの幅が最大${CHARGE_MAX_WIDTH_MULT}倍まで広がる(最大${CHARGE_TIME_MAX}秒)。攻撃速度アップグレードはチャージ速度の上昇として反映される。ランクアップでビームの基本幅が広がっていく。`,
       apply: (p) => {},
       innateEffect: {
         name: 'ビーム拡幅',
@@ -1619,11 +1625,14 @@
     // along a straight line toward the nearest in-range enemy, using the
     // same rotated-local-frame box test as the wide weapon's sweep
     // (fireWideSweep) but reaching out to the normal long weaponRange()
-    // instead of a short melee range, and in one direction only. Damage
-    // scales with however much charge was actually built up
-    // (chargeDamageMultForFrac); chargeTime always resets to 0 on release,
-    // even if no target was in range to actually hit - committing to a
-    // release at the wrong moment genuinely wastes the charge.
+    // instead of a short melee range, and in one direction only. Damage is
+    // a flat CHARGE_DAMAGE_MULT regardless of how long it was held -
+    // what scales with hold time is the beam's width
+    // (chargeWidthMultForFrac), since a longer wait means more enemies
+    // have accumulated on screen to clear, not a need to hit harder.
+    // chargeTime always resets to 0 on release, even if no target was in
+    // range to actually hit - committing to a release at the wrong moment
+    // genuinely wastes the charge.
     fireChargeBeam() {
       const p = this.player;
       const chargeFrac = clamp(p.chargeTime / CHARGE_TIME_MAX, 0, 1);
@@ -1638,13 +1647,13 @@
       if (!nearest) return;
 
       const aimAngle = Math.atan2(nearest.y - p.y, nearest.x - p.x);
-      const halfWidth = p.chargeBeamHalfWidth;
+      const halfWidth = p.chargeBeamHalfWidth * chargeWidthMultForFrac(chargeFrac);
       const cosA = Math.cos(-aimAngle), sinA = Math.sin(-aimAngle);
 
       const buffDamageMult = p.specialBuffTimer > 0 && p.special && p.special.buffDamageMult != null
         ? p.special.buffDamageMult : 1;
       const virtualProj = {
-        damage: p.damage * buffDamageMult * chargeDamageMultForFrac(chargeFrac),
+        damage: p.damage * buffDamageMult * CHARGE_DAMAGE_MULT,
         explosionRadius: p.explosionLevel > 0 ? explosionRadiusForLevel(p.explosionLevel) : 0,
         chainHops: p.chainLevel,
         slowDuration: p.slowLevel > 0 ? slowDurationForLevel(p.slowLevel) : 0,
