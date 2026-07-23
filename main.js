@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.18';
+  const GAME_VERSION = '1.36.19';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -392,6 +392,12 @@
   // here that translates to a faster charge rate (ATK_COOLDOWN_BASE /
   // atkCooldown) rather than a shorter cooldown, so it's never a dead pick.
   const CHARGE_TIME_MAX = 2.0;
+  // Below this, a release fires nothing at all (chargeTime just resets to
+  // 0, same as any other release) - without it, rapidly tapping the screen
+  // fires a stream of near-zero-charge shots with no cooldown gating them
+  // at all, since release itself is what triggers a shot. This forces a
+  // minimum real hold before anything can fire, closing that loophole.
+  const CHARGE_MIN_FIRE_TIME = 0.3;
   const CHARGE_MIN_DAMAGE_MULT = 1.0;
   const CHARGE_MAX_DAMAGE_MULT = 6.0;
   function chargeDamageMultForFrac(frac) { return CHARGE_MIN_DAMAGE_MULT + (CHARGE_MAX_DAMAGE_MULT - CHARGE_MIN_DAMAGE_MULT) * frac; }
@@ -423,7 +429,7 @@
     {
       id: 'charge',
       name: 'チャージビーム',
-      desc: `画面を押し続けている間チャージが進み(移動操作と同じ操作なので、チャージ自体は移動を妨げない)、指を離すと無限貫通のビームを発射する。連射は不可能だが、チャージ時間に応じて威力が最大${CHARGE_MAX_DAMAGE_MULT}倍まで上昇する(最大${CHARGE_TIME_MAX}秒)。攻撃速度アップグレードはチャージ速度の上昇として反映される。ランクアップでビームの幅が広がっていく。`,
+      desc: `画面を押し続けている間チャージが進み(移動操作と同じ操作なので、チャージ自体は移動を妨げない)、指を離すと無限貫通のビームを発射する。チャージ${CHARGE_MIN_FIRE_TIME}秒未満での即離しでは発射されない。連射は不可能だが、チャージ時間に応じて威力が最大${CHARGE_MAX_DAMAGE_MULT}倍まで上昇する(最大${CHARGE_TIME_MAX}秒)。攻撃速度アップグレードはチャージ速度の上昇として反映される。ランクアップでビームの幅が広がっていく。`,
       apply: (p) => {},
       innateEffect: {
         name: 'ビーム拡幅',
@@ -1590,7 +1596,11 @@
     // upgrade like any other weapon) is read as a charge-rate multiplier
     // against ATK_COOLDOWN_BASE rather than as a per-shot cooldown, so
     // investing in attack speed still pays off for this weapon. Firing
-    // happens on the falling edge of "held" (release), not on a timer.
+    // happens on the falling edge of "held" (release), not on a timer - but
+    // only once CHARGE_MIN_FIRE_TIME has actually been reached; a release
+    // below that threshold just resets chargeTime with no shot at all, the
+    // same as any other release, closing the "rapid-tap = free rapid-fire"
+    // loophole a zero-minimum would otherwise leave open.
     updateChargeBeam(dt) {
       const p = this.player;
       const holding = isMoveInputHeld();
@@ -1598,7 +1608,10 @@
         const chargeRate = ATK_COOLDOWN_BASE / p.atkCooldown;
         p.chargeTime = Math.min(CHARGE_TIME_MAX, p.chargeTime + dt * chargeRate);
       }
-      if (p.chargeWasHeld && !holding) this.fireChargeBeam();
+      if (p.chargeWasHeld && !holding) {
+        if (p.chargeTime >= CHARGE_MIN_FIRE_TIME) this.fireChargeBeam();
+        else p.chargeTime = 0;
+      }
       p.chargeWasHeld = holding;
     }
 
@@ -2366,13 +2379,17 @@
 
       // charge beam charging indicator - a ring around the player that
       // grows and brightens with p.chargeTime, so the player has live
-      // feedback on how much they'd lose by releasing right now.
+      // feedback on how much they'd lose by releasing right now. Dim gray
+      // below CHARGE_MIN_FIRE_TIME (releasing now would fire nothing),
+      // switching to the normal cyan progression once a release would
+      // actually land a shot.
       if (p.weapon && p.weapon.id === 'charge' && p.chargeTime > 0) {
         const chargeFrac = clamp(p.chargeTime / CHARGE_TIME_MAX, 0, 1);
+        const canFire = p.chargeTime >= CHARGE_MIN_FIRE_TIME;
         ctx.save();
-        ctx.globalAlpha = 0.5 + chargeFrac * 0.5;
-        ctx.strokeStyle = chargeFrac > 0.9 ? '#eaffff' : '#8ef0ff';
-        ctx.lineWidth = 2 + chargeFrac * 3;
+        ctx.globalAlpha = canFire ? 0.5 + chargeFrac * 0.5 : 0.35;
+        ctx.strokeStyle = !canFire ? '#888888' : chargeFrac > 0.9 ? '#eaffff' : '#8ef0ff';
+        ctx.lineWidth = canFire ? 2 + chargeFrac * 3 : 2;
         ctx.beginPath();
         ctx.arc(psx, psy, p.radius + 6 + chargeFrac * 10, 0, TAU);
         ctx.stroke();
