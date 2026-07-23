@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.23';
+  const GAME_VERSION = '1.36.24';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -952,15 +952,42 @@
     {
       id: 'range',
       title: '射程アップ',
-      desc: '射程 +20%(視界も拡大)',
+      desc: '射程 +10%(視界も拡大)',
       // rangeMult drives both weaponRange() (standard/charge weapons'
       // auto-aim reach) and viewScale() (camera zoom, see draw()) - the
       // two are deliberately the same multiplier, so a longer reach never
       // extends past what the player can actually see.
-      apply: p => p.rangeMult = Math.min(STAT_LIMITS.maxRangeMult, p.rangeMult * 1.2),
+      apply: p => p.rangeMult = Math.min(STAT_LIMITS.maxRangeMult, p.rangeMult * 1.1),
       // Once rangeMult is already at its cap, stop offering it rather than
       // presenting a dead choice (same pattern as atkspeed's floor gate).
       available: p => p.rangeMult < STAT_LIMITS.maxRangeMult,
+    },
+    {
+      id: 'movespeed',
+      title: '移動速度アップ',
+      desc: '移動速度 +10%',
+      // Re-added (v1.36.24) after being folded into the base speed and
+      // removed entirely in v1.35.0 - that removal's actual complaint was
+      // the old version being uncapped (too much speed makes precise
+      // dodging harder, but nothing stopped stacking it indefinitely), not
+      // that a modest speed upgrade is inherently bad. A cap fixes that
+      // directly instead of removing the choice altogether.
+      apply: p => p.speedMult = Math.min(STAT_LIMITS.maxSpeedMult, p.speedMult * 1.1),
+      available: p => p.speedMult < STAT_LIMITS.maxSpeedMult,
+    },
+    {
+      id: 'pickup',
+      title: '回収範囲アップ',
+      desc: 'XP回収範囲 +10%',
+      // Re-added (v1.36.24) after v1.35.0 folded it into the base pickup
+      // radius and removed it - the old complaint was that a single pick
+      // already covered practically every situation, making a 2nd+ pick
+      // "harmless but pointless." A cap doesn't fix that by itself, but it
+      // does mean the choice has a defined ceiling instead of being an
+      // open-ended non-choice; how much value the later picks carry is
+      // left to feel, not a hard number.
+      apply: p => p.pickupRadius = Math.min(STAT_LIMITS.maxPickupRadius, Math.round(p.pickupRadius * 1.1)),
+      available: p => p.pickupRadius < STAT_LIMITS.maxPickupRadius,
     },
     {
       id: 'atkspeed',
@@ -1004,7 +1031,15 @@
   // unlike damage/maxHp (safe to stack indefinitely), range is tied
   // directly to camera zoom (viewScale), so an uncapped stack would
   // eventually zoom out to the point of hurting readability/performance.
-  const STAT_LIMITS = { minDamage: 3, maxAtkCooldown: 1.4, minAtkCooldown: 0.15, maxRangeMult: 2.0 };
+  // maxSpeedMult caps movement speed upgrades - too much speed makes
+  // precise dodging harder, the exact problem that got the old uncapped
+  // version removed entirely (v1.35.0); a cap keeps the choice meaningful
+  // without letting it run away. Set above Speed character's own passive
+  // (speedMult *= 1.35, see CHARACTERS) since the cap applies to the same
+  // field regardless of source - otherwise the upgrade would already be
+  // "available: false" from the very start for that character. maxPickupRadius
+  // similarly caps the re-added pickup-range upgrade (v1.36.24, see UPGRADE_POOL).
+  const STAT_LIMITS = { minDamage: 3, maxAtkCooldown: 1.4, minAtkCooldown: 0.15, maxRangeMult: 2.0, maxSpeedMult: 1.5, maxPickupRadius: 200 };
 
   // Each grants a strong upside alongside a real downside, for players who
   // want to commit to a build rather than only stacking safe, one-sided
