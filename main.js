@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.17';
+  const GAME_VERSION = '1.36.18';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -158,6 +158,17 @@
       return { dx: dx / d, dy: dy / d };
     }
     return null;
+  }
+
+  // Whether the player is actively pressing/holding a move-input right now
+  // (touch, mouse, or a movement key), regardless of whether that input is
+  // currently producing any actual movement (e.g. a touch held stationary
+  // right at its own origin still counts as "held"). Used by the charge
+  // beam weapon (see Game.updateChargeBeam) to tie its charge-up to the
+  // same press/hold gesture that drives movement, rather than wiring up a
+  // separate input path just for that one weapon.
+  function isMoveInputHeld() {
+    return dragTouchId !== null || mouseDown || keyboardVector() !== null;
   }
 
   // ---------- Game state ----------
@@ -362,6 +373,30 @@
   const WIDE_DAMAGE_MULT = 2.0;
   function wideHalfWidthForRank(rank) { return 16 + 10 * (rank - 1); }
 
+  // A player's starting atkCooldown - named so the charge beam weapon
+  // below can express its charge-rate multiplier as a ratio against this
+  // same baseline, rather than a second hardcoded 0.7. Player's own
+  // constructor also uses this constant for its initial atkCooldown.
+  const ATK_COOLDOWN_BASE = 0.7;
+
+  // Charge beam (v1.36.18): the only weapon that isn't driven by
+  // atkTimer/atkCooldown as a per-shot cooldown at all. Holding the
+  // move-input (the same press/hold gesture that drives movement, so
+  // charging never costs mobility) builds up charge, capped at
+  // CHARGE_TIME_MAX; releasing fires an instant, infinite-pierce beam
+  // whose damage scales with however much charge was actually built up
+  // (see chargeDamageMultForFrac), then resets to 0 regardless of whether
+  // anything was hit - releasing with no target in range wastes the
+  // charge, which is the real cost of committing to a release at the
+  // wrong moment. The atkspeed upgrade still lowers atkCooldown as normal;
+  // here that translates to a faster charge rate (ATK_COOLDOWN_BASE /
+  // atkCooldown) rather than a shorter cooldown, so it's never a dead pick.
+  const CHARGE_TIME_MAX = 2.0;
+  const CHARGE_MIN_DAMAGE_MULT = 1.0;
+  const CHARGE_MAX_DAMAGE_MULT = 6.0;
+  function chargeDamageMultForFrac(frac) { return CHARGE_MIN_DAMAGE_MULT + (CHARGE_MAX_DAMAGE_MULT - CHARGE_MIN_DAMAGE_MULT) * frac; }
+  function chargeBeamHalfWidthForRank(rank) { return 8 + 4 * (rank - 1); }
+
   const WEAPONS = [
     {
       id: 'standard',
@@ -383,6 +418,17 @@
         name: '波動拡大',
         desc: `自機レベルアップ${WEAPON_INNATE_LEVELS_PER_RANK}ごとにランクが上昇(最大Lv.${WEAPON_INNATE_MAX_RANK})し、衝撃波の幅が広がる`,
         applyRank(p, rank) { p.wideHalfWidth = wideHalfWidthForRank(rank); },
+      },
+    },
+    {
+      id: 'charge',
+      name: 'チャージビーム',
+      desc: `画面を押し続けている間チャージが進み(移動操作と同じ操作なので、チャージ自体は移動を妨げない)、指を離すと無限貫通のビームを発射する。連射は不可能だが、チャージ時間に応じて威力が最大${CHARGE_MAX_DAMAGE_MULT}倍まで上昇する(最大${CHARGE_TIME_MAX}秒)。攻撃速度アップグレードはチャージ速度の上昇として反映される。ランクアップでビームの幅が広がっていく。`,
+      apply: (p) => {},
+      innateEffect: {
+        name: 'ビーム拡幅',
+        desc: `自機レベルアップ${WEAPON_INNATE_LEVELS_PER_RANK}ごとにランクが上昇(最大Lv.${WEAPON_INNATE_MAX_RANK})し、ビームの幅が広がる`,
+        applyRank(p, rank) { p.chargeBeamHalfWidth = chargeBeamHalfWidthForRank(rank); },
       },
     },
   ];
@@ -426,7 +472,7 @@
 
       // weapon stats
       this.damage = 10;
-      this.atkCooldown = 0.7;
+      this.atkCooldown = ATK_COOLDOWN_BASE;
       this.atkTimer = 0;
       this.projSpeed = 380;
       this.projCount = 1;
@@ -434,6 +480,11 @@
       // Wide weapon only (see WEAPONS/fireWideSweep) - unused by any other
       // weapon, harmless default otherwise.
       this.wideHalfWidth = 16;
+      // Charge beam weapon only (see WEAPONS/updateChargeBeam) - unused by
+      // any other weapon, harmless default otherwise.
+      this.chargeTime = 0;
+      this.chargeBeamHalfWidth = 8;
+      this.chargeWasHeld = false;
       // Raised from 70 (v1.35.0) to fold in exactly what one pickup-range
       // upgrade pick used to add, now that the upgrade itself is gone.
       this.pickupRadius = 100;
@@ -841,6 +892,23 @@
     }
   }
 
+  // Brief fading beam flash for the charge beam's release (see
+  // Game.fireChargeBeam), sized to match the actual hitbox (range x
+  // halfWidth). chargeFrac (0-1, how full the charge was) brightens/thickens
+  // the flash so a weak tap-release reads as visibly less dramatic than a
+  // full-charge release.
+  class BeamEffect {
+    constructor(x, y, angle, range, halfWidth, chargeFrac) {
+      this.x = x; this.y = y;
+      this.angle = angle;
+      this.range = range;
+      this.halfWidth = halfWidth;
+      this.chargeFrac = chargeFrac;
+      this.life = 0.2;
+      this.maxLife = 0.2;
+    }
+  }
+
   // Move speed and pickup radius upgrades were removed (v1.35.0): neither
   // feeds into any difficulty-scaling axis (§6-2), and both had a
   // lopsided value curve - move speed is only good in moderation (too
@@ -1083,11 +1151,12 @@
       levelUp: p => { p.pierce++; },
       introDesc: '弾が敵を貫通するようになる',
       upgradeDesc: level => `貫通数が増加する(${level} → ${level + 1})`,
-      // Wide weapon hits every enemy in its cone in one go and has no
-      // travel/pierce lifecycle at all (§7-4-1) - pierce would be a
-      // completely dead pick for it, so hide it entirely rather than
-      // presenting a choice that does nothing.
-      available: p => !p.weapon || p.weapon.id !== 'wide',
+      // Wide weapon hits every enemy in its cone in one go, and the charge
+      // beam already has unconditional infinite pierce baked in (§7-4-1,
+      // §7-4-2) - both have no travel/pierce lifecycle at all, so pierce
+      // would be a completely dead pick for either. Hide it entirely
+      // rather than presenting a choice that does nothing.
+      available: p => !p.weapon || (p.weapon.id !== 'wide' && p.weapon.id !== 'charge'),
     },
     {
       id: 'poison',
@@ -1187,6 +1256,7 @@
       this.particles = [];
       this.chainZaps = [];
       this.sweepEffects = [];
+      this.beamEffects = [];
       this.camX = 0;
       this.camY = 0;
       this.time = 0;
@@ -1391,6 +1461,13 @@
 
     fireWeapon(dt) {
       const p = this.player;
+
+      // Charge beam isn't driven by atkTimer/atkCooldown as a per-shot
+      // cooldown at all (see updateChargeBeam) - it needs to keep charging
+      // even with zero enemies on screen, so it's branched off before
+      // either of the guards below would otherwise skip it.
+      if (p.weapon && p.weapon.id === 'charge') { this.updateChargeBeam(dt); return; }
+
       p.atkTimer -= dt;
       if (p.atkTimer > 0) return;
       if (this.enemies.length === 0) return;
@@ -1504,6 +1581,80 @@
       this.sweepEffects.push(new SweepEffect(p.x, p.y, aimAngle, WIDE_ATTACK_RANGE, halfWidth));
       this.sweepEffects.push(new SweepEffect(p.x, p.y, aimAngle + Math.PI, WIDE_ATTACK_RANGE, halfWidth));
       this.shakeTime = Math.max(this.shakeTime, 0.08);
+    }
+
+    // Charge beam's per-frame tick (see WEAPONS): accumulates p.chargeTime
+    // while the move-input is actively held (isMoveInputHeld - the same
+    // gesture that drives movement, so charging never costs mobility),
+    // capped at CHARGE_TIME_MAX. atkCooldown (lowered by the atkspeed
+    // upgrade like any other weapon) is read as a charge-rate multiplier
+    // against ATK_COOLDOWN_BASE rather than as a per-shot cooldown, so
+    // investing in attack speed still pays off for this weapon. Firing
+    // happens on the falling edge of "held" (release), not on a timer.
+    updateChargeBeam(dt) {
+      const p = this.player;
+      const holding = isMoveInputHeld();
+      if (holding) {
+        const chargeRate = ATK_COOLDOWN_BASE / p.atkCooldown;
+        p.chargeTime = Math.min(CHARGE_TIME_MAX, p.chargeTime + dt * chargeRate);
+      }
+      if (p.chargeWasHeld && !holding) this.fireChargeBeam();
+      p.chargeWasHeld = holding;
+    }
+
+    // Fires the charge beam on release: an instant, infinite-pierce hit
+    // along a straight line toward the nearest in-range enemy, using the
+    // same rotated-local-frame box test as the wide weapon's sweep
+    // (fireWideSweep) but reaching out to the normal long weaponRange()
+    // instead of a short melee range, and in one direction only. Damage
+    // scales with however much charge was actually built up
+    // (chargeDamageMultForFrac); chargeTime always resets to 0 on release,
+    // even if no target was in range to actually hit - committing to a
+    // release at the wrong moment genuinely wastes the charge.
+    fireChargeBeam() {
+      const p = this.player;
+      const chargeFrac = clamp(p.chargeTime / CHARGE_TIME_MAX, 0, 1);
+      p.chargeTime = 0;
+
+      const range = weaponRange(p);
+      let nearest = null, nearestD2 = range * range;
+      for (const e of this.enemies) {
+        const d2 = dist2(e.x, e.y, p.x, p.y);
+        if (d2 <= nearestD2) { nearest = e; nearestD2 = d2; }
+      }
+      if (!nearest) return;
+
+      const aimAngle = Math.atan2(nearest.y - p.y, nearest.x - p.x);
+      const halfWidth = p.chargeBeamHalfWidth;
+      const cosA = Math.cos(-aimAngle), sinA = Math.sin(-aimAngle);
+
+      const buffDamageMult = p.specialBuffTimer > 0 && p.special && p.special.buffDamageMult != null
+        ? p.special.buffDamageMult : 1;
+      const virtualProj = {
+        damage: p.damage * buffDamageMult * chargeDamageMultForFrac(chargeFrac),
+        explosionRadius: p.explosionLevel > 0 ? explosionRadiusForLevel(p.explosionLevel) : 0,
+        chainHops: p.chainLevel,
+        slowDuration: p.slowLevel > 0 ? slowDurationForLevel(p.slowLevel) : 0,
+        poisons: p.poisonLevel > 0,
+        frenzies: p.frenzyLevel > 0,
+        bombifies: p.bombifyLevel > 0,
+        weakens: p.weakenLevel > 0,
+      };
+
+      let hitAny = false;
+      for (const e of this.enemies) {
+        const dx = e.x - p.x, dy = e.y - p.y;
+        const localX = dx * cosA - dy * sinA;
+        const localY = dx * sinA + dy * cosA;
+        if (localX < -e.radius || localX > range + e.radius) continue;
+        if (Math.abs(localY) > halfWidth + e.radius) continue;
+        hitAny = true;
+        this.resolveProjectileHit(virtualProj, e);
+      }
+      if (!hitAny) return;
+
+      this.beamEffects.push(new BeamEffect(p.x, p.y, aimAngle, range, halfWidth, chargeFrac));
+      this.shakeTime = Math.max(this.shakeTime, 0.1 + chargeFrac * 0.2);
     }
 
     // Applies every status effect a projectile carries (slow/poison/
@@ -1974,6 +2125,10 @@
       for (const sw of this.sweepEffects) sw.life -= dt;
       this.sweepEffects = this.sweepEffects.filter(sw => sw.life > 0);
 
+      // charge beam flashes
+      for (const b of this.beamEffects) b.life -= dt;
+      this.beamEffects = this.beamEffects.filter(b => b.life > 0);
+
       if (this.shakeTime > 0) this.shakeTime -= dt;
 
       // camera follows player
@@ -2172,6 +2327,27 @@
         ctx.restore();
       }
 
+      // charge beam release flashes - a straight glowing bar spanning the
+      // actual hitbox (range x halfWidth), brighter/thicker the fuller the
+      // charge was (see Game.fireChargeBeam).
+      for (const b of this.beamEffects) {
+        const sx = b.x + offX, sy = b.y + offY;
+        const lifeAlpha = clamp(b.life / b.maxLife, 0, 1);
+        ctx.save();
+        ctx.translate(sx, sy);
+        ctx.rotate(b.angle);
+        ctx.globalAlpha = lifeAlpha * (0.5 + b.chargeFrac * 0.5);
+        ctx.fillStyle = b.chargeFrac > 0.9 ? '#eaffff' : '#8ef0ff';
+        ctx.beginPath();
+        ctx.moveTo(0, -b.halfWidth);
+        ctx.lineTo(b.range, -b.halfWidth);
+        ctx.lineTo(b.range, b.halfWidth);
+        ctx.lineTo(0, b.halfWidth);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      }
+
       // player
       const p = this.player;
       const psx = p.x + offX, psy = p.y + offY;
@@ -2187,6 +2363,21 @@
       ctx.arc(psx + p.facing * 5, psy - 4, 2.5, 0, TAU);
       ctx.fill();
       ctx.restore();
+
+      // charge beam charging indicator - a ring around the player that
+      // grows and brightens with p.chargeTime, so the player has live
+      // feedback on how much they'd lose by releasing right now.
+      if (p.weapon && p.weapon.id === 'charge' && p.chargeTime > 0) {
+        const chargeFrac = clamp(p.chargeTime / CHARGE_TIME_MAX, 0, 1);
+        ctx.save();
+        ctx.globalAlpha = 0.5 + chargeFrac * 0.5;
+        ctx.strokeStyle = chargeFrac > 0.9 ? '#eaffff' : '#8ef0ff';
+        ctx.lineWidth = 2 + chargeFrac * 3;
+        ctx.beginPath();
+        ctx.arc(psx, psy, p.radius + 6 + chargeFrac * 10, 0, TAU);
+        ctx.stroke();
+        ctx.restore();
+      }
     }
   }
 
