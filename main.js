@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.20';
+  const GAME_VERSION = '1.36.21';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -2403,6 +2403,40 @@
         ctx.arc(psx, psy, p.radius + 6 + chargeFrac * 10, 0, TAU);
         ctx.stroke();
         ctx.restore();
+
+        // Aim preview: which enemy fireChargeBeam would actually target if
+        // released this instant, and the exact hitbox (direction + current
+        // width) that would result - re-derived fresh every frame with the
+        // same nearest-in-range-enemy search fireChargeBeam itself uses, so
+        // it's never out of sync with where a real release would go. Solves
+        // "which direction will it fire" being otherwise invisible until
+        // the shot has already committed.
+        const range = weaponRange(p);
+        let previewTarget = null, previewD2 = range * range;
+        for (const e of this.enemies) {
+          const d2 = dist2(e.x, e.y, p.x, p.y);
+          if (d2 <= previewD2) { previewTarget = e; previewD2 = d2; }
+        }
+        if (previewTarget) {
+          const aimAngle = Math.atan2(previewTarget.y - p.y, previewTarget.x - p.x);
+          const halfWidth = p.chargeBeamHalfWidth * chargeWidthMultForFrac(chargeFrac);
+          ctx.save();
+          ctx.translate(psx, psy);
+          ctx.rotate(aimAngle);
+          ctx.globalAlpha = canFire ? 0.5 : 0.3;
+          ctx.strokeStyle = canFire ? '#8ef0ff' : '#888888';
+          ctx.lineWidth = 1.5;
+          ctx.setLineDash([6, 6]);
+          ctx.beginPath();
+          ctx.moveTo(0, -halfWidth);
+          ctx.lineTo(range, -halfWidth);
+          ctx.lineTo(range, halfWidth);
+          ctx.lineTo(0, halfWidth);
+          ctx.closePath();
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.restore();
+        }
       }
     }
   }
