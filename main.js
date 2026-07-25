@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.27';
+  const GAME_VERSION = '1.36.28';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -889,10 +889,18 @@
   // radius) until physically touched - finding one is a small deliberate
   // detour, not an automatic drip.
   const HEART_SPAWN_CHECK_INTERVAL = 1.0; // seconds between spawn-chance rolls
-  const HEART_SPAWN_CHANCE = 0.02; // per roll, only while none is already on screen
+  // 0.02->0.04 (v1.36.28): halves the expected wait (~50s -> ~25s per
+  // heart) so going out of the way to find one is worth doing more often.
+  const HEART_SPAWN_CHANCE = 0.04; // per roll, only while none is already on screen
   const HEART_HEAL_FRAC = 0.1;
   const HEART_SPAWN_MIN_DIST = 200;
-  const HEART_SPAWN_MAX_DIST = 400;
+  // 400->1200 (v1.36.28): the old range never reached past the edge of a
+  // typical viewport, so a heart was always at least partially visible the
+  // moment it appeared. Widening it so a heart can land well outside the
+  // current screen turns "get a heart" into an actual search-and-detour
+  // decision under pressure, not just a walk to a visible marker - and
+  // gives the move-speed upgrade a second reason to matter beyond dodging.
+  const HEART_SPAWN_MAX_DIST = 1200;
   class Heart {
     constructor(x, y) {
       this.x = x; this.y = y;
