@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.36';
+  const GAME_VERSION = '1.36.37';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -1305,7 +1305,10 @@
   // wider net is this effect's whole value proposition and to keep it
   // simple relative to the other three (which each only scale one thing).
   const MAGNETSTORM_DURATION = 3;
-  function magnetStormRadiusForLevel(level) { return 100 + 25 * (level - 1); }
+  // Halved 100-200 -> 50-100 (v1.36.37): all 4 impact effect radii landed
+  // too large for what's meant to be a placed, localized zone rather than
+  // a screen-wide blast.
+  function magnetStormRadiusForLevel(level) { return 50 + 12.5 * (level - 1); }
   const MAGNETSTORM_PULL_SPEED = 220; // px/s enemies are dragged toward center while inside
 
   // キルゾーン/Kill Zone: continuous DPS to anything standing inside.
@@ -1316,7 +1319,7 @@
   // Radius is fixed (unlike magnetstorm) - rank raises damage instead, per
   // spec ("威力が上昇する").
   const KILLZONE_DURATION = 5;
-  const KILLZONE_RADIUS = 90;
+  const KILLZONE_RADIUS = 45; // halved from 90 (v1.36.37, see magnetstorm's radius comment above)
   function killZoneDmgPctForLevel(level) { return 0.5 + 0.25 * (level - 1); } // fraction of proj.damage dealt per second
 
   // 狂乱の泉/Frenzy Fountain and ポイズンクラウド/Poison Cloud: apply the
@@ -1330,9 +1333,10 @@
   // (available gate on the BULLET_EFFECTS entry below), and only its own
   // radius scales with its own rank.
   const FRENZYFOUNTAIN_DURATION = 10;
-  function frenzyFountainRadiusForLevel(level) { return 90 + 20 * (level - 1); }
+  // Halved from 90+20*(L-1) (v1.36.37, see magnetstorm's radius comment above)
+  function frenzyFountainRadiusForLevel(level) { return 45 + 10 * (level - 1); }
   const POISONCLOUD_DURATION = 10;
-  function poisonCloudRadiusForLevel(level) { return 90 + 20 * (level - 1); }
+  function poisonCloudRadiusForLevel(level) { return 45 + 10 * (level - 1); }
 
   const BULLET_EFFECTS = [
     {
@@ -2001,11 +2005,12 @@
     }
 
     // Adds an impact-effect zone. At most one of a given type can exist at
-    // once (v1.36.36) - if one is already active, it's replaced (removed,
-    // then the new one takes its place) rather than letting a second
-    // instance of the same type pile up alongside it.
+    // once - if one is already active, this hit's zone is simply skipped
+    // (v1.36.37: changed from replacing the existing zone) so the effect
+    // reads as a placed trap staying put once set, not a beam that keeps
+    // relocating to wherever was hit most recently.
     spawnImpactEffect(type, x, y, radius, life, dmgPerSec) {
-      this.impactEffects = this.impactEffects.filter(fx => fx.type !== type);
+      if (this.impactEffects.some(fx => fx.type === type)) return;
       this.impactEffects.push(new ImpactEffect(type, x, y, radius, life, dmgPerSec));
     }
 
