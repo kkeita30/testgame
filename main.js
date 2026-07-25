@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.38';
+  const GAME_VERSION = '1.36.39';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -294,7 +294,7 @@
         apply(p) {},
         onContactDamage(p, enemy, game) {
           const reflect = Math.round(p.damage * REFLECT_DMG_PCT_OF_ATTACK + p.maxHp * REFLECT_DMG_PCT_OF_MAXHP);
-          enemy.hp -= reflect;
+          game.damageEnemy(enemy, reflect);
           enemy.hitFlash = 0.12;
         },
       },
@@ -833,8 +833,10 @@
       this.poisonStacks = 0;
       // Frenzy (v1.36.4): same duration-doesn't-reset/rank-gates-stack-cap
       // rules as poison, but the stacks buff the frenzied enemy's own
-      // damage instead of dealing damage directly - see FRENZY_SPEED_MULT/
-      // FRENZY_DMG_MULT_PER_STACK and the friendly-fire check in update().
+      // damage (and, since v1.36.39, its own vulnerability) instead of
+      // dealing damage directly - see FRENZY_SPEED_MULT/
+      // frenzyDmgMultForStacks/frenzyTakenDmgMultForStacks and the
+      // friendly-fire check in update().
       this.frenzyTimer = 0;
       this.frenzyStacks = 0;
       // Bombify (v1.36.5): no stack counter (doesn't stack) - a later hit
@@ -1210,13 +1212,33 @@
   // placed, it just hands the enemy that reaches the player a much harder
   // hit. Same duration/stacking rules as poison: FRENZY_DURATION doesn't
   // reset on a later hit, only frenzyStacks (capped by
-  // frenzyMaxStacksForLevel) goes up, raising the damage multiplier.
-  // FRENZY_SPEED_MULT itself is flat - it applies in full the moment an
-  // enemy is frenzied at all, regardless of stack count.
+  // frenzyMaxStacksForLevel) goes up. FRENZY_SPEED_MULT itself is flat - it
+  // applies in full the moment an enemy is frenzied at all, regardless of
+  // stack count.
   const FRENZY_DURATION = 5;
   const FRENZY_SPEED_MULT = 1.5;
-  const FRENZY_DMG_MULT_PER_STACK = 0.5;
   function frenzyMaxStacksForLevel(level) { return level; }
+
+  // Rebalanced (v1.36.39): the dealt-damage bonus used to grow linearly
+  // with stacks (1 + stacks*0.5, uncapped upside) with no downside at all -
+  // stacking frenzy just made an enemy strictly more dangerous the more it
+  // got re-hit. Now the two halves pull in opposite directions instead:
+  // FRENZY_DMG_MULT_MAX/stacks is inversely proportional to stack count, so
+  // the dealt-damage bonus is at its single highest at 1 stack (same +50%
+  // as the old formula's stack-1 case, for continuity) and shrinks toward
+  // 1x as more stacks pile on, while frenzyTakenDmgMultForStacks grows
+  // linearly with stacks instead - a frenzied enemy takes more damage from
+  // everything (player hits, explosion, chain, poison, killzone, bombify
+  // splash, another frenzied enemy's friendly fire, Tank's reflect) the
+  // more stacked it is. Net effect: a lightly-stacked frenzied enemy is a
+  // real threat with only a modest vulnerability; a heavily-stacked one is
+  // barely more dangerous than an unstacked one but noticeably easier to
+  // burst down (by the player or by other enemies) - stacking frenzy caps
+  // the upside risk while compounding the enemy-on-enemy payoff.
+  const FRENZY_DMG_MULT_MAX = 0.5;
+  function frenzyDmgMultForStacks(stacks) { return stacks > 0 ? 1 + FRENZY_DMG_MULT_MAX / stacks : 1; }
+  const FRENZY_TAKEN_DMG_MULT_PER_STACK = 0.2;
+  function frenzyTakenDmgMultForStacks(stacks) { return 1 + stacks * FRENZY_TAKEN_DMG_MULT_PER_STACK; }
 
   // Bombify (v1.36.5): unlike poison/frenzy, this status doesn't stack at
   // all and has no effect while the target is alive - a later hit while
@@ -1423,7 +1445,7 @@
       maxLevel: 5,
       getLevel: p => p.frenzyLevel,
       levelUp: p => { p.frenzyLevel++; },
-      introDesc: `着弾した敵を${FRENZY_DURATION}秒間の狂乱状態にする。狂乱状態の敵は移動速度が${FRENZY_SPEED_MULT}倍になり、重ね掛け数に応じて攻撃力が増加する(1スタックあたり+${Math.round(FRENZY_DMG_MULT_PER_STACK * 100)}%)。狂乱状態の敵は、自機だけでなく接触した他の敵にもこの強化された攻撃力でダメージを与えるようになる。持続時間は重ね掛けで延長されない。`,
+      introDesc: `着弾した敵を${FRENZY_DURATION}秒間の狂乱状態にする。狂乱状態の敵は移動速度が${FRENZY_SPEED_MULT}倍になり、攻撃力が上昇する(1スタック目で最大+${Math.round(FRENZY_DMG_MULT_MAX * 100)}%、以降は重ね掛けするほど上昇率が反比例して縮小)。一方で重ね掛け数に応じて被ダメージも増加する(1スタックあたり+${Math.round(FRENZY_TAKEN_DMG_MULT_PER_STACK * 100)}%)。狂乱状態の敵は、自機だけでなく接触した他の敵にもこの攻撃力でダメージを与えるようになる。持続時間は重ね掛けで延長されない。`,
       upgradeDesc: level => `狂乱の重ね掛け上限が増加する(最大${frenzyMaxStacksForLevel(level)}スタック → 最大${frenzyMaxStacksForLevel(level + 1)}スタック)`,
     },
     {
@@ -2032,6 +2054,18 @@
       this.impactEffects.push(new ImpactEffect(type, x, y, radius, life, dmgPerSec));
     }
 
+    // Single choke point for every source of damage dealt TO an enemy
+    // (direct hits, explosion splash, chain, poison DoT, killzone ticks,
+    // bombify detonation splash, frenzy friendly-fire, Tank's reflect
+    // passive) so frenzy's stack-based vulnerability (v1.36.39,
+    // frenzyTakenDmgMultForStacks) applies uniformly regardless of what's
+    // dealing the damage, rather than needing a copy of the multiplier at
+    // every call site.
+    damageEnemy(enemy, amount) {
+      const mult = enemy.frenzyTimer > 0 ? frenzyTakenDmgMultForStacks(enemy.frenzyStacks) : 1;
+      enemy.hp -= amount * mult;
+    }
+
     // Applies a single hit's damage, on-hit statuses, explosion splash, and
     // chain propagation. Shared between a normal projectile's collision
     // (see update()) and the wide weapon's instant sweep (fireWideSweep),
@@ -2040,7 +2074,7 @@
     // the fields read here (damage/explosionRadius/chainHops/statuses) - it
     // doesn't have to be a real Projectile instance.
     resolveProjectileHit(proj, e) {
-      e.hp -= proj.damage;
+      this.damageEnemy(e, proj.damage);
       e.hitFlash = 0.12;
       this.applyOnHitStatuses(proj, e);
 
@@ -2057,7 +2091,7 @@
         for (const other of this.enemies) {
           if (other === e) continue;
           if (dist(other.x, other.y, e.x, e.y) <= proj.explosionRadius) {
-            other.hp -= proj.damage * EXPLOSION_DAMAGE_PCT;
+            this.damageEnemy(other, proj.damage * EXPLOSION_DAMAGE_PCT);
             other.hitFlash = 0.12;
             for (let i = 0; i < 8; i++) this.particles.push(new Particle(e.x, e.y, '#ff4500', 2.5));
           }
@@ -2075,7 +2109,7 @@
             if (d2 <= nearestD2) { nearest = cand; nearestD2 = d2; }
           }
           if (!nearest) break;
-          nearest.hp -= proj.damage * CHAIN_DAMAGE_PCT;
+          this.damageEnemy(nearest, proj.damage * CHAIN_DAMAGE_PCT);
           nearest.hitFlash = 0.12;
           this.applyOnHitStatuses(proj, nearest);
           this.chainZaps.push(new ChainZap(fromX, fromY, nearest.x, nearest.y));
@@ -2089,7 +2123,7 @@
             for (const other of this.enemies) {
               if (other === nearest || chained.has(other)) continue;
               if (dist(other.x, other.y, nearest.x, nearest.y) <= proj.explosionRadius) {
-                other.hp -= proj.damage * EXPLOSION_DAMAGE_PCT;
+                this.damageEnemy(other, proj.damage * EXPLOSION_DAMAGE_PCT);
                 other.hitFlash = 0.12;
                 for (let i = 0; i < 8; i++) this.particles.push(new Particle(nearest.x, nearest.y, '#ff4500', 2.5));
               }
@@ -2303,7 +2337,7 @@
           // rate (POISON_DMG_PCT) per stack - rank only affects how many
           // stacks can pile up (see poisonMaxStacksForLevel, applied where
           // stacks are added on hit), not this per-tick rate itself.
-          e.hp -= e.maxHp * POISON_DMG_PCT * e.poisonStacks * dt;
+          this.damageEnemy(e, e.maxHp * POISON_DMG_PCT * e.poisonStacks * dt);
           e.poisonTimer -= dt;
           if (e.poisonTimer <= 0) e.poisonStacks = 0;
         }
@@ -2320,7 +2354,7 @@
         // weaken's job now, split apart in v1.36.8). Computed once here so
         // both the contact-damage check and the threat-vignette check below
         // agree on the same effective damage value.
-        const frenzyDmgMult = e.frenzyTimer > 0 ? 1 + e.frenzyStacks * FRENZY_DMG_MULT_PER_STACK : 1;
+        const frenzyDmgMult = e.frenzyTimer > 0 ? frenzyDmgMultForStacks(e.frenzyStacks) : 1;
         const weakenDmgMult = e.weakenTimer > 0 ? weakenDmgMultForLevel(p.weakenLevel) : 1;
         const effDmg = e.dmg * frenzyDmgMult * weakenDmgMult * buffDamageTakenMult;
 
@@ -2341,21 +2375,24 @@
 
       // Frenzy friendly fire: a frenzied enemy also deals its (boosted)
       // contact damage to whichever OTHER enemy it physically touches, not
-      // just the player - this is the risk half of 狂乱's design (see
-      // FRENZY_DMG_MULT_PER_STACK). Shares contactCd with the player-contact
-      // check above, so a frenzied enemy can only land one hit (on the
-      // player or a neighbor, whichever it touches) per cooldown window.
-      // Only iterates frenzied enemies as the outer loop (cheap - normally
-      // a small subset of the swarm) rather than checking every pair.
+      // just the player - this is one risk half of 狂乱's design (see
+      // frenzyDmgMultForStacks/frenzyTakenDmgMultForStacks). Shares
+      // contactCd with the player-contact check above, so a frenzied enemy
+      // can only land one hit (on the player or a neighbor, whichever it
+      // touches) per cooldown window. Only iterates frenzied enemies as the
+      // outer loop (cheap - normally a small subset of the swarm) rather
+      // than checking every pair. The victim (`other`) goes through
+      // damageEnemy() below, so if it's ALSO frenzied, its own stacks make
+      // it take extra damage from this hit too.
       for (const e of this.enemies) {
         if (e.frenzyTimer <= 0 || e.contactCd > 0) continue;
-        const frenzyDmgMult = 1 + e.frenzyStacks * FRENZY_DMG_MULT_PER_STACK;
+        const frenzyDmgMult = frenzyDmgMultForStacks(e.frenzyStacks);
         const weakenDmgMult = e.weakenTimer > 0 ? weakenDmgMultForLevel(p.weakenLevel) : 1;
         for (const other of this.enemies) {
           if (other === e) continue;
           const rr = e.radius + other.radius;
           if (dist2(e.x, e.y, other.x, other.y) < rr * rr) {
-            other.hp -= e.dmg * frenzyDmgMult * weakenDmgMult;
+            this.damageEnemy(other, e.dmg * frenzyDmgMult * weakenDmgMult);
             other.hitFlash = 0.12;
             e.contactCd = 0.5;
             break;
@@ -2404,7 +2441,7 @@
           for (const other of this.enemies) {
             if (other === e) continue;
             if (dist2(other.x, other.y, e.x, e.y) <= BOMBIFY_RADIUS * BOMBIFY_RADIUS) {
-              other.hp -= bombDmg;
+              this.damageEnemy(other, bombDmg);
               other.hitFlash = 0.12;
             }
           }
@@ -2550,7 +2587,7 @@
             if (t <= 0) {
               t += IMPACT_EFFECT_TICK_INTERVAL;
               if (fx.type === 'killzone') {
-                e.hp -= fx.dmgPerSec * IMPACT_EFFECT_TICK_INTERVAL;
+                this.damageEnemy(e, fx.dmgPerSec * IMPACT_EFFECT_TICK_INTERVAL);
               } else if (fx.type === 'frenzyfountain') {
                 if (e.frenzyTimer <= 0) { e.frenzyTimer = FRENZY_DURATION; e.frenzyStacks = 1; }
                 else e.frenzyStacks = Math.min(frenzyMaxStacksForLevel(p.frenzyLevel), e.frenzyStacks + 1);
