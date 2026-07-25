@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.28';
+  const GAME_VERSION = '1.36.29';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -891,8 +891,16 @@
   const HEART_SPAWN_CHECK_INTERVAL = 1.0; // seconds between spawn-chance rolls
   // 0.02->0.04 (v1.36.28): halves the expected wait (~50s -> ~25s per
   // heart) so going out of the way to find one is worth doing more often.
-  const HEART_SPAWN_CHANCE = 0.04; // per roll, only while none is already on screen
-  const HEART_HEAL_FRAC = 0.1;
+  const HEART_SPAWN_CHANCE = 0.04; // per roll, only while under HEART_MAX_COUNT are already on screen
+  // 1->5 (v1.36.29): with hearts now able to land off-screen (v1.36.28),
+  // a 1-heart cap meant a far-off heart blocked any closer one from
+  // spawning until it was reached or the run moved on. Multiple hearts can
+  // now coexist, so a search doesn't always mean chasing a single distant
+  // point - there may be a closer one worth detouring for instead.
+  const HEART_MAX_COUNT = 5;
+  // 0.1->0.2 (v1.36.29): raised alongside the higher cap/spawn rate so each
+  // individual pickup is worth more of a detour, not just more frequent.
+  const HEART_HEAL_FRAC = 0.2;
   const HEART_SPAWN_MIN_DIST = 200;
   // 400->1200 (v1.36.28): the old range never reached past the edge of a
   // typical viewport, so a heart was always at least partially visible the
@@ -2270,7 +2278,7 @@
       this.heartSpawnTimer -= dt;
       if (this.heartSpawnTimer <= 0) {
         this.heartSpawnTimer += HEART_SPAWN_CHECK_INTERVAL;
-        if (this.hearts.length === 0 && Math.random() < HEART_SPAWN_CHANCE) {
+        if (this.hearts.length < HEART_MAX_COUNT && Math.random() < HEART_SPAWN_CHANCE) {
           const angle = rand(0, TAU);
           const spawnDist = rand(HEART_SPAWN_MIN_DIST, HEART_SPAWN_MAX_DIST);
           this.hearts.push(new Heart(p.x + Math.cos(angle) * spawnDist, p.y + Math.sin(angle) * spawnDist));
