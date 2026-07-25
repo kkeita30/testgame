@@ -111,10 +111,11 @@ html, body {
   position: absolute;
   left: 50%;
   top: 50%;
-  font-size: 15px;
-  line-height: 1;
-  color: #ff4d6d;
-  text-shadow: 0 0 4px rgba(255,77,109,0.7);
+  /* A slender isoceles triangle (SVG polygon) rather than the "▲" glyph -
+     that glyph reads as close to equilateral at small sizes, so which way
+     it was pointing wasn't actually legible. */
+  fill: #ff4d6d;
+  filter: drop-shadow(0 0 4px rgba(255,77,109,0.7));
   /* No transition on the rotate() itself - animating it would spin the
      needle the long way around every time the angle wraps past 180/-180,
      which reads as a glitch rather than a smooth turn. */
