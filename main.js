@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.29';
+  const GAME_VERSION = '1.36.30';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -187,6 +187,13 @@
   const specialIndicatorEl = document.getElementById('special-indicator');
   const rushAlertEl = document.getElementById('rush-alert');
   const threatVignetteEl = document.getElementById('threat-vignette');
+  const heartRadarEl = document.getElementById('heart-radar');
+  const heartRadarArrows = {
+    up: heartRadarEl.querySelector('.radar-arrow.up'),
+    down: heartRadarEl.querySelector('.radar-arrow.down'),
+    left: heartRadarEl.querySelector('.radar-arrow.left'),
+    right: heartRadarEl.querySelector('.radar-arrow.right'),
+  };
   const killsEl = document.getElementById('kills');
   const startScreen = document.getElementById('start-screen');
   const characterSelectScreen = document.getElementById('character-select-screen');
@@ -2377,6 +2384,49 @@
       }
 
       threatVignetteEl.classList.toggle('active', this.threatNearby);
+
+      this.updateHeartRadar();
+    }
+
+    // Rough up/down/left/right pointer toward the nearest heart, but only
+    // while it's actually off-screen - once a heart is visible on screen
+    // the player can just look at it directly, so the radar would be
+    // redundant (and distracting) noise at that point.
+    updateHeartRadar() {
+      const p = this.player;
+      if (this.hearts.length === 0) {
+        heartRadarEl.classList.add('hidden');
+        return;
+      }
+      let nearest = null;
+      let nearestDist = Infinity;
+      for (const h of this.hearts) {
+        const d = dist(h.x, h.y, p.x, p.y);
+        if (d < nearestDist) { nearestDist = d; nearest = h; }
+      }
+      const scale = viewScale(p);
+      const dx = nearest.x - p.x;
+      const dy = nearest.y - p.y;
+      const screenX = W / 2 + dx * scale;
+      const screenY = H / 2 + dy * scale;
+      const onScreen = screenX >= -nearest.radius && screenX <= W + nearest.radius
+        && screenY >= -nearest.radius && screenY <= H + nearest.radius;
+      if (onScreen) {
+        heartRadarEl.classList.add('hidden');
+        return;
+      }
+      heartRadarEl.classList.remove('hidden');
+      // Deliberately coarse: light up whichever axes have a non-trivial
+      // component rather than picking one single "closest" direction, so a
+      // heart that's diagonally off-screen shows as e.g. "up + right"
+      // instead of collapsing to just one of the two.
+      const DEADZONE = 40; // world px - ignores near-zero components so a
+                            // heart almost directly up/down/left/right
+                            // doesn't flicker the other axis on and off
+      heartRadarArrows.up.classList.toggle('active', dy < -DEADZONE);
+      heartRadarArrows.down.classList.toggle('active', dy > DEADZONE);
+      heartRadarArrows.left.classList.toggle('active', dx < -DEADZONE);
+      heartRadarArrows.right.classList.toggle('active', dx > DEADZONE);
     }
 
     draw() {
