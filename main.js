@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.33';
+  const GAME_VERSION = '1.36.34';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -272,9 +272,14 @@
       // one-shot-clears-the-screen panic button.
       special: {
         name: 'リカバリーダッシュ',
-        desc: '最大HPの50%を回復し、20秒間移動速度が50%アップする(クールタイム60秒)',
+        // 被ダメージ70%カット追加(v1.36.34): 移動速度アップだけだと結局
+        // 発動中に被弾すればすぐHPが減り戻ってしまい、「回復してもすぐ
+        // 相殺される」感が強かった。効果時間中は被ダメージそのものを
+        // 大きく抑えることで、回復した分を維持しやすい真の耐久バフにした。
+        desc: '最大HPの50%を回復し、20秒間移動速度が50%アップ・被ダメージ70%カット(クールタイム60秒)',
         cooldown: 60,
         buffSpeedMult: 1.5,
+        buffDamageTakenMult: 0.3,
         activate(p, game) {
           p.hp = Math.min(p.maxHp, p.hp + p.maxHp * 0.5);
           p.specialBuffTimer = 20;
@@ -1223,7 +1228,11 @@
   // enemies once and letting the crowd's natural kill pace trigger it.
   const BOMBIFY_DURATION = 3;
   const BOMBIFY_RADIUS = 180;
-  function bombifyDmgPctForLevel(level) { return 0.3 + 0.1 * (level - 1); }
+  // Halved 30%->15% base / +10%->+5% per level (v1.36.34): detonation
+  // damage was landing too strong relative to other AoE tools for how
+  // little setup it requires (just land a hit, then let the crowd's normal
+  // kill pace trigger it).
+  function bombifyDmgPctForLevel(level) { return 0.15 + 0.05 * (level - 1); }
 
   // Weaken (v1.36.8): split out of slow, which used to also halve a
   // slowed enemy's contact damage - that coupling meant taking slow always
@@ -2105,6 +2114,15 @@
 
       // enemies
       const rushSpeedMult = this.rushState === 'active' ? RUSH_SPEED_MULT : 1;
+      // A special's timed buff can include a temporary damage-taken cut
+      // (e.g. tank's recovery dash) - declared on the special itself
+      // (buffDamageTakenMult) rather than hardcoded here, same pattern as
+      // speed()'s buffSpeedMult above. Computed once per frame (player-wide,
+      // not per-enemy) and folded into effDmg below so both the actual
+      // takeDamage() call and the threat-vignette's one-shot check agree on
+      // the same effective incoming damage.
+      const buffDamageTakenMult = p.specialBuffTimer > 0 && p.special && p.special.buffDamageTakenMult != null
+        ? p.special.buffDamageTakenMult : 1;
       let threatNearby = false;
       for (const e of this.enemies) {
         const d = dist(e.x, e.y, p.x, p.y) || 1;
@@ -2139,7 +2157,7 @@
         // agree on the same effective damage value.
         const frenzyDmgMult = e.frenzyTimer > 0 ? 1 + e.frenzyStacks * FRENZY_DMG_MULT_PER_STACK : 1;
         const weakenDmgMult = e.weakenTimer > 0 ? weakenDmgMultForLevel(p.weakenLevel) : 1;
-        const effDmg = e.dmg * frenzyDmgMult * weakenDmgMult;
+        const effDmg = e.dmg * frenzyDmgMult * weakenDmgMult * buffDamageTakenMult;
 
         if (d < THREAT_RADIUS && effDmg >= p.hp) threatNearby = true;
 
