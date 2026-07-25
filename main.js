@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.24';
+  const GAME_VERSION = '1.36.25';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -835,6 +835,12 @@
       // from GEM_CAP below - the whole point of that ability is stockpiling
       // gems for one big level-up burst, which the cap would otherwise gut.
       this.forceKilled = false;
+      // Which wave this enemy spawned in (set by spawnEnemy right after
+      // construction) - the kill-rate rubber-band (see update()) only
+      // counts a kill toward the current wave's rate if the enemy actually
+      // spawned during that same wave, so a carryover kill from a
+      // previous wave's backlog can't inflate this wave's rate past 100%.
+      this.spawnWave = 0;
     }
   }
 
@@ -1316,17 +1322,31 @@
   }
 
   // Not part of the random pool: always offered as an extra choice so the
-  // player can decline a bad draw. No stat changes, but banks a chunk of
-  // progress toward the next level instead of leaving XP near empty. The
-  // refund percentage is per-player (p.skipRefundPct) rather than a fixed
-  // 30%, so a character passive can raise it - hence desc is a function of
-  // the current player instead of a static string.
+  // player can decline a bad draw. No stat changes, and (see apply below)
+  // undoes the level-up itself rather than letting it stand - otherwise
+  // "declining" a bad draw would still have consumed a level (raising
+  // xpNext for the real level-up after it, via xpNextForLevel's curve)
+  // for nothing in return. The refund percentage is per-player
+  // (p.skipRefundPct) rather than a fixed 30%, so a character passive can
+  // raise it - hence desc is a function of the current player instead of
+  // a static string.
   const SKIP_REFUND_PCT_BASE = 0.3;
   const SKIP_UPGRADE = {
     id: 'skip',
     title: 'スキップ',
-    desc: p => `強化なし。次のレベルアップまでのXPを${Math.round(p.skipRefundPct * 100)}%獲得した状態にする`,
-    apply: p => { p.xp = p.xpNext * p.skipRefundPct; },
+    desc: p => `強化なし。このレベルアップを見送り、現レベルを維持したまま次のレベルアップまでのXPを${Math.round(p.skipRefundPct * 100)}%獲得した状態にする`,
+    apply: p => {
+      // gainXp() already incremented p.level/xpNext and re-applied the
+      // weapon's innate effect (in case it just ranked up) before this
+      // screen was ever shown - roll all three back to how they were
+      // immediately before that happened, then refund a percentage of the
+      // (now-reverted, lower) xpNext, so skipping never comes with a
+      // free-floating level the player got nothing for.
+      p.level--;
+      p.xpNext = xpNextForLevel(p.level);
+      p.applyWeaponInnateEffect();
+      p.xp = p.xpNext * p.skipRefundPct;
+    },
   };
 
   // ---------- Game controller ----------
@@ -1362,7 +1382,13 @@
       this.levelCheckTimer = DIFFICULTY_CHECK_INTERVAL;
       this.totalSpawned = 0;
       this.spawnedAtCheckpoint = 0;
-      this.killsAtCheckpoint = 0;
+      // Kills of enemies whose spawnWave matches the currently active wave
+      // - unlike this.kills (a lifetime total, untouched by any of this),
+      // this only counts toward the kill-rate rubber-band an enemy that
+      // both spawned AND died within the same wave, so a kill carried over
+      // from a previous wave's backlog can't inflate this wave's rate past
+      // 100%. Reset to 0 at each wave checkpoint (see update()).
+      this.killsThisWave = 0;
 
       this.bossSpawnTimer = BOSS_SPAWN_INTERVAL;
 
@@ -1538,7 +1564,9 @@
         const x = p.x + Math.cos(angle) * spawnDist;
         const y = p.y + Math.sin(angle) * spawnDist;
         this.totalSpawned++;
-        this.enemies.push(new Enemy(type, x, y, hpMult, dmgMult));
+        const enemy = new Enemy(type, x, y, hpMult, dmgMult);
+        enemy.spawnWave = this.wave;
+        this.enemies.push(enemy);
       }
     }
 
@@ -1856,10 +1884,14 @@
       this.levelCheckTimer -= dt;
       if (this.levelCheckTimer <= 0) {
         this.levelCheckTimer += DIFFICULTY_CHECK_INTERVAL;
-        this.wave++;
+        // killsThisWave was tallied throughout the wave that's ending right
+        // now (this.wave hasn't incremented yet), only counting kills of
+        // enemies that also spawned during it - read it before both the
+        // wave increment below and the reset at the bottom of this block.
         const spawnedThisWindow = this.totalSpawned - this.spawnedAtCheckpoint;
-        const killsThisWindow = this.kills - this.killsAtCheckpoint;
+        const killsThisWindow = this.killsThisWave;
         const killRate = spawnedThisWindow > 0 ? killsThisWindow / spawnedThisWindow : 1;
+        this.wave++;
 
         // Every window heals a flat WINDOW_HEAL_FRAC of maxHp, regardless
         // of performance or rush - the closest thing to a passive recovery
@@ -1912,7 +1944,7 @@
           this.rushWindowCooldown = RUSH_WINDOW_COOLDOWN;
         }
         this.spawnedAtCheckpoint = this.totalSpawned;
-        this.killsAtCheckpoint = this.kills;
+        this.killsThisWave = 0;
       }
 
       // Rush's warning -> active transition, independent of the 50s check
@@ -2156,6 +2188,7 @@
       this.enemies = this.enemies.filter(e => {
         if (e.hp <= 0) {
           this.kills++;
+          if (e.spawnWave === this.wave) this.killsThisWave++;
           // The emergency bomb's forced kills always drop, uncapped and at
           // full chance - the ability's whole point is a guaranteed gem
           // burst, not one gated behind the same odds as a normal kill.
@@ -2246,9 +2279,8 @@
       // shows "--" until at least one enemy has spawned in the current
       // window, since dividing by zero spawns has no meaningful rate yet.
       const spawnedThisWindow = this.totalSpawned - this.spawnedAtCheckpoint;
-      const killsThisWindow = this.kills - this.killsAtCheckpoint;
       killRateEl.textContent = spawnedThisWindow > 0
-        ? `撃破率 ${Math.round((killsThisWindow / spawnedThisWindow) * 100)}%`
+        ? `撃破率 ${Math.round((this.killsThisWave / spawnedThisWindow) * 100)}%`
         : '撃破率 --';
       killsEl.textContent = `${this.kills} kills`;
 
