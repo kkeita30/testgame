@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.26';
+  const GAME_VERSION = '1.36.27';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -454,7 +454,12 @@
   // (the old `xpNext * 1.35 + 5` recurrence), so it stays a smooth, roughly
   // steady climb instead of snowballing into a wall by level ~15. A hard
   // cap keeps very long runs from ever facing an unbounded requirement.
-  const XP_NEXT_CAP = 3000;
+  // Lowered 3000->1527 (v1.36.27, matches the uncapped formula's value at
+  // level 33) - 3000 let the per-level requirement keep climbing far longer
+  // than intended, making very long runs feel like they stalled out on
+  // leveling; capping around the LV33-equivalent keeps late-run leveling
+  // pace steady instead of grinding to a near-halt.
+  const XP_NEXT_CAP = 1527;
   function xpNextForLevel(level) {
     return Math.min(XP_NEXT_CAP, Math.round(10 + 8 * Math.pow(level, 1.5)));
   }
@@ -616,7 +621,11 @@
   // visible; the floor is a safety net for the opposite direction should
   // future tuning ever push the raw cadence below it.
   const SPAWN_RATE_MIN = 1;
-  const SPAWN_RATE_MAX = 5;
+  // Raised 5->8 (v1.36.27) alongside the tier HP/dmg coefficient bump -
+  // more room for spawn-pace investment (pierce/chain) to keep paying off
+  // as a genuinely faster cadence before SPAWN_OVERFLOW_HP_COEFF's
+  // enemy-HP conversion kicks in, rather than hitting the ceiling sooner.
+  const SPAWN_RATE_MAX = 8;
 
   // Once the raw spawn cadence (difficulty + crowd investment) wants to
   // exceed SPAWN_RATE_MAX, that excess no longer buys a faster spawn rate
@@ -680,10 +689,6 @@
   const RUSH_BURST_MULT = 2; // multiplies ENEMY_TYPES burst, not spawn-event frequency
   const RUSH_SPEED_MULT = 1.2;
   const RUSH_HP_MULT = 1.5; // multiplies HP of enemies spawned during an active rush
-  // fraction of maxHp healed on rush end, ON TOP OF the WINDOW_HEAL_FRAC
-  // heal every window already gets (see update()) - together they total
-  // WINDOW_HEAL_FRAC + RUSH_HEAL_FRAC = 45% on a rush-concluding window.
-  const RUSH_HEAL_FRAC = 0.25;
   // Difficulty step size on the window a rush concludes in, in place of the
   // usual step, if that window's kill rate also cleared RUSH_KILL_RATE_THRESHOLD
   // (see DIFFICULTY_STEP_HIGH_KILL_RATE below, whose non-rush tier this sits
@@ -704,12 +709,6 @@
   // climb move a bit faster, now that the XP curve (v1.9.0) caps out and
   // stops slowing leveling down at high player levels.
   const DIFFICULTY_CHECK_INTERVAL = 50;
-  // Heals this fraction of maxHp on every difficulty-check window,
-  // regardless of rush (v1.36.12) - added after removing regen/生命転化 as
-  // pickable upgrades (v1.36.11) took away the player's only passive
-  // recovery tools. On a rush-concluding window this stacks with
-  // RUSH_HEAL_FRAC for 20% + 25% = 45% total.
-  const WINDOW_HEAL_FRAC = 0.2;
 
   // Kill-rate rubber-band step sizes for the two "extreme" tiers layered on
   // top of the original +-1/hold three-band system (see the cascade in
@@ -881,6 +880,23 @@
       this.radius = 5;
       this.vx = 0; this.vy = 0;
       this.life = GEM_LIFESPAN;
+    }
+  }
+
+  // Heart pickup (v1.36.27): a rare passive-recovery item, replacing the
+  // wave-end HP heal removed the same version. Spawns away from the player
+  // and just sits there (no lifespan, no magnetism like gems' pickup
+  // radius) until physically touched - finding one is a small deliberate
+  // detour, not an automatic drip.
+  const HEART_SPAWN_CHECK_INTERVAL = 1.0; // seconds between spawn-chance rolls
+  const HEART_SPAWN_CHANCE = 0.02; // per roll, only while none is already on screen
+  const HEART_HEAL_FRAC = 0.1;
+  const HEART_SPAWN_MIN_DIST = 200;
+  const HEART_SPAWN_MAX_DIST = 400;
+  class Heart {
+    constructor(x, y) {
+      this.x = x; this.y = y;
+      this.radius = 12;
     }
   }
 
@@ -1350,6 +1366,8 @@
       this.enemies = [];
       this.projectiles = [];
       this.gems = [];
+      this.hearts = [];
+      this.heartSpawnTimer = HEART_SPAWN_CHECK_INTERVAL;
       this.particles = [];
       this.chainZaps = [];
       this.sweepEffects = [];
@@ -1522,9 +1540,15 @@
       // difficulty ~43 by the 15-minute mark was taking single boss hits
       // for 100%+ of maxHp even with heavy HP investment - offense had
       // outpaced defense so early that HP upgrades never felt worth taking
-      // until it was already too late to catch up. Their ratio to each
-      // other (dmg:hp) is kept the same, only the overall pace is slower.
-      const tierHpMult = 1 + (D - 1) * 0.07;
+      // until it was already too late to catch up. Since then, several
+      // other awareness/survivability tools were added (the threat
+      // vignette, weaken/intercept, move-speed and pickup-range
+      // upgrades), so both were raised back up 1.5x (0.07->0.105,
+      // 0.055->0.0825, v1.36.27) - still well short of the original
+      // 0.14/0.11, but re-tightening the curve now that the player side
+      // has more to work with. Their ratio to each other (dmg:hp) is kept
+      // the same, only the overall pace changes.
+      const tierHpMult = 1 + (D - 1) * 0.105;
       const offenseExtra = Math.max(0, offensePowerMult(p) - 1);
       // Once spawn pacing is pinned at SPAWN_RATE_MAX, further crowd
       // investment can't buy a faster spawn rate anymore - it buys
@@ -1533,7 +1557,7 @@
       // top, so the burst is a real spike in danger, not just more targets.
       const hpMult = tierHpMult * (1 + offenseExtra * 0.25) * (1 + this.spawnRateOverflow * SPAWN_OVERFLOW_HP_COEFF) * (this.rushState === 'active' ? RUSH_HP_MULT : 1);
 
-      const tierDmgMult = 1 + (D - 1) * 0.055;
+      const tierDmgMult = 1 + (D - 1) * 0.0825;
       const survivalExtra = Math.max(0, survivalPowerMult(p) - 1);
       // 0.7 -> 0.5 (v1.35.8): maxHp is already pre-damped to half weight
       // inside survivalExtra (see survivalPowerMult), so at 0.7 here, doubling
@@ -1899,13 +1923,6 @@
         const killRate = poolThisWindow > 0 ? killsThisWindow / poolThisWindow : 1;
         this.wave++;
 
-        // Every window heals a flat WINDOW_HEAL_FRAC of maxHp, regardless
-        // of performance or rush - the closest thing to a passive recovery
-        // tool left now that regen/生命転化 aren't pickable upgrades
-        // (v1.36.11). A rush-concluding window adds RUSH_HEAL_FRAC on top
-        // (see below) for a bigger combined heal.
-        this.player.hp = Math.min(this.player.maxHp, this.player.hp + this.player.maxHp * WINDOW_HEAL_FRAC);
-
         // RUSH_DURATION is sized so an active rush always concludes exactly
         // on this window boundary (see its definition) - a still-'active'
         // state here means this window fully contained that rush's burst.
@@ -1923,14 +1940,6 @@
 
         if (rushConcluding) {
           this.rushState = 'idle';
-          // Payoff: heal an additional RUSH_HEAL_FRAC of maxHp (on top of
-          // the WINDOW_HEAL_FRAC heal above, for 45% total) and sweep every
-          // gem currently on screen straight into XP, rewarding the player
-          // for having just weathered the burst instead of interrupting
-          // play with forced level-up picks.
-          this.player.hp = Math.min(this.player.maxHp, this.player.hp + this.player.maxHp * RUSH_HEAL_FRAC);
-          for (const g of this.gems) this.player.gainXp(g.value);
-          this.gems.length = 0;
         }
 
         // Rush eligibility rides along the same 50s window/checkpoint as
@@ -2247,6 +2256,27 @@
         return g.life > 0;
       });
 
+      // heart pickups: rare spawn roll + direct-touch collection (no
+      // magnetism, no lifespan - unlike gems, a heart just waits until the
+      // player actually reaches it or the run ends).
+      this.heartSpawnTimer -= dt;
+      if (this.heartSpawnTimer <= 0) {
+        this.heartSpawnTimer += HEART_SPAWN_CHECK_INTERVAL;
+        if (this.hearts.length === 0 && Math.random() < HEART_SPAWN_CHANCE) {
+          const angle = rand(0, TAU);
+          const spawnDist = rand(HEART_SPAWN_MIN_DIST, HEART_SPAWN_MAX_DIST);
+          this.hearts.push(new Heart(p.x + Math.cos(angle) * spawnDist, p.y + Math.sin(angle) * spawnDist));
+        }
+      }
+      this.hearts = this.hearts.filter(h => {
+        if (dist(h.x, h.y, p.x, p.y) < p.radius + h.radius) {
+          p.hp = Math.min(p.maxHp, p.hp + p.maxHp * HEART_HEAL_FRAC);
+          for (let i = 0; i < 8; i++) this.particles.push(new Particle(h.x, h.y, '#ff4d6d', 2.5));
+          return false;
+        }
+        return true;
+      });
+
       // particles
       for (const pt of this.particles) {
         pt.x += pt.vx * dt;
@@ -2383,6 +2413,25 @@
         ctx.rotate(Math.PI / 4);
         ctx.fillStyle = '#7fffd4';
         ctx.fillRect(-g.radius, -g.radius, g.radius * 2, g.radius * 2);
+        ctx.restore();
+      }
+
+      // hearts - two overlapping circle "lobes" plus a triangle point,
+      // filled as one path (simple approximation of a heart silhouette
+      // that fits this game's plain-shape art style).
+      for (const h of this.hearts) {
+        ctx.save();
+        ctx.translate(h.x, h.y);
+        ctx.fillStyle = '#ff4d6d';
+        const s = h.radius * 0.6;
+        ctx.beginPath();
+        ctx.arc(-s * 0.5, -s * 0.3, s * 0.5, 0, TAU);
+        ctx.arc(s * 0.5, -s * 0.3, s * 0.5, 0, TAU);
+        ctx.moveTo(-s, -s * 0.1);
+        ctx.lineTo(0, s * 0.9);
+        ctx.lineTo(s, -s * 0.1);
+        ctx.closePath();
+        ctx.fill();
         ctx.restore();
       }
 
