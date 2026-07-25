@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.25';
+  const GAME_VERSION = '1.36.26';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -835,12 +835,6 @@
       // from GEM_CAP below - the whole point of that ability is stockpiling
       // gems for one big level-up burst, which the cap would otherwise gut.
       this.forceKilled = false;
-      // Which wave this enemy spawned in (set by spawnEnemy right after
-      // construction) - the kill-rate rubber-band (see update()) only
-      // counts a kill toward the current wave's rate if the enemy actually
-      // spawned during that same wave, so a carryover kill from a
-      // previous wave's backlog can't inflate this wave's rate past 100%.
-      this.spawnWave = 0;
     }
   }
 
@@ -1382,13 +1376,21 @@
       this.levelCheckTimer = DIFFICULTY_CHECK_INTERVAL;
       this.totalSpawned = 0;
       this.spawnedAtCheckpoint = 0;
-      // Kills of enemies whose spawnWave matches the currently active wave
-      // - unlike this.kills (a lifetime total, untouched by any of this),
-      // this only counts toward the kill-rate rubber-band an enemy that
-      // both spawned AND died within the same wave, so a kill carried over
-      // from a previous wave's backlog can't inflate this wave's rate past
-      // 100%. Reset to 0 at each wave checkpoint (see update()).
+      // Kills since the last wave checkpoint (unlike this.kills, a lifetime
+      // total left untouched by any of this) - reset to 0 at each wave
+      // boundary (see update()).
       this.killsThisWave = 0;
+      // How many enemies were already alive (backlog carried over from the
+      // previous wave) at the moment the current wave started - captured
+      // at each checkpoint for use by the *next* one. The kill-rate
+      // denominator is this backlog plus the wave's own new spawns
+      // (aliveAtWaveStart + spawnedThisWindow), not spawns alone - a kill
+      // of a backlog enemy is real progress the player should get credit
+      // for, and without the backlog term the denominator undercounts
+      // everything actually facing the player that wave, letting the rate
+      // read >100% if enough backlog gets cleared. 0 for wave 1 (nothing
+      // could have carried over before the game started).
+      this.aliveAtWaveStart = 0;
 
       this.bossSpawnTimer = BOSS_SPAWN_INTERVAL;
 
@@ -1564,9 +1566,7 @@
         const x = p.x + Math.cos(angle) * spawnDist;
         const y = p.y + Math.sin(angle) * spawnDist;
         this.totalSpawned++;
-        const enemy = new Enemy(type, x, y, hpMult, dmgMult);
-        enemy.spawnWave = this.wave;
-        this.enemies.push(enemy);
+        this.enemies.push(new Enemy(type, x, y, hpMult, dmgMult));
       }
     }
 
@@ -1884,13 +1884,19 @@
       this.levelCheckTimer -= dt;
       if (this.levelCheckTimer <= 0) {
         this.levelCheckTimer += DIFFICULTY_CHECK_INTERVAL;
-        // killsThisWave was tallied throughout the wave that's ending right
-        // now (this.wave hasn't incremented yet), only counting kills of
-        // enemies that also spawned during it - read it before both the
-        // wave increment below and the reset at the bottom of this block.
+        // Denominator is the full pool the player actually had to deal
+        // with this wave - backlog carried in from the previous wave
+        // (aliveAtWaveStart) plus this wave's own new spawns - not just
+        // new spawns alone. Killing a backlog enemy is real progress and
+        // has to count, or the rate can't reach 100% even when the player
+        // fully clears the field; killsThisWave is a plain tally of every
+        // kill since the last checkpoint (no filtering by which wave the
+        // kill's target spawned in needed), so it's naturally bounded by
+        // this pool - you can't kill more than what existed to kill.
         const spawnedThisWindow = this.totalSpawned - this.spawnedAtCheckpoint;
+        const poolThisWindow = this.aliveAtWaveStart + spawnedThisWindow;
         const killsThisWindow = this.killsThisWave;
-        const killRate = spawnedThisWindow > 0 ? killsThisWindow / spawnedThisWindow : 1;
+        const killRate = poolThisWindow > 0 ? killsThisWindow / poolThisWindow : 1;
         this.wave++;
 
         // Every window heals a flat WINDOW_HEAL_FRAC of maxHp, regardless
@@ -1945,6 +1951,9 @@
         }
         this.spawnedAtCheckpoint = this.totalSpawned;
         this.killsThisWave = 0;
+        // Whatever's still alive right now carries into the new wave as
+        // its starting backlog, read by this same block next checkpoint.
+        this.aliveAtWaveStart = this.enemies.length;
       }
 
       // Rush's warning -> active transition, independent of the 50s check
@@ -2188,7 +2197,7 @@
       this.enemies = this.enemies.filter(e => {
         if (e.hp <= 0) {
           this.kills++;
-          if (e.spawnWave === this.wave) this.killsThisWave++;
+          this.killsThisWave++;
           // The emergency bomb's forced kills always drop, uncapped and at
           // full chance - the ability's whole point is a guaranteed gem
           // burst, not one gated behind the same odds as a normal kill.
@@ -2275,12 +2284,14 @@
       xpBar.style.width = clamp(p.xp / p.xpNext, 0, 1) * 100 + '%';
       levelEl.textContent = `Lv.${p.level}`;
       difficultyEl.textContent = `ウェーブ${this.wave} 残り${Math.ceil(this.levelCheckTimer)}秒 難易度${this.difficulty}`;
-      // Live view of the same window the difficulty checkpoint judges -
-      // shows "--" until at least one enemy has spawned in the current
-      // window, since dividing by zero spawns has no meaningful rate yet.
+      // Live view of the same window the difficulty checkpoint judges (see
+      // its pool-based formula above) - shows "--" until there's anything
+      // in the pool yet (nothing carried over and nothing spawned), since
+      // dividing by zero has no meaningful rate.
       const spawnedThisWindow = this.totalSpawned - this.spawnedAtCheckpoint;
-      killRateEl.textContent = spawnedThisWindow > 0
-        ? `撃破率 ${Math.round((this.killsThisWave / spawnedThisWindow) * 100)}%`
+      const poolThisWindow = this.aliveAtWaveStart + spawnedThisWindow;
+      killRateEl.textContent = poolThisWindow > 0
+        ? `撃破率 ${Math.round((this.killsThisWave / poolThisWindow) * 100)}%`
         : '撃破率 --';
       killsEl.textContent = `${this.kills} kills`;
 
