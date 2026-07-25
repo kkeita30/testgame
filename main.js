@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.30';
+  const GAME_VERSION = '1.36.31';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -187,13 +187,8 @@
   const specialIndicatorEl = document.getElementById('special-indicator');
   const rushAlertEl = document.getElementById('rush-alert');
   const threatVignetteEl = document.getElementById('threat-vignette');
-  const heartRadarEl = document.getElementById('heart-radar');
-  const heartRadarArrows = {
-    up: heartRadarEl.querySelector('.radar-arrow.up'),
-    down: heartRadarEl.querySelector('.radar-arrow.down'),
-    left: heartRadarEl.querySelector('.radar-arrow.left'),
-    right: heartRadarEl.querySelector('.radar-arrow.right'),
-  };
+  const heartCompassEl = document.getElementById('heart-compass');
+  const heartCompassNeedleEl = heartCompassEl.querySelector('.compass-needle');
   const killsEl = document.getElementById('kills');
   const startScreen = document.getElementById('start-screen');
   const characterSelectScreen = document.getElementById('character-select-screen');
@@ -2385,17 +2380,17 @@
 
       threatVignetteEl.classList.toggle('active', this.threatNearby);
 
-      this.updateHeartRadar();
+      this.updateHeartCompass();
     }
 
-    // Rough up/down/left/right pointer toward the nearest heart, but only
-    // while it's actually off-screen - once a heart is visible on screen
-    // the player can just look at it directly, so the radar would be
-    // redundant (and distracting) noise at that point.
-    updateHeartRadar() {
+    // Points a single needle toward the nearest heart, but only while it's
+    // actually off-screen - once a heart is visible on screen the player
+    // can just look at it directly, so the compass would be redundant (and
+    // distracting) noise at that point.
+    updateHeartCompass() {
       const p = this.player;
       if (this.hearts.length === 0) {
-        heartRadarEl.classList.add('hidden');
+        heartCompassEl.classList.add('hidden');
         return;
       }
       let nearest = null;
@@ -2412,21 +2407,16 @@
       const onScreen = screenX >= -nearest.radius && screenX <= W + nearest.radius
         && screenY >= -nearest.radius && screenY <= H + nearest.radius;
       if (onScreen) {
-        heartRadarEl.classList.add('hidden');
+        heartCompassEl.classList.add('hidden');
         return;
       }
-      heartRadarEl.classList.remove('hidden');
-      // Deliberately coarse: light up whichever axes have a non-trivial
-      // component rather than picking one single "closest" direction, so a
-      // heart that's diagonally off-screen shows as e.g. "up + right"
-      // instead of collapsing to just one of the two.
-      const DEADZONE = 40; // world px - ignores near-zero components so a
-                            // heart almost directly up/down/left/right
-                            // doesn't flicker the other axis on and off
-      heartRadarArrows.up.classList.toggle('active', dy < -DEADZONE);
-      heartRadarArrows.down.classList.toggle('active', dy > DEADZONE);
-      heartRadarArrows.left.classList.toggle('active', dx < -DEADZONE);
-      heartRadarArrows.right.classList.toggle('active', dx > DEADZONE);
+      heartCompassEl.classList.remove('hidden');
+      // atan2(dx, -dy) rather than the usual atan2(dy, dx): 0 degrees
+      // should mean "straight up" (the needle glyph's own resting
+      // orientation), and CSS rotate() is clockwise-positive, so this maps
+      // right->90deg, down->180deg, left->270deg as expected.
+      const angleDeg = Math.atan2(dx, -dy) * 180 / Math.PI;
+      heartCompassNeedleEl.style.transform = `translate(-50%, -50%) rotate(${angleDeg}deg)`;
     }
 
     draw() {

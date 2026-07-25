@@ -89,6 +89,44 @@ html, body {
   transition: width 0.15s ease;
 }
 
+/* Heart compass: a circular gauge (not a button-shaped widget) so it reads
+   as passive ambient HUD info rather than something tappable. Sits in the
+   normal document flow right under the XP bar, inheriting #hud's
+   pointer-events: none. */
+#heart-compass {
+  margin-top: 8px;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: rgba(0,0,0,0.35);
+  border: 2px solid rgba(255,77,109,0.5);
+  position: relative;
+}
+
+#heart-compass.hidden {
+  display: none;
+}
+
+#heart-compass .compass-needle {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  font-size: 15px;
+  line-height: 1;
+  color: #ff4d6d;
+  text-shadow: 0 0 4px rgba(255,77,109,0.7);
+  /* No transition on the rotate() itself - animating it would spin the
+     needle the long way around every time the angle wraps past 180/-180,
+     which reads as a glitch rather than a smooth turn. */
+  transform: translate(-50%, -50%) rotate(0deg);
+  animation: heart-compass-pulse 1s ease-in-out infinite;
+}
+
+@keyframes heart-compass-pulse {
+  0%, 100% { opacity: 0.7; }
+  50% { opacity: 1; }
+}
+
 #top-right-info {
   position: absolute;
   top: 10px;
@@ -415,56 +453,6 @@ html, body {
   font-size: 11px;
   color: #666;
   letter-spacing: 0.5px;
-}
-
-/* Heart radar: rough compass toward the nearest off-screen heart. Placed at
-   bottom-right - the only in-game HUD corner not already claimed by another
-   element (version-tag lives here too, but only on the start screen). */
-#heart-radar {
-  position: absolute;
-  right: 14px;
-  bottom: 14px;
-  width: 64px;
-  height: 64px;
-  pointer-events: none;
-  z-index: 15;
-}
-
-#heart-radar.hidden {
-  display: none;
-}
-
-#heart-radar .radar-icon {
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  font-size: 14px;
-  color: rgba(255,77,109,0.4);
-}
-
-#heart-radar .radar-arrow {
-  position: absolute;
-  font-size: 20px;
-  line-height: 1;
-  color: rgba(255,77,109,0.2);
-  text-shadow: 0 1px 3px rgba(0,0,0,0.6);
-  transition: color 0.15s ease;
-}
-
-#heart-radar .radar-arrow.up { top: 0; left: 50%; transform: translateX(-50%); }
-#heart-radar .radar-arrow.down { bottom: 0; left: 50%; transform: translateX(-50%); }
-#heart-radar .radar-arrow.left { left: 0; top: 50%; transform: translateY(-50%); }
-#heart-radar .radar-arrow.right { right: 0; top: 50%; transform: translateY(-50%); }
-
-#heart-radar .radar-arrow.active {
-  color: #ff4d6d;
-  animation: heart-radar-pulse 0.8s ease-in-out infinite;
-}
-
-@keyframes heart-radar-pulse {
-  0%, 100% { opacity: 0.6; text-shadow: 0 0 2px rgba(255,77,109,0.4); }
-  50% { opacity: 1; text-shadow: 0 0 10px rgba(255,77,109,0.9); }
 }
 
 /* Pause button */
