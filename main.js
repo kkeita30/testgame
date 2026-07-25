@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.35';
+  const GAME_VERSION = '1.36.36';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -1277,12 +1277,10 @@
   // life/maxLife fade doesn't wash out most of a longer-lived zone's
   // visible lifetime.
   const IMPACT_EFFECT_FADE_OUT = 0.5;
-  // Safety valve: a single wide-sweep/charge-beam hit can strike many
-  // enemies at once, and each struck enemy can spawn up to 4 zones (one per
-  // owned impact effect type) - without a cap, a high-attack-speed
-  // multi-hit build could pile up an unbounded number of zone instances.
-  // Oldest is dropped first once past this (see Game.spawnImpactEffect).
-  const MAX_IMPACT_EFFECTS_ALIVE = 40;
+  // At most one zone of each type can exist at a time (v1.36.36) - landing
+  // another hit of the same type while one is already active replaces it
+  // (relocates to the new impact point and refreshes its duration) rather
+  // than adding a second instance. See Game.spawnImpactEffect.
 
   class ImpactEffect {
     constructor(type, x, y, radius, life, dmgPerSec) {
@@ -2002,11 +2000,12 @@
       if (proj.weakens) target.weakenTimer = WEAKEN_DURATION; // no stacking - just (re)starts at full duration
     }
 
-    // Adds an impact-effect zone, dropping the oldest first once already at
-    // MAX_IMPACT_EFFECTS_ALIVE - see that constant's comment for why the
-    // cap exists at all.
+    // Adds an impact-effect zone. At most one of a given type can exist at
+    // once (v1.36.36) - if one is already active, it's replaced (removed,
+    // then the new one takes its place) rather than letting a second
+    // instance of the same type pile up alongside it.
     spawnImpactEffect(type, x, y, radius, life, dmgPerSec) {
-      if (this.impactEffects.length >= MAX_IMPACT_EFFECTS_ALIVE) this.impactEffects.shift();
+      this.impactEffects = this.impactEffects.filter(fx => fx.type !== type);
       this.impactEffects.push(new ImpactEffect(type, x, y, radius, life, dmgPerSec));
     }
 
