@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.31';
+  const GAME_VERSION = '1.36.32';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -512,6 +512,10 @@
       // Raised from 70 (v1.35.0) to fold in exactly what one pickup-range
       // upgrade pick used to add, now that the upgrade itself is gone.
       this.pickupRadius = 100;
+      // Fraction of maxHp a heart pickup restores (see HEART_HEAL_FRAC and
+      // the 'heartheal' upgrade below) - kept per-player rather than always
+      // reading the constant directly, since the upgrade raises it.
+      this.heartHealFrac = HEART_HEAL_FRAC;
       this.regen = 0;
       // Multiplier on the weapon's firing range (see weaponRange() below).
       // 1 = the default screen-relative range; left open for a future
@@ -900,9 +904,13 @@
   // now coexist, so a search doesn't always mean chasing a single distant
   // point - there may be a closer one worth detouring for instead.
   const HEART_MAX_COUNT = 5;
-  // 0.1->0.2 (v1.36.29): raised alongside the higher cap/spawn rate so each
-  // individual pickup is worth more of a detour, not just more frequent.
-  const HEART_HEAL_FRAC = 0.2;
+  // 0.1->0.2 (v1.36.29), then back to 0.1 (v1.36.32): the 0.2 bump was meant
+  // to offset how hard hearts were to find; the heart compass (v1.36.31)
+  // solved that more directly, so the base heal reverted to 0.1. The extra
+  // headroom moved into the 'heartheal' upgrade (STAT_LIMITS.maxHeartHealFrac)
+  // instead, so investment - not the base rate - is what reaches the old 0.2
+  // level and beyond.
+  const HEART_HEAL_FRAC = 0.1;
   const HEART_SPAWN_MIN_DIST = 200;
   // 400->1200 (v1.36.28): the old range never reached past the edge of a
   // typical viewport, so a heart was always at least partially visible the
@@ -1046,6 +1054,17 @@
         p.hp = Math.min(p.maxHp, p.hp + added);
       },
     },
+    {
+      id: 'heartheal',
+      title: 'ハート回復量増加',
+      desc: 'ハートの回復量 +10%',
+      // Multiplicative-with-cap, same shape as range/movespeed/pickup above.
+      // Base heal reverted to 10% (v1.36.32, see HEART_HEAL_FRAC) once the
+      // heart compass made finding one reliable enough that the extra value
+      // makes more sense as an investable upgrade than as a free baseline.
+      apply: p => p.heartHealFrac = Math.min(STAT_LIMITS.maxHeartHealFrac, p.heartHealFrac * 1.1),
+      available: p => p.heartHealFrac < STAT_LIMITS.maxHeartHealFrac,
+    },
   ];
 
   // Regen as a choosable upgrade/tradeoff was removed (v1.36.11) - with hits
@@ -1073,7 +1092,10 @@
   // field regardless of source - otherwise the upgrade would already be
   // "available: false" from the very start for that character. maxPickupRadius
   // similarly caps the re-added pickup-range upgrade (v1.36.24, see UPGRADE_POOL).
-  const STAT_LIMITS = { minDamage: 3, maxAtkCooldown: 1.4, minAtkCooldown: 0.15, maxRangeMult: 2.0, maxSpeedMult: 1.5, maxPickupRadius: 200 };
+  // maxHeartHealFrac caps the 'heartheal' upgrade (v1.36.32) - lets full
+  // investment reach 25% per heart (up from the 10% base), without an
+  // unbounded stack turning hearts into a full-heal-on-demand button.
+  const STAT_LIMITS = { minDamage: 3, maxAtkCooldown: 1.4, minAtkCooldown: 0.15, maxRangeMult: 2.0, maxSpeedMult: 1.5, maxPickupRadius: 200, maxHeartHealFrac: 0.25 };
 
   // Each grants a strong upside alongside a real downside, for players who
   // want to commit to a build rather than only stacking safe, one-sided
@@ -2288,7 +2310,7 @@
       }
       this.hearts = this.hearts.filter(h => {
         if (dist(h.x, h.y, p.x, p.y) < p.radius + h.radius) {
-          p.hp = Math.min(p.maxHp, p.hp + p.maxHp * HEART_HEAL_FRAC);
+          p.hp = Math.min(p.maxHp, p.hp + p.maxHp * p.heartHealFrac);
           for (let i = 0; i < 8; i++) this.particles.push(new Particle(h.x, h.y, '#ff4d6d', 2.5));
           return false;
         }
