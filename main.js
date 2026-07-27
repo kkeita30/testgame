@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.43';
+  const GAME_VERSION = '1.36.44';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -498,6 +498,12 @@
       this.xpNext = xpNextForLevel(this.level);
       this.invulnTimer = 0;
       this.facing = 1;
+      // Pity tracking for the level-up draw (v1.36.44): id -> consecutive
+      // level-ups this upgrade has been eligible but NOT offered. Read by
+      // Game.onLevelUp()/pickWeightedIndex to nudge a long-unseen upgrade's
+      // odds upward over time, so wanting a specific upgrade out of a large
+      // pool doesn't mean indefinite bad luck can just never surface it.
+      this.upgradeMissStreak = {};
 
       // weapon stats
       this.damage = 10;
@@ -1534,8 +1540,22 @@
   // double up on that same bias instead of mostly offering plain/tradeoff
   // variety.
   const BULLET_EFFECT_SLOT_WEIGHT = 0.4;
-  function pickWeightedIndex(pool) {
-    const weights = pool.map(up => up.id.startsWith('bullet-') ? BULLET_EFFECT_SLOT_WEIGHT : 1);
+  // Pity (v1.36.44): each consecutive level-up an upgrade was eligible but
+  // not offered adds this much to its own weight multiplier (1 + miss *
+  // PITY_WEIGHT_PER_MISS), on top of the bullet-effect discount above - so
+  // an upgrade that keeps not coming up gradually becomes more likely to,
+  // rather than being purely at the mercy of the raw pool-size odds
+  // forever. Uncapped by design: the longer something goes unseen, the
+  // more it should stand out from the crowd, and since this only scales
+  // relative weight (not a guarantee), a very long streak still has to win
+  // an actual weighted draw against whatever else is also overdue.
+  const PITY_WEIGHT_PER_MISS = 0.15;
+  function pickWeightedIndex(pool, missStreak) {
+    const weights = pool.map(up => {
+      const base = up.id.startsWith('bullet-') ? BULLET_EFFECT_SLOT_WEIGHT : 1;
+      const miss = (missStreak && missStreak[up.id]) || 0;
+      return base * (1 + miss * PITY_WEIGHT_PER_MISS);
+    });
     const total = weights.reduce((sum, w) => sum + w, 0);
     let r = Math.random() * total;
     for (let i = 0; i < pool.length; i++) {
@@ -1682,19 +1702,39 @@
       // reserved for deepening one of those instead of a plain random draw,
       // so committing to an effect keeps paying off instead of getting
       // diluted by the rest of the pool. With nothing owned yet (or
-      // everything owned already maxed), it just behaves like a normal slot.
+      // everything owned already maxed), it just behaves like a normal slot
+      // (and so gets the same pity-weighted draw as slots 2-3 - pity's
+      // whole point is helping a wanted upgrade actually get OFFERED, which
+      // this fallback case is; the owned-effects branch above it is a
+      // deliberately narrow, already-favorable choice on its own and isn't
+      // what players are missing out on).
       const ownedEffects = notMaxedEffects.filter(eff => eff.getLevel(this.player) > (eff.baseLevel || 0));
-      const firstSlotPool = ownedEffects.length > 0
-        ? ownedEffects.map(eff => bulletEffectUpgrade(eff, this.player))
-        : pool;
-      const firstPick = firstSlotPool[randInt(0, firstSlotPool.length - 1)];
+      const missStreak = this.player.upgradeMissStreak;
+      let firstPick;
+      if (ownedEffects.length > 0) {
+        const firstSlotPool = ownedEffects.map(eff => bulletEffectUpgrade(eff, this.player));
+        firstPick = firstSlotPool[randInt(0, firstSlotPool.length - 1)];
+      } else {
+        const idx = pickWeightedIndex(pool, missStreak);
+        firstPick = pool[idx];
+      }
       picks.push(firstPick);
 
       const remainingPool = pool.filter(up => up.id !== firstPick.id);
       for (let i = 0; i < 2 && remainingPool.length; i++) {
-        const idx = pickWeightedIndex(remainingPool);
+        const idx = pickWeightedIndex(remainingPool, missStreak);
         picks.push(remainingPool.splice(idx, 1)[0]);
       }
+
+      // Update pity streaks: anything eligible this round (in `pool`) that
+      // didn't make it into `picks` goes another level-up without being
+      // seen; anything that did make it in resets to 0 (it just got its
+      // chance, fair or not).
+      const offeredIds = new Set(picks.map(up => up.id));
+      for (const up of pool) {
+        missStreak[up.id] = offeredIds.has(up.id) ? 0 : (missStreak[up.id] || 0) + 1;
+      }
+
       upgradeChoicesEl.innerHTML = '';
       for (const up of picks) {
         const card = document.createElement('div');
