@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.40';
+  const GAME_VERSION = '1.36.41';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -1445,7 +1445,7 @@
       maxLevel: 5,
       getLevel: p => p.frenzyLevel,
       levelUp: p => { p.frenzyLevel++; },
-      introDesc: `着弾した敵を${FRENZY_DURATION}秒間の狂乱状態にする。狂乱状態の敵は移動速度が${FRENZY_SPEED_MULT}倍になり、攻撃力が上昇する(1スタック目で最大+${Math.round(FRENZY_DMG_MULT_MAX * 100)}%、以降は重ね掛けするほど上昇率が反比例して縮小)。一方で重ね掛け数に応じて被ダメージも増加する(1スタックあたり+${Math.round(FRENZY_TAKEN_DMG_MULT_PER_STACK * 100)}%)。狂乱状態の敵は、自機だけでなく接触した他の敵にもこの攻撃力でダメージを与えるようになる。持続時間は重ね掛けで延長されない。`,
+      introDesc: `着弾した敵を${FRENZY_DURATION}秒間の狂乱状態にする。狂乱状態の敵は移動速度が${FRENZY_SPEED_MULT}倍になり、攻撃力が上昇する。一方で重ね掛け数に応じて被ダメージも増加する。狂乱状態の敵は、自機だけでなく接触した他の敵にもこの攻撃力でダメージを与えるようになる。持続時間は重ね掛けで延長されない。`,
       upgradeDesc: level => `狂乱の重ね掛け上限が増加する(最大${frenzyMaxStacksForLevel(level)}スタック → 最大${frenzyMaxStacksForLevel(level + 1)}スタック)`,
     },
     {
