@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.39';
+  const GAME_VERSION = '1.36.40';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -1763,9 +1763,13 @@
       // upgrades), so both were raised back up 1.5x (0.07->0.105,
       // 0.055->0.0825, v1.36.27) - still well short of the original
       // 0.14/0.11, but re-tightening the curve now that the player side
-      // has more to work with. Their ratio to each other (dmg:hp) is kept
-      // the same, only the overall pace changes.
-      const tierHpMult = 1 + (D - 1) * 0.105;
+      // has more to work with. Eased back down 15% (0.105->0.08925,
+      // 0.0825->0.070125, v1.36.40) after the overall pace crept up too far
+      // again (impact effects, the frenzy rebalance, etc. all landed in the
+      // same window). Their ratio to each other (dmg:hp) is kept the same
+      // through every one of these adjustments, only the overall pace
+      // changes.
+      const tierHpMult = 1 + (D - 1) * 0.08925;
       const offenseExtra = Math.max(0, offensePowerMult(p) - 1);
       // Once spawn pacing is pinned at SPAWN_RATE_MAX, further crowd
       // investment can't buy a faster spawn rate anymore - it buys
@@ -1774,7 +1778,7 @@
       // top, so the burst is a real spike in danger, not just more targets.
       const hpMult = tierHpMult * (1 + offenseExtra * 0.25) * (1 + this.spawnRateOverflow * SPAWN_OVERFLOW_HP_COEFF) * (this.rushState === 'active' ? RUSH_HP_MULT : 1);
 
-      const tierDmgMult = 1 + (D - 1) * 0.0825;
+      const tierDmgMult = 1 + (D - 1) * 0.070125;
       const survivalExtra = Math.max(0, survivalPowerMult(p) - 1);
       // 0.7 -> 0.5 (v1.35.8): maxHp is already pre-damped to half weight
       // inside survivalExtra (see survivalPowerMult), so at 0.7 here, doubling
