@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.46';
+  const GAME_VERSION = '1.36.47';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -421,18 +421,29 @@
   // on however few are in a narrow beam.
   const CHARGE_DAMAGE_MULT = 3.0;
 
-  // Rapid Fire (v1.36.45, rebalanced v1.36.46): fires shots straight along
-  // the player's current movement direction (Player.moveDirAngle, updated
-  // in update()'s movement block whenever actually moving, and otherwise
-  // just held at whatever it last was) rather than at the nearest enemy -
-  // the only weapon with no auto-aim at all. Rewards aggressive,
-  // keep-moving-forward play (clearing whatever's directly ahead) but
-  // can't cover multiple threat directions the way the other weapons'
-  // targeting can.
+  // Rapid Fire (v1.36.45, rebalanced v1.36.46): fires shots along the
+  // player's current movement direction (Player.moveDirAngle, updated in
+  // update()'s movement block whenever actually moving, and otherwise just
+  // held at whatever it last was) rather than freely auto-aiming at the
+  // nearest enemy on screen the way every other weapon does. Rewards
+  // aggressive, keep-moving-forward play (clearing whatever's directly
+  // ahead) but can't cover multiple threat directions the way the other
+  // weapons' targeting can.
   // Damage raised 0.4->0.55 (v1.36.46, cooldown left untouched) - the
   // first pass felt too weak to justify giving up auto-aim entirely.
   const RAPIDFIRE_DAMAGE_MULT = 0.55;
   const RAPIDFIRE_COOLDOWN_MULT = 0.35;
+  // Narrow-cone auto-aim (v1.36.47): firing dead straight along
+  // moveDirAngle with zero targeting at all proved too punishing in
+  // practice - a target has to be pixel-perfect in front of the player, no
+  // margin at all. Now the nearest enemy within this half-angle of
+  // moveDirAngle (30deg total cone) is preferred over the raw movement
+  // direction if one exists; with nothing in that narrow cone it still
+  // falls back to firing straight ahead exactly as before. Keeps the
+  // weapon's directional identity (this is a soft nudge onto a nearby
+  // target roughly ahead, not the wide free-range targeting every other
+  // weapon has) while smoothing over the "must be exactly aligned" problem.
+  const RAPIDFIRE_AUTOAIM_HALF_ANGLE = 15 * Math.PI / 180;
   // Added v1.36.46: shots travel noticeably faster than every other
   // weapon's default Player.projSpeed, reinforcing the "fast" identity and
   // giving them a better chance of actually reaching whatever's ahead
@@ -488,7 +499,7 @@
     {
       id: 'rapidfire',
       name: 'ラピッドファイア',
-      desc: '威力はやや低めながら、自機の進行方向に向けて高速の弾を連射する武器。敵を狙わないため、進んでいく先を切り開いたり、自ら敵に向かっていったりする積極的な立ち回りが得意。その反面、複数方向から同時に狙われる状況にはやや弱い。',
+      desc: '威力はやや低めながら、自機の進行方向に向けて高速の弾を連射する武器。進行方向のごく近くに敵がいれば緩やかに自動照準するが、基本的には狙わないため、進んでいく先を切り開いたり、自ら敵に向かっていったりする積極的な立ち回りが得意。その反面、複数方向から同時に狙われる状況にはやや弱い。',
       apply: (p) => {},
       innateEffect: {
         name: '同時射撃数アップ',
@@ -1968,10 +1979,11 @@
       }
     }
 
-    // Rapid Fire's attack (see WEAPONS): fires straight along
-    // p.moveDirAngle (the player's current/last movement direction)
-    // instead of at any enemy - no targeting, no range check, since there's
-    // no target to range-check against. Every barrel travels the identical
+    // Rapid Fire's attack (see WEAPONS): fires along p.moveDirAngle (the
+    // player's current/last movement direction), nudged onto the nearest
+    // enemy within a narrow forward cone if one exists there
+    // (RAPIDFIRE_AUTOAIM_HALF_ANGLE) - not the wide free-range targeting
+    // every other weapon has. Every barrel travels the identical
     // angle/speed; RAPIDFIRE_BARREL_GAP only spaces out each one's spawn
     // position PERPENDICULAR to that direction, so a higher rank forms a
     // wider side-by-side row ("-" -> "=" -> "≡") instead of stacking more
@@ -1991,7 +2003,21 @@
         ? p.special.buffDamageMult : 1;
       const shotDamage = p.damage * buffDamageMult * RAPIDFIRE_DAMAGE_MULT;
 
-      const ang = p.moveDirAngle;
+      // Narrow-cone auto-aim: prefer the nearest in-range enemy that falls
+      // within RAPIDFIRE_AUTOAIM_HALF_ANGLE of moveDirAngle; with nothing
+      // in that cone, fire straight along moveDirAngle as before.
+      const range2 = weaponRange(p) ** 2;
+      let target = null, targetD2 = range2;
+      for (const e of this.enemies) {
+        const d2 = dist2(e.x, e.y, p.x, p.y);
+        if (d2 > targetD2) continue;
+        const toE = Math.atan2(e.y - p.y, e.x - p.x);
+        const diff = Math.atan2(Math.sin(toE - p.moveDirAngle), Math.cos(toE - p.moveDirAngle));
+        if (Math.abs(diff) > RAPIDFIRE_AUTOAIM_HALF_ANGLE) continue;
+        target = e; targetD2 = d2;
+      }
+      const ang = target ? Math.atan2(target.y - p.y, target.x - p.x) : p.moveDirAngle;
+
       const speed = p.projSpeed * RAPIDFIRE_PROJ_SPEED_MULT;
       const vx = Math.cos(ang) * speed;
       const vy = Math.sin(ang) * speed;
