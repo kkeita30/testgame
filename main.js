@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.47';
+  const GAME_VERSION = '1.36.48';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -433,17 +433,21 @@
   // first pass felt too weak to justify giving up auto-aim entirely.
   const RAPIDFIRE_DAMAGE_MULT = 0.55;
   const RAPIDFIRE_COOLDOWN_MULT = 0.35;
-  // Narrow-cone auto-aim (v1.36.47): firing dead straight along
-  // moveDirAngle with zero targeting at all proved too punishing in
-  // practice - a target has to be pixel-perfect in front of the player, no
-  // margin at all. Now the nearest enemy within this half-angle of
-  // moveDirAngle (30deg total cone) is preferred over the raw movement
-  // direction if one exists; with nothing in that narrow cone it still
-  // falls back to firing straight ahead exactly as before. Keeps the
+  // Forward-strip auto-aim (v1.36.47, reworked from a cone to a rectangle
+  // the same version): firing dead straight along moveDirAngle with zero
+  // targeting at all proved too punishing in practice - a target has to be
+  // pixel-perfect in front of the player, no margin at all. A cone was
+  // tried first, but a cone's width shrinks to nothing near its origin, so
+  // it stopped helping at all against enemies already close to the player
+  // (the exact moment auto-aim matters most). A rectangle - fixed half-width
+  // regardless of distance, extending out to weapon range - fixes that: the
+  // nearest enemy inside this strip ahead of the player is preferred over
+  // the raw movement direction if one exists; with nothing in the strip it
+  // still falls back to firing straight ahead exactly as before. Keeps the
   // weapon's directional identity (this is a soft nudge onto a nearby
   // target roughly ahead, not the wide free-range targeting every other
   // weapon has) while smoothing over the "must be exactly aligned" problem.
-  const RAPIDFIRE_AUTOAIM_HALF_ANGLE = 15 * Math.PI / 180;
+  const RAPIDFIRE_AUTOAIM_HALF_WIDTH = 60;
   // Added v1.36.46: shots travel noticeably faster than every other
   // weapon's default Player.projSpeed, reinforcing the "fast" identity and
   // giving them a better chance of actually reaching whatever's ahead
@@ -1981,8 +1985,8 @@
 
     // Rapid Fire's attack (see WEAPONS): fires along p.moveDirAngle (the
     // player's current/last movement direction), nudged onto the nearest
-    // enemy within a narrow forward cone if one exists there
-    // (RAPIDFIRE_AUTOAIM_HALF_ANGLE) - not the wide free-range targeting
+    // enemy within a narrow forward strip if one exists there
+    // (RAPIDFIRE_AUTOAIM_HALF_WIDTH) - not the wide free-range targeting
     // every other weapon has. Every barrel travels the identical
     // angle/speed; RAPIDFIRE_BARREL_GAP only spaces out each one's spawn
     // position PERPENDICULAR to that direction, so a higher rank forms a
@@ -2003,18 +2007,24 @@
         ? p.special.buffDamageMult : 1;
       const shotDamage = p.damage * buffDamageMult * RAPIDFIRE_DAMAGE_MULT;
 
-      // Narrow-cone auto-aim: prefer the nearest in-range enemy that falls
-      // within RAPIDFIRE_AUTOAIM_HALF_ANGLE of moveDirAngle; with nothing
-      // in that cone, fire straight along moveDirAngle as before.
-      const range2 = weaponRange(p) ** 2;
-      let target = null, targetD2 = range2;
+      // Forward-strip auto-aim: prefer the nearest enemy that falls inside
+      // the rectangle extending from the player out to weapon range, along
+      // moveDirAngle, RAPIDFIRE_AUTOAIM_HALF_WIDTH wide on either side.
+      // Fixed width regardless of distance (unlike a cone) so it still
+      // catches enemies right next to the player. With nothing in the
+      // strip, fire straight along moveDirAngle as before.
+      const fwdX = Math.cos(p.moveDirAngle), fwdY = Math.sin(p.moveDirAngle);
+      const latX = -fwdY, latY = fwdX;
+      const rangeLen = weaponRange(p);
+      let target = null, targetD2 = Infinity;
       for (const e of this.enemies) {
-        const d2 = dist2(e.x, e.y, p.x, p.y);
-        if (d2 > targetD2) continue;
-        const toE = Math.atan2(e.y - p.y, e.x - p.x);
-        const diff = Math.atan2(Math.sin(toE - p.moveDirAngle), Math.cos(toE - p.moveDirAngle));
-        if (Math.abs(diff) > RAPIDFIRE_AUTOAIM_HALF_ANGLE) continue;
-        target = e; targetD2 = d2;
+        const dx = e.x - p.x, dy = e.y - p.y;
+        const fwd = dx * fwdX + dy * fwdY;
+        if (fwd < 0 || fwd > rangeLen) continue;
+        const lat = dx * latX + dy * latY;
+        if (Math.abs(lat) > RAPIDFIRE_AUTOAIM_HALF_WIDTH) continue;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < targetD2) { target = e; targetD2 = d2; }
       }
       const ang = target ? Math.atan2(target.y - p.y, target.x - p.x) : p.moveDirAngle;
 
