@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.41';
+  const GAME_VERSION = '1.36.42';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -236,7 +236,7 @@
       // turns the cleared enemies' drops into an immediate level-up burst.
       special: {
         name: 'エマージェンシーボム',
-        desc: 'その場にいる敵を強制撃破し、10秒間ジェム回収範囲が全画面・獲得XPが1.5倍になる(クールタイム120秒)',
+        desc: 'その場にいる敵を強制撃破し、一定時間ジェム回収範囲が拡大し獲得XPも増加する',
         cooldown: 120,
         buffPickupRadiusMult: Infinity,
         buffXpMult: 1.5,
@@ -251,7 +251,7 @@
       // taking a mediocre upgrade instead of a near-total loss.
       passive: {
         name: '倹約家',
-        desc: 'レベルアップの「スキップ」時に払い戻されるXPが60%になる(通常30%)',
+        desc: 'レベルアップの「スキップ」時に払い戻されるXPが増加する',
         apply(p) { p.skipRefundPct = 0.6; },
       },
     },
@@ -276,7 +276,7 @@
         // 発動中に被弾すればすぐHPが減り戻ってしまい、「回復してもすぐ
         // 相殺される」感が強かった。効果時間中は被ダメージそのものを
         // 大きく抑えることで、回復した分を維持しやすい真の耐久バフにした。
-        desc: '最大HPの50%を回復し、20秒間移動速度が50%アップ・被ダメージ70%カット(クールタイム60秒)',
+        desc: '最大HPを大きく回復し、一定時間移動速度が上昇し被ダメージも大幅に軽減される',
         cooldown: 60,
         buffSpeedMult: 1.5,
         buffDamageTakenMult: 0.3,
@@ -290,7 +290,7 @@
       // or leans into Tank's naturally high HP pool even further.
       passive: {
         name: '鉄の反撃',
-        desc: `被ダメージ時、攻撃してきた敵に反射ダメージを与える(攻撃力の${Math.round(REFLECT_DMG_PCT_OF_ATTACK * 100)}% + 最大HPの${Math.round(REFLECT_DMG_PCT_OF_MAXHP * 100)}%)`,
+        desc: '被ダメージ時、攻撃してきた敵に反射ダメージを与える',
         apply(p) {},
         onContactDamage(p, enemy, game) {
           const reflect = Math.round(p.damage * REFLECT_DMG_PCT_OF_ATTACK + p.maxHp * REFLECT_DMG_PCT_OF_MAXHP);
@@ -302,7 +302,7 @@
     {
       id: 'speed',
       name: 'スピード',
-      desc: '最大HPが低く、移動速度が速い機動型。攻撃速度2倍・攻撃力半減のパッシブを持つ、操作難易度が高い上級者向け。',
+      desc: '最大HPが低く、移動速度が速い機動型。攻撃速度が大幅に上昇する代わりに攻撃力が低下するパッシブを持つ、操作難易度が高い上級者向け。',
       apply: (p) => {
         p.maxHp = 70;
         p.hp = p.maxHp;
@@ -314,7 +314,7 @@
       // active, attentive play over Standard's rarer, more deliberate bomb.
       special: {
         name: 'オーバードライブ',
-        desc: '10秒間、攻撃力が50%アップ・ジェム回収範囲が3倍になる(クールタイム10秒)',
+        desc: '一定時間、攻撃力が上昇しジェム回収範囲も大幅に拡大する',
         cooldown: 10,
         buffDamageMult: 1.5,
         buffPickupRadiusMult: 3,
@@ -328,7 +328,7 @@
       // (chain's proc chance) rather than raw per-hit power.
       passive: {
         name: '高速連射',
-        desc: '武器の攻撃間隔が半分(攻撃速度2倍)になる代わりに、攻撃力が半分になる',
+        desc: '攻撃速度が大幅に上昇する代わりに、攻撃力が低下する',
         apply(p) {
           p.atkCooldown = Math.max(STAT_LIMITS.minAtkCooldown, p.atkCooldown * 0.5);
           p.damage = Math.max(STAT_LIMITS.minDamage, Math.round(p.damage * 0.5));
@@ -429,29 +429,29 @@
       apply: (p) => {},
       innateEffect: {
         name: 'マルチショット',
-        desc: `自機レベルアップ${WEAPON_INNATE_LEVELS_PER_RANK}ごとにランクが上昇(最大Lv.${WEAPON_INNATE_MAX_RANK})し、同時発射数がランクと同じ数になる`,
+        desc: 'レベルアップに応じて自動でランクが上昇し、同時発射数が増えていく',
         applyRank(p, rank) { p.projCount = rank; },
       },
     },
     {
       id: 'wide',
       name: 'パルスウェーブ',
-      desc: `近距離専用、自機の前後に同時に放たれる衝撃波。射程は「迎撃」よりわずかに長い程度(${WIDE_ATTACK_RANGE}px)だが、前後の範囲内の敵を一度に全て攻撃でき、威力も高め(通常武器の${WIDE_DAMAGE_MULT}倍)。マルチショットは持たない代わりに、ランクアップで衝撃波の幅が広がっていく。`,
+      desc: '近距離専用、自機の前後に同時に放たれる衝撃波。射程は「迎撃」よりわずかに長い程度だが、前後の範囲内の敵を一度に全て攻撃でき、威力も高め。マルチショットは持たない代わりに、ランクアップで衝撃波の幅が広がっていく。',
       apply: (p) => {},
       innateEffect: {
         name: '波動拡大',
-        desc: `自機レベルアップ${WEAPON_INNATE_LEVELS_PER_RANK}ごとにランクが上昇(最大Lv.${WEAPON_INNATE_MAX_RANK})し、衝撃波の幅が広がる`,
+        desc: 'レベルアップに応じて自動でランクが上昇し、衝撃波の幅が広がっていく',
         applyRank(p, rank) { p.wideHalfWidth = wideHalfWidthForRank(rank); },
       },
     },
     {
       id: 'charge',
       name: 'チャージビーム',
-      desc: `画面を押し続けている間チャージが進み(移動操作と同じ操作なので、チャージ自体は移動を妨げない)、指を離すと無限貫通のビームを発射する。チャージ${CHARGE_TIME_PER_STAGE}秒(1段階)未満での即離しでは発射されない。連射は不可能だが、威力は常に高め(通常武器の${CHARGE_DAMAGE_MULT}倍)。その代わりチャージ段階が進むほどビームの幅が広がる。ランクアップで最大チャージ段階数が増える(1段階あたりの時間は変わらないため、最大までの時間も伸びる)。`,
+      desc: '画面を押し続けている間チャージが進み(移動操作と同じ操作なので、チャージ自体は移動を妨げない)、指を離すと無限貫通のビームを発射する。ごく短い即離しでは発射されない。連射は不可能だが、威力は常に高め。その代わりチャージ段階が進むほどビームの幅が広がる。ランクアップで最大チャージ段階数が増える(1段階あたりの時間は変わらないため、最大までの時間も伸びる)。',
       apply: (p) => {},
       innateEffect: {
         name: '最大チャージ数アップ',
-        desc: `自機レベルアップ${WEAPON_INNATE_LEVELS_PER_RANK}ごとにランクが上昇(最大Lv.${WEAPON_INNATE_MAX_RANK})し、最大チャージ段階数が増える(ランクと同じ数)`,
+        desc: 'レベルアップに応じて自動でランクが上昇し、最大チャージ段階数が増えていく',
         applyRank(p, rank) { p.chargeMaxStages = chargeMaxStagesForRank(rank); },
       },
     },
@@ -1004,11 +1004,11 @@
   // one pick, making repeat picks pure filler either way. Their value was
   // folded into the base stats instead (see Player constructor).
   const UPGRADE_POOL = [
-    { id: 'damage', title: 'ダメージ強化', desc: '攻撃ダメージ +50%', apply: p => p.damage = Math.round(p.damage * 1.5) },
+    { id: 'damage', title: 'ダメージ強化', desc: '攻撃ダメージが大きく上昇する', apply: p => p.damage = Math.round(p.damage * 1.5) },
     {
       id: 'range',
       title: '射程アップ',
-      desc: '射程 +10%(視界も拡大)',
+      desc: '射程が上昇する(視界も拡大)',
       // rangeMult drives both weaponRange() (standard/charge weapons'
       // auto-aim reach) and viewScale() (camera zoom, see draw()) - the
       // two are deliberately the same multiplier, so a longer reach never
@@ -1021,7 +1021,7 @@
     {
       id: 'movespeed',
       title: '移動速度アップ',
-      desc: '移動速度 +10%',
+      desc: '移動速度が上昇する',
       // Re-added (v1.36.24) after being folded into the base speed and
       // removed entirely in v1.35.0 - that removal's actual complaint was
       // the old version being uncapped (too much speed makes precise
@@ -1034,7 +1034,7 @@
     {
       id: 'pickup',
       title: '回収範囲アップ',
-      desc: 'XP回収範囲 +10%',
+      desc: 'XP回収範囲が拡大する',
       // Re-added (v1.36.24) after v1.35.0 folded it into the base pickup
       // radius and removed it - the old complaint was that a single pick
       // already covered practically every situation, making a 2nd+ pick
@@ -1048,7 +1048,7 @@
     {
       id: 'atkspeed',
       title: '攻撃速度アップ',
-      desc: '攻撃間隔 -20%',
+      desc: '攻撃間隔が短縮する(攻撃速度アップ)',
       apply: p => p.atkCooldown = Math.max(STAT_LIMITS.minAtkCooldown, p.atkCooldown * 0.8),
       // Once atkCooldown is already at its floor, this upgrade does nothing
       // at all - stop offering it rather than presenting a dead choice.
@@ -1057,7 +1057,7 @@
     {
       id: 'maxhp',
       title: '最大HPアップ',
-      desc: '最大HP +15%、HP回復',
+      desc: '最大HPが上昇し、その分HPが回復する',
       // Percentage rather than a flat +25, so it stays meaningfully
       // proportional to whatever the current maxHp already is (e.g. much
       // bigger in absolute terms on Tank's 180 base than a flat number
@@ -1071,7 +1071,7 @@
     {
       id: 'heartheal',
       title: 'ハート回復量増加',
-      desc: 'ハートの回復量 +10%',
+      desc: 'ハートの回復量が増加する',
       // Multiplicative-with-cap, same shape as range/movespeed/pickup above.
       // Base heal reverted to 10% (v1.36.32, see HEART_HEAL_FRAC) once the
       // heart compass made finding one reliable enough that the extra value
@@ -1118,7 +1118,7 @@
     {
       id: 'trade-damage',
       title: '捨て身の一撃',
-      desc: 'ダメージ +80% / 攻撃間隔 +15%(発射速度ダウン)',
+      desc: 'ダメージが大幅に上昇する代わりに、攻撃間隔が延びる(発射速度ダウン)',
       apply: p => {
         p.damage = Math.round(p.damage * 1.8);
         p.atkCooldown = Math.min(STAT_LIMITS.maxAtkCooldown, p.atkCooldown * 1.15);
@@ -1127,7 +1127,7 @@
     {
       id: 'trade-atkspeed',
       title: '速射特化',
-      desc: '攻撃間隔 -31%(発射速度アップ) / ダメージ -20%',
+      desc: '攻撃間隔が大幅に短縮する(発射速度アップ)代わりに、ダメージが低下する',
       apply: p => {
         p.atkCooldown = Math.max(STAT_LIMITS.minAtkCooldown, p.atkCooldown / 1.45);
         p.damage = Math.max(STAT_LIMITS.minDamage, Math.round(p.damage * 0.8));
@@ -1142,7 +1142,7 @@
     {
       id: 'trade-maxhp',
       title: '鉄壁の構え',
-      desc: '最大HP +25% / ダメージ -15%',
+      desc: '最大HPが大きく上昇する代わりに、ダメージが低下する',
       apply: p => {
         const added = Math.round(p.maxHp * 0.25);
         p.maxHp += added;
@@ -1386,7 +1386,7 @@
       getLevel: p => p.explosionLevel,
       levelUp: p => { p.explosionLevel++; },
       introDesc: '着弾地点の周囲に範囲ダメージを与えるようになる',
-      upgradeDesc: level => `爆発範囲が拡大する(${Math.round(explosionRadiusForLevel(level))} → ${Math.round(explosionRadiusForLevel(level + 1))})`,
+      upgradeDesc: level => `爆発範囲が拡大する`,
     },
     {
       id: 'chain',
@@ -1394,8 +1394,8 @@
       maxLevel: 5,
       getLevel: p => p.chainLevel,
       levelUp: p => { p.chainLevel++; },
-      introDesc: `着弾時${Math.round(CHAIN_TRIGGER_CHANCE * 100)}%の確率で、近くの敵にダメージ(本体ダメージの${Math.round(CHAIN_DAMAGE_PCT * 100)}%)が連鎖するようになる`,
-      upgradeDesc: level => `連鎖回数が増加する(${level} → ${level + 1}体)`,
+      introDesc: '着弾時、一定確率で近くの敵にもダメージが連鎖するようになる',
+      upgradeDesc: level => `連鎖回数が増加する`,
     },
     {
       id: 'slow',
@@ -1404,7 +1404,7 @@
       getLevel: p => p.slowLevel,
       levelUp: p => { p.slowLevel++; },
       introDesc: '着弾した敵を一時的に減速させるようになる',
-      upgradeDesc: level => `減速時間が増加する(${slowDurationForLevel(level).toFixed(1)}秒 → ${slowDurationForLevel(level + 1).toFixed(1)}秒)`,
+      upgradeDesc: level => `減速時間が増加する`,
     },
     {
       id: 'intercept',
@@ -1413,7 +1413,7 @@
       getLevel: p => p.interceptLevel,
       levelUp: p => { p.interceptLevel++; },
       introDesc: '自機のごく至近距離に入った敵を自動で低速化するようになる(低速を取得済みならその減速時間がそのまま適用される)',
-      upgradeDesc: level => `迎撃で同時に低速化できる敵の数が増加する(${interceptTargetCount(level)}体 → ${interceptTargetCount(level + 1)}体)`,
+      upgradeDesc: level => `迎撃で同時に低速化できる敵の数が増加する`,
     },
     {
       id: 'pierce',
@@ -1422,7 +1422,7 @@
       getLevel: p => p.pierce,
       levelUp: p => { p.pierce++; },
       introDesc: '弾が敵を貫通するようになる',
-      upgradeDesc: level => `貫通数が増加する(${level} → ${level + 1})`,
+      upgradeDesc: level => `貫通数が増加する`,
       // Wide weapon hits every enemy in its cone in one go, and the charge
       // beam already has unconditional infinite pierce baked in (§7-4-1,
       // §7-4-2) - both have no travel/pierce lifecycle at all, so pierce
@@ -1436,8 +1436,8 @@
       maxLevel: 5,
       getLevel: p => p.poisonLevel,
       levelUp: p => { p.poisonLevel++; },
-      introDesc: `着弾した敵を${POISON_DURATION}秒間の毒状態にし、敵自身の最大HPの${Math.round(POISON_DMG_PCT * 100)}%を毎秒毒ダメージ(1スタックあたり)として与えるようになる。毒状態中に再度攻撃が当たると重ね掛けされ、毒ダメージが増加する(持続時間は延長されない)`,
-      upgradeDesc: level => `毒の重ね掛け上限が増加する(最大${poisonMaxStacksForLevel(level)}スタック → 最大${poisonMaxStacksForLevel(level + 1)}スタック)`,
+      introDesc: '着弾した敵を毒状態にし、継続的に毒ダメージを与えるようになる。毒状態中に再度攻撃が当たると重ね掛けされ、毒ダメージが増加する(持続時間は延長されない)',
+      upgradeDesc: level => `毒の重ね掛け上限が増加する`,
     },
     {
       id: 'frenzy',
@@ -1445,8 +1445,8 @@
       maxLevel: 5,
       getLevel: p => p.frenzyLevel,
       levelUp: p => { p.frenzyLevel++; },
-      introDesc: `着弾した敵を${FRENZY_DURATION}秒間の狂乱状態にする。狂乱状態の敵は移動速度が${FRENZY_SPEED_MULT}倍になり、攻撃力が上昇する。一方で重ね掛け数に応じて被ダメージも増加する。狂乱状態の敵は、自機だけでなく接触した他の敵にもこの攻撃力でダメージを与えるようになる。持続時間は重ね掛けで延長されない。`,
-      upgradeDesc: level => `狂乱の重ね掛け上限が増加する(最大${frenzyMaxStacksForLevel(level)}スタック → 最大${frenzyMaxStacksForLevel(level + 1)}スタック)`,
+      introDesc: '着弾した敵を狂乱状態にし、移動速度と攻撃力を強化するが、自機だけでなく他の敵も攻撃するようになる(同士討ち)。重ね掛けするほど攻撃力の強化は緩和され、被ダメージは増加する',
+      upgradeDesc: level => `狂乱の重ね掛け上限が増加する`,
     },
     {
       id: 'bombify',
@@ -1460,8 +1460,8 @@
       // maxLevel first pushes it later into a run and onto builds that
       // have already invested in AoE.
       available: p => p.explosionLevel >= 5,
-      introDesc: `着弾した敵を${BOMBIFY_DURATION}秒間爆弾化する。生存中は特に効果はないが、爆弾化状態のまま倒された敵は、その敵自身の最大HPの${Math.round(bombifyDmgPctForLevel(1) * 100)}%を周囲(半径${BOMBIFY_RADIUS}px)の他の敵に爆発ダメージとして与える。重ね掛けはされず、再度攻撃が当たると持続時間が最大まで更新される`,
-      upgradeDesc: level => `爆弾化ダメージが増加する(敵自身の最大HPの${Math.round(bombifyDmgPctForLevel(level) * 100)}% → ${Math.round(bombifyDmgPctForLevel(level + 1) * 100)}%)`,
+      introDesc: '着弾した敵を爆弾化する。生存中は特に効果はないが、爆弾化状態のまま倒された敵は周囲の他の敵に爆発ダメージを与える。重ね掛けはされず、再度攻撃が当たると持続時間が最大まで更新される',
+      upgradeDesc: level => `爆弾化ダメージが増加する`,
     },
     {
       id: 'weaken',
@@ -1471,8 +1471,8 @@
       levelUp: p => { p.weakenLevel++; },
       // Gated behind 低速 being fully ranked up, same idea as bombify/爆発.
       available: p => p.slowLevel >= 5,
-      introDesc: `着弾した敵を${WEAKEN_DURATION}秒間衰弱状態にし、攻撃力を${Math.round((1 - weakenDmgMultForLevel(1)) * 100)}%低下させる。重ね掛けはされず、再度攻撃が当たると持続時間が最大まで更新される`,
-      upgradeDesc: level => `衰弱による攻撃力低下率が増加する(${Math.round((1 - weakenDmgMultForLevel(level)) * 100)}% → ${Math.round((1 - weakenDmgMultForLevel(level + 1)) * 100)}%)`,
+      introDesc: '着弾した敵を衰弱状態にし、攻撃力を低下させる。重ね掛けはされず、再度攻撃が当たると持続時間が最大まで更新される',
+      upgradeDesc: level => `衰弱による攻撃力低下率が増加する`,
     },
     {
       id: 'magnetstorm',
@@ -1480,8 +1480,8 @@
       maxLevel: 5,
       getLevel: p => p.magnetstormLevel,
       levelUp: p => { p.magnetstormLevel++; },
-      introDesc: `着弾地点に${MAGNETSTORM_DURATION}秒間残る渦を発生させ、範囲内の敵を中心に引き寄せて留め置くようになる(連鎖では発生しない)`,
-      upgradeDesc: level => `磁気嵐の範囲が拡大する(${Math.round(magnetStormRadiusForLevel(level))} → ${Math.round(magnetStormRadiusForLevel(level + 1))})`,
+      introDesc: '着弾地点に一定時間残る渦を発生させ、範囲内の敵を中心に引き寄せて留め置くようになる(連鎖では発生しない)',
+      upgradeDesc: level => `磁気嵐の範囲が拡大する`,
     },
     {
       id: 'killzone',
@@ -1489,8 +1489,8 @@
       maxLevel: 5,
       getLevel: p => p.killzoneLevel,
       levelUp: p => { p.killzoneLevel++; },
-      introDesc: `着弾地点に${KILLZONE_DURATION}秒間残る領域を発生させ、範囲内に留まる敵に${IMPACT_EFFECT_TICK_INTERVAL}秒ごとに本体ダメージの${Math.round(killZoneDmgPctForLevel(1) * 100)}%のダメージを与え続けるようになる(連鎖では発生しない)`,
-      upgradeDesc: level => `キルゾーンの範囲とダメージが増加する(範囲: ${Math.round(killZoneRadiusForLevel(level))} → ${Math.round(killZoneRadiusForLevel(level + 1))}、ダメージ: 本体ダメージの${Math.round(killZoneDmgPctForLevel(level) * 100)}% → ${Math.round(killZoneDmgPctForLevel(level + 1) * 100)}%/${IMPACT_EFFECT_TICK_INTERVAL}秒)`,
+      introDesc: '着弾地点に一定時間残る領域を発生させ、範囲内に留まる敵に継続的にダメージを与え続けるようになる(連鎖では発生しない)',
+      upgradeDesc: level => `キルゾーンの範囲とダメージが増加する`,
     },
     {
       id: 'frenzyfountain',
@@ -1503,8 +1503,8 @@
       // reads p.frenzyLevel directly, see update()), so without 狂乱 taken
       // at all it would just be a zone that does nothing.
       available: p => p.frenzyLevel > 0,
-      introDesc: `着弾地点に${FRENZYFOUNTAIN_DURATION}秒間残る領域を発生させ、範囲内に留まる敵に${IMPACT_EFFECT_TICK_INTERVAL}秒ごとに狂乱状態を付与し続けるようになる(連鎖では発生しない)。付与される狂乱のランクは「狂乱」の取得状況がそのまま反映される`,
-      upgradeDesc: level => `狂乱の泉の範囲が拡大する(${Math.round(frenzyFountainRadiusForLevel(level))} → ${Math.round(frenzyFountainRadiusForLevel(level + 1))})`,
+      introDesc: '着弾地点に一定時間残る領域を発生させ、範囲内に留まる敵に継続的に狂乱状態を付与し続けるようになる(連鎖では発生しない)。付与される狂乱のランクは「狂乱」の取得状況がそのまま反映される',
+      upgradeDesc: level => `狂乱の泉の範囲が拡大する`,
     },
     {
       id: 'poisoncloud',
@@ -1514,8 +1514,8 @@
       levelUp: p => { p.poisoncloudLevel++; },
       // Same reasoning as 狂乱の泉's gate, mirrored for 猛毒/poison.
       available: p => p.poisonLevel > 0,
-      introDesc: `着弾地点に${POISONCLOUD_DURATION}秒間残る毒雲を発生させ、範囲内に留まる敵に${IMPACT_EFFECT_TICK_INTERVAL}秒ごとに毒状態を付与し続けるようになる(連鎖では発生しない)。付与される毒のランクは「猛毒」の取得状況がそのまま反映される`,
-      upgradeDesc: level => `ポイズンクラウドの範囲が拡大する(${Math.round(poisonCloudRadiusForLevel(level))} → ${Math.round(poisonCloudRadiusForLevel(level + 1))})`,
+      introDesc: '着弾地点に一定時間残る毒雲を発生させ、範囲内に留まる敵に継続的に毒状態を付与し続けるようになる(連鎖では発生しない)。付与される毒のランクは「猛毒」の取得状況がそのまま反映される',
+      upgradeDesc: level => `ポイズンクラウドの範囲が拡大する`,
     },
   ];
 
