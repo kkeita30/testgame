@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.45';
+  const GAME_VERSION = '1.36.46';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -421,25 +421,35 @@
   // on however few are in a narrow beam.
   const CHARGE_DAMAGE_MULT = 3.0;
 
-  // Rapid Fire (v1.36.45): fires low-damage, high-speed shots straight
-  // along the player's current movement direction (Player.moveDirAngle,
-  // updated in update()'s movement block whenever actually moving, and
-  // otherwise just held at whatever it last was) rather than at the
-  // nearest enemy - the only weapon with no auto-aim at all. Rewards
-  // aggressive, keep-moving-forward play (clearing whatever's directly
-  // ahead) but can't cover multiple threat directions the way the other
-  // weapons' targeting can. Its innate effect (see WEAPONS below) adds
-  // more simultaneous shots along that exact same trajectory instead of
-  // spreading them - concentrating firepower on one line rather than
-  // covering more targets, unlike standard's multishot.
-  const RAPIDFIRE_DAMAGE_MULT = 0.4;
+  // Rapid Fire (v1.36.45, rebalanced v1.36.46): fires shots straight along
+  // the player's current movement direction (Player.moveDirAngle, updated
+  // in update()'s movement block whenever actually moving, and otherwise
+  // just held at whatever it last was) rather than at the nearest enemy -
+  // the only weapon with no auto-aim at all. Rewards aggressive,
+  // keep-moving-forward play (clearing whatever's directly ahead) but
+  // can't cover multiple threat directions the way the other weapons'
+  // targeting can.
+  // Damage raised 0.4->0.55 (v1.36.46, cooldown left untouched) - the
+  // first pass felt too weak to justify giving up auto-aim entirely.
+  const RAPIDFIRE_DAMAGE_MULT = 0.55;
   const RAPIDFIRE_COOLDOWN_MULT = 0.35;
-  // Purely cosmetic: each simultaneous barrel spawns this many px further
-  // back along the same line than the previous one, so a multi-barrel
-  // volley reads as a short burst rather than perfectly overlapping dots.
-  // Same velocity/angle/hitbox regardless - it doesn't change where a shot
-  // can reach, only where it visibly starts.
-  const RAPIDFIRE_BARREL_SPACING = 10;
+  // Added v1.36.46: shots travel noticeably faster than every other
+  // weapon's default Player.projSpeed, reinforcing the "fast" identity and
+  // giving them a better chance of actually reaching whatever's ahead
+  // before it closes the distance.
+  const RAPIDFIRE_PROJ_SPEED_MULT = 1.5;
+  // Changed v1.36.46: the innate effect (see WEAPONS below) used to add
+  // more shots trailing behind each other on the identical trajectory
+  // (same angle, staggered spawn position along that one line). Now it
+  // instead lines them up side by side, perpendicular to the firing
+  // direction, all still moving in that exact same direction - rank 1
+  // fires a single shot ("-"), rank 2 fires two parallel shots ("="),
+  // rank 3 three ("≡"), and so on, spreading coverage across a short
+  // front rather than concentrating repeat hits on one exact line.
+  // Centered around the movement axis (barrel i's offset is
+  // (i - (barrels-1)/2) * RAPIDFIRE_BARREL_GAP), so the whole row stays
+  // symmetric regardless of how many barrels are active.
+  const RAPIDFIRE_BARREL_GAP = 14;
 
   const WEAPONS = [
     {
@@ -478,11 +488,11 @@
     {
       id: 'rapidfire',
       name: 'ラピッドファイア',
-      desc: '威力は低いが、自機の進行方向に向けて高速連射する武器。敵を狙わないため、進んでいく先を切り開いたり、自ら敵に向かっていったりする積極的な立ち回りが得意。その反面、複数方向から同時に狙われる状況にはやや弱い。',
+      desc: '威力はやや低めながら、自機の進行方向に向けて高速の弾を連射する武器。敵を狙わないため、進んでいく先を切り開いたり、自ら敵に向かっていったりする積極的な立ち回りが得意。その反面、複数方向から同時に狙われる状況にはやや弱い。',
       apply: (p) => {},
       innateEffect: {
         name: '同時射撃数アップ',
-        desc: 'レベルアップに応じて自動でランクが上昇し、同じ弾道への同時発射数が増えていく',
+        desc: 'レベルアップに応じて自動でランクが上昇し、進行方向に対して横一列に並ぶ形で同時発射数が増えていく',
         applyRank(p, rank) { p.rapidfireBarrels = rank; },
       },
     },
@@ -1962,11 +1972,10 @@
     // p.moveDirAngle (the player's current/last movement direction)
     // instead of at any enemy - no targeting, no range check, since there's
     // no target to range-check against. Every barrel travels the identical
-    // angle/speed (RAPIDFIRE_BARREL_SPACING only offsets each one's spawn
-    // position back along that same line, purely so a multi-barrel volley
-    // is visually distinguishable as a burst rather than one dot), so a
-    // higher rank concentrates more simultaneous hits on whatever's
-    // directly ahead rather than spreading coverage across more targets.
+    // angle/speed; RAPIDFIRE_BARREL_GAP only spaces out each one's spawn
+    // position PERPENDICULAR to that direction, so a higher rank forms a
+    // wider side-by-side row ("-" -> "=" -> "≡") instead of stacking more
+    // hits on one exact line.
     fireRapidFire() {
       const p = this.player;
       p.atkTimer = p.atkCooldown * RAPIDFIRE_COOLDOWN_MULT;
@@ -1983,11 +1992,18 @@
       const shotDamage = p.damage * buffDamageMult * RAPIDFIRE_DAMAGE_MULT;
 
       const ang = p.moveDirAngle;
-      const vx = Math.cos(ang) * p.projSpeed;
-      const vy = Math.sin(ang) * p.projSpeed;
-      for (let i = 0; i < p.rapidfireBarrels; i++) {
-        const originX = p.x - Math.cos(ang) * RAPIDFIRE_BARREL_SPACING * i;
-        const originY = p.y - Math.sin(ang) * RAPIDFIRE_BARREL_SPACING * i;
+      const speed = p.projSpeed * RAPIDFIRE_PROJ_SPEED_MULT;
+      const vx = Math.cos(ang) * speed;
+      const vy = Math.sin(ang) * speed;
+      // Perpendicular to the firing direction (rotate by 90deg), used to
+      // lay out barrels side by side rather than front-to-back.
+      const perpX = -Math.sin(ang);
+      const perpY = Math.cos(ang);
+      const barrels = p.rapidfireBarrels;
+      for (let i = 0; i < barrels; i++) {
+        const offset = (i - (barrels - 1) / 2) * RAPIDFIRE_BARREL_GAP;
+        const originX = p.x + perpX * offset;
+        const originY = p.y + perpY * offset;
         this.projectiles.push(new Projectile(originX, originY, vx, vy, shotDamage, p.pierce, 5, explosionRadius, chainHops, slowDuration, poisons, frenzies, bombifies, weakens));
       }
     }
