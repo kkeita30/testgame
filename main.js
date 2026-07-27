@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.42';
+  const GAME_VERSION = '1.36.43';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -1158,6 +1158,14 @@
   // entry at all. Pierce reuses the existing `pierce` field directly as
   // its level rather than a separate counter.
   const EXPLOSION_DAMAGE_PCT = 0.8;
+  // Nerf (v1.36.43): explosion used to trigger unconditionally on every hit
+  // that had explosionRadius > 0, making it a guaranteed AoE tacked onto
+  // every single shot - straightforwardly too strong relative to chain
+  // (which already only has a 50% chance to trigger at all, see
+  // CHAIN_TRIGGER_CHANCE below). No compensating damage buff here, unlike
+  // chain's own proc-chance nerf - this is a plain reduction in how often
+  // explosion goes off, not a rebalance.
+  const EXPLOSION_TRIGGER_CHANCE = 0.5;
   const CHAIN_DAMAGE_PCT = 0.5;
   const CHAIN_RADIUS = 150;
   // Chain is now a proc rather than a guaranteed on-hit effect: each hit
@@ -1385,7 +1393,7 @@
       maxLevel: 5,
       getLevel: p => p.explosionLevel,
       levelUp: p => { p.explosionLevel++; },
-      introDesc: '着弾地点の周囲に範囲ダメージを与えるようになる',
+      introDesc: '着弾時、一定確率で着弾地点の周囲に範囲ダメージを与えるようになる',
       upgradeDesc: level => `爆発範囲が拡大する`,
     },
     {
@@ -2091,7 +2099,7 @@
       if (p.frenzyfountainLevel > 0) this.spawnImpactEffect('frenzyfountain', e.x, e.y, frenzyFountainRadiusForLevel(p.frenzyfountainLevel), FRENZYFOUNTAIN_DURATION);
       if (p.poisoncloudLevel > 0) this.spawnImpactEffect('poisoncloud', e.x, e.y, poisonCloudRadiusForLevel(p.poisoncloudLevel), POISONCLOUD_DURATION);
 
-      if (proj.explosionRadius > 0) {
+      if (proj.explosionRadius > 0 && Math.random() < EXPLOSION_TRIGGER_CHANCE) {
         for (const other of this.enemies) {
           if (other === e) continue;
           if (dist(other.x, other.y, e.x, e.y) <= proj.explosionRadius) {
@@ -2120,10 +2128,11 @@
 
           // Chain's role is spreading damage/status to more targets, not
           // diminishing whatever it spreads - so if explosion is also
-          // equipped, each chained hit detonates its own explosion too,
-          // using the player's full attack power (proj.damage) rather than
-          // chain's own reduced damage.
-          if (proj.explosionRadius > 0) {
+          // equipped, each chained hit gets its own independent
+          // EXPLOSION_TRIGGER_CHANCE roll to detonate too, using the
+          // player's full attack power (proj.damage) rather than chain's
+          // own reduced damage.
+          if (proj.explosionRadius > 0 && Math.random() < EXPLOSION_TRIGGER_CHANCE) {
             for (const other of this.enemies) {
               if (other === nearest || chained.has(other)) continue;
               if (dist(other.x, other.y, nearest.x, nearest.y) <= proj.explosionRadius) {
