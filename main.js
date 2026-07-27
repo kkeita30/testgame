@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.44';
+  const GAME_VERSION = '1.36.45';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -421,6 +421,26 @@
   // on however few are in a narrow beam.
   const CHARGE_DAMAGE_MULT = 3.0;
 
+  // Rapid Fire (v1.36.45): fires low-damage, high-speed shots straight
+  // along the player's current movement direction (Player.moveDirAngle,
+  // updated in update()'s movement block whenever actually moving, and
+  // otherwise just held at whatever it last was) rather than at the
+  // nearest enemy - the only weapon with no auto-aim at all. Rewards
+  // aggressive, keep-moving-forward play (clearing whatever's directly
+  // ahead) but can't cover multiple threat directions the way the other
+  // weapons' targeting can. Its innate effect (see WEAPONS below) adds
+  // more simultaneous shots along that exact same trajectory instead of
+  // spreading them - concentrating firepower on one line rather than
+  // covering more targets, unlike standard's multishot.
+  const RAPIDFIRE_DAMAGE_MULT = 0.4;
+  const RAPIDFIRE_COOLDOWN_MULT = 0.35;
+  // Purely cosmetic: each simultaneous barrel spawns this many px further
+  // back along the same line than the previous one, so a multi-barrel
+  // volley reads as a short burst rather than perfectly overlapping dots.
+  // Same velocity/angle/hitbox regardless - it doesn't change where a shot
+  // can reach, only where it visibly starts.
+  const RAPIDFIRE_BARREL_SPACING = 10;
+
   const WEAPONS = [
     {
       id: 'standard',
@@ -453,6 +473,17 @@
         name: '最大チャージ数アップ',
         desc: 'レベルアップに応じて自動でランクが上昇し、最大チャージ段階数が増えていく',
         applyRank(p, rank) { p.chargeMaxStages = chargeMaxStagesForRank(rank); },
+      },
+    },
+    {
+      id: 'rapidfire',
+      name: 'ラピッドファイア',
+      desc: '威力は低いが、自機の進行方向に向けて高速連射する武器。敵を狙わないため、進んでいく先を切り開いたり、自ら敵に向かっていったりする積極的な立ち回りが得意。その反面、複数方向から同時に狙われる状況にはやや弱い。',
+      apply: (p) => {},
+      innateEffect: {
+        name: '同時射撃数アップ',
+        desc: 'レベルアップに応じて自動でランクが上昇し、同じ弾道への同時発射数が増えていく',
+        applyRank(p, rank) { p.rapidfireBarrels = rank; },
       },
     },
   ];
@@ -498,6 +529,13 @@
       this.xpNext = xpNextForLevel(this.level);
       this.invulnTimer = 0;
       this.facing = 1;
+      // Last known movement direction (radians), updated in update()'s
+      // movement block only while actually moving - holds steady while
+      // stationary rather than resetting, so Rapid Fire (the only weapon
+      // that reads this instead of auto-aiming) still has a sensible
+      // direction to fire in the instant the player stops. 0 = facing
+      // right, matching the default `facing = 1`.
+      this.moveDirAngle = 0;
       // Pity tracking for the level-up draw (v1.36.44): id -> consecutive
       // level-ups this upgrade has been eligible but NOT offered. Read by
       // Game.onLevelUp()/pickWeightedIndex to nudge a long-unseen upgrade's
@@ -520,6 +558,9 @@
       this.chargeTime = 0;
       this.chargeMaxStages = 1;
       this.chargeWasHeld = false;
+      // Rapid Fire weapon only (see WEAPONS/fireRapidFire) - unused by any
+      // other weapon, harmless default otherwise.
+      this.rapidfireBarrels = 1;
       // Raised from 70 (v1.35.0) to fold in exactly what one pickup-range
       // upgrade pick used to add, now that the upgrade itself is gone.
       this.pickupRadius = 100;
@@ -1877,6 +1918,7 @@
       if (this.enemies.length === 0) return;
 
       if (p.weapon && p.weapon.id === 'wide') { this.fireWideSweep(); return; }
+      if (p.weapon && p.weapon.id === 'rapidfire') { this.fireRapidFire(); return; }
 
       // find nearest N enemies within weapon range - out-of-range enemies
       // (typically still off-screen) are ignored entirely rather than
@@ -1913,6 +1955,40 @@
         const vx = Math.cos(ang) * p.projSpeed;
         const vy = Math.sin(ang) * p.projSpeed;
         this.projectiles.push(new Projectile(p.x, p.y, vx, vy, shotDamage, p.pierce, 5, explosionRadius, chainHops, slowDuration, poisons, frenzies, bombifies, weakens));
+      }
+    }
+
+    // Rapid Fire's attack (see WEAPONS): fires straight along
+    // p.moveDirAngle (the player's current/last movement direction)
+    // instead of at any enemy - no targeting, no range check, since there's
+    // no target to range-check against. Every barrel travels the identical
+    // angle/speed (RAPIDFIRE_BARREL_SPACING only offsets each one's spawn
+    // position back along that same line, purely so a multi-barrel volley
+    // is visually distinguishable as a burst rather than one dot), so a
+    // higher rank concentrates more simultaneous hits on whatever's
+    // directly ahead rather than spreading coverage across more targets.
+    fireRapidFire() {
+      const p = this.player;
+      p.atkTimer = p.atkCooldown * RAPIDFIRE_COOLDOWN_MULT;
+
+      const explosionRadius = p.explosionLevel > 0 ? explosionRadiusForLevel(p.explosionLevel) : 0;
+      const chainHops = p.chainLevel;
+      const slowDuration = p.slowLevel > 0 ? slowDurationForLevel(p.slowLevel) : 0;
+      const poisons = p.poisonLevel > 0;
+      const frenzies = p.frenzyLevel > 0;
+      const bombifies = p.bombifyLevel > 0;
+      const weakens = p.weakenLevel > 0;
+      const buffDamageMult = p.specialBuffTimer > 0 && p.special && p.special.buffDamageMult != null
+        ? p.special.buffDamageMult : 1;
+      const shotDamage = p.damage * buffDamageMult * RAPIDFIRE_DAMAGE_MULT;
+
+      const ang = p.moveDirAngle;
+      const vx = Math.cos(ang) * p.projSpeed;
+      const vy = Math.sin(ang) * p.projSpeed;
+      for (let i = 0; i < p.rapidfireBarrels; i++) {
+        const originX = p.x - Math.cos(ang) * RAPIDFIRE_BARREL_SPACING * i;
+        const originY = p.y - Math.sin(ang) * RAPIDFIRE_BARREL_SPACING * i;
+        this.projectiles.push(new Projectile(originX, originY, vx, vy, shotDamage, p.pierce, 5, explosionRadius, chainHops, slowDuration, poisons, frenzies, bombifies, weakens));
       }
     }
 
@@ -2292,6 +2368,7 @@
         p.x += mx * p.speed * dt;
         p.y += my * p.speed * dt;
         if (mx !== 0) p.facing = mx > 0 ? 1 : -1;
+        p.moveDirAngle = Math.atan2(my, mx);
       }
 
       if (p.invulnTimer > 0) p.invulnTimer -= dt;
