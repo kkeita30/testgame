@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.54';
+  const GAME_VERSION = '1.36.55';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -3118,7 +3118,16 @@
         if (this.hearts.length < HEART_MAX_COUNT && Math.random() < HEART_SPAWN_CHANCE) {
           const angle = rand(0, TAU);
           const spawnDist = rand(HEART_SPAWN_MIN_DIST, HEART_SPAWN_MAX_DIST);
-          this.hearts.push(new Heart(p.x + Math.cos(angle) * spawnDist, p.y + Math.sin(angle) * spawnDist));
+          const heart = new Heart(p.x + Math.cos(angle) * spawnDist, p.y + Math.sin(angle) * spawnDist);
+          // Unlike enemies, a heart never moves again after spawning (no
+          // per-frame movement loop of its own) - if one landed inside a
+          // wall it would stay embedded there permanently, and deep enough
+          // in it could even become unreachable (the player can't walk
+          // through the wall to touch it). Resolving once right at spawn
+          // avoids that outright, reusing the exact same push-out already
+          // used for enemies.
+          this.resolveWallCollision(heart);
+          this.hearts.push(heart);
         }
       }
       this.hearts = this.hearts.filter(h => {
