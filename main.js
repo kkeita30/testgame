@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.58';
+  const GAME_VERSION = '1.36.59';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -923,9 +923,8 @@
       // Frenzy (v1.36.4): same duration-doesn't-reset/rank-gates-stack-cap
       // rules as poison, but the stacks buff the frenzied enemy's own
       // damage (and, since v1.36.39, its own vulnerability) instead of
-      // dealing damage directly - see FRENZY_SPEED_MULT/
-      // frenzyDmgMultForStacks/frenzyTakenDmgMultForStacks and the
-      // friendly-fire check in update().
+      // dealing damage directly - see frenzyDmgMultForStacks/
+      // frenzyTakenDmgMultForStacks and the friendly-fire check in update().
       this.frenzyTimer = 0;
       this.frenzyStacks = 0;
       // Bombify (v1.36.5): no stack counter (doesn't stack) - a later hit
@@ -1401,18 +1400,16 @@
   function poisonMaxStacksForLevel(level) { return level; }
 
   // Frenzy (v1.36.4): a high-risk status - it makes the afflicted enemy
-  // itself more dangerous (faster, harder-hitting), but a frenzied enemy
-  // also deals contact damage to whichever OTHER enemy it touches, not
-  // just the player. Landed well into a dense cluster, this can trigger
-  // enemy-on-enemy friendly fire that thins the swarm out on its own; badly
-  // placed, it just hands the enemy that reaches the player a much harder
-  // hit. Same duration/stacking rules as poison: FRENZY_DURATION doesn't
-  // reset on a later hit, only frenzyStacks (capped by
-  // frenzyMaxStacksForLevel) goes up. FRENZY_SPEED_MULT itself is flat - it
-  // applies in full the moment an enemy is frenzied at all, regardless of
-  // stack count.
+  // itself more dangerous (harder-hitting), but a frenzied enemy also deals
+  // contact damage to whichever OTHER enemy it touches, not just the
+  // player. Landed well into a dense cluster, this can trigger enemy-on-
+  // enemy friendly fire that thins the swarm out on its own; badly placed,
+  // it just hands the enemy that reaches the player a much harder hit.
+  // Same duration/stacking rules as poison: FRENZY_DURATION doesn't reset
+  // on a later hit, only frenzyStacks (capped by frenzyMaxStacksForLevel)
+  // goes up. Used to also speed the enemy up (FRENZY_SPEED_MULT) - removed
+  // in v1.36.59, movement speed is unaffected by frenzy now.
   const FRENZY_DURATION = 5;
-  const FRENZY_SPEED_MULT = 1.5;
   function frenzyMaxStacksForLevel(level) { return level; }
 
   // Rebalanced (v1.36.39): the dealt-damage bonus used to grow linearly
@@ -1641,7 +1638,7 @@
       maxLevel: 5,
       getLevel: p => p.frenzyLevel,
       levelUp: p => { p.frenzyLevel++; },
-      introDesc: '着弾した敵を狂乱状態にし、移動速度と攻撃力を強化するが、自機だけでなく他の敵も攻撃するようになる(同士討ち)。重ね掛けするほど攻撃力の強化は緩和され、被ダメージは増加する',
+      introDesc: '着弾した敵を狂乱状態にし、攻撃力を強化するが、自機だけでなく他の敵も攻撃するようになる(同士討ち)。重ね掛けするほど攻撃力の強化は緩和され、被ダメージは増加する',
       upgradeDesc: level => `狂乱の重ね掛け上限が増加する`,
     },
     {
@@ -2926,8 +2923,7 @@
       let threatNearby = false;
       for (const e of this.enemies) {
         const d = dist(e.x, e.y, p.x, p.y) || 1;
-        const frenzySpeedMult = e.frenzyTimer > 0 ? FRENZY_SPEED_MULT : 1;
-        const effSpeed = (e.slowTimer > 0 ? e.speed * SLOW_MULT : e.speed) * frenzySpeedMult * rushSpeedMult;
+        const effSpeed = (e.slowTimer > 0 ? e.speed * SLOW_MULT : e.speed) * rushSpeedMult;
         // A clear straight line to the player is by far the common case (most
         // chunks have no wall at all), so that stays the default - the flow
         // field only gets consulted for the enemies actually blocked by one,
