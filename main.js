@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.57';
+  const GAME_VERSION = '1.36.58';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -747,7 +747,12 @@
     // HP values are the pre-v1.28.0 baseline divided by ENEMY_SPAWN_RATE_MULT
     // (18/10/70/500 -> 12/7/47/333), rounded.
     grunt:  { hp: 12,  speed: 78,  radius: 13, color: '#ff5a5a', dmg: 8,  xp: 3,  score: 1, burst: 1 },
-    fast:   { hp: 7,   speed: 140, radius: 10, color: '#ffd23a', dmg: 6,  xp: 4,  score: 1, burst: 2 },
+    // wander (v1.36.58): a per-enemy movement wobble was tried on every
+    // type in v1.36.56 and reverted the same session (v1.36.57) - it read
+    // as visually nauseating overall, but fast specifically didn't have
+    // that problem and looked good wobbling, so it's opted back in alone
+    // here rather than reintroducing it globally.
+    fast:   { hp: 7,   speed: 140, radius: 10, color: '#ffd23a', dmg: 6,  xp: 4,  score: 1, burst: 2, wander: true },
     tank:   { hp: 47,  speed: 48,  radius: 20, color: '#a15aff', dmg: 14, xp: 10, score: 2, burst: 1 },
     // Deliberately huge single-target HP pool: a pure multishot build
     // spreads its damage across many enemies and struggles to burn this
@@ -938,6 +943,14 @@
       // from GEM_CAP below - the whole point of that ability is stockpiling
       // gems for one big level-up burst, which the cap would otherwise gut.
       this.forceKilled = false;
+      // Movement wander (v1.36.58, fast-only - see ENEMY_TYPES.fast and
+      // ENEMY_WANDER_AMPLITUDE above). Phase/freq only allocated for
+      // wandering types; non-wandering enemies skip the extra RNG calls.
+      this.wanders = !!def.wander;
+      if (this.wanders) {
+        this.wanderPhase = rand(0, TAU);
+        this.wanderFreq = rand(ENEMY_WANDER_FREQ_MIN, ENEMY_WANDER_FREQ_MAX);
+      }
     }
   }
 
@@ -1343,6 +1356,17 @@
   // The attack-power reduction that used to be bundled into slow was split
   // out into its own status, 衰弱/weaken (v1.36.8) - slow now only affects
   // movement speed, nothing else.
+
+  // Movement wander (v1.36.56, reverted v1.36.57, reintroduced fast-only in
+  // v1.36.58 - see ENEMY_TYPES.fast's `wander` flag): a per-enemy sine
+  // wobble rotates the enemy's chosen direction (straight-line or, once
+  // blocked by a wall, the flow field's direction) by a small, smoothly
+  // oscillating angle, so it weaves slightly instead of beelining exactly.
+  // Phase and frequency are randomized per enemy so a whole burst doesn't
+  // wobble in lockstep.
+  const ENEMY_WANDER_AMPLITUDE = 25 * Math.PI / 180; // max rotation, ~25 degrees each way
+  const ENEMY_WANDER_FREQ_MIN = 0.4; // rad/s - slow, organic weaving, not a jittery twitch
+  const ENEMY_WANDER_FREQ_MAX = 0.9;
 
   // Status-effect indicator dots (v1.36.0): rather than recoloring an
   // enemy's own body per status (which only ever supported showing one
@@ -2913,6 +2937,11 @@
         if (this.segmentHitsWall(e.x, e.y, p.x, p.y)) {
           const ang = this.flowFieldDirectionAt(e.x, e.y);
           if (ang != null) { dirX = Math.cos(ang); dirY = Math.sin(ang); }
+        }
+        if (e.wanders) {
+          const wobble = ENEMY_WANDER_AMPLITUDE * Math.sin(this.time * e.wanderFreq + e.wanderPhase);
+          const baseAngle = Math.atan2(dirY, dirX) + wobble;
+          dirX = Math.cos(baseAngle); dirY = Math.sin(baseAngle);
         }
         e.x += dirX * effSpeed * dt;
         e.y += dirY * effSpeed * dt;
