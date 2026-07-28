@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.53';
+  const GAME_VERSION = '1.36.54';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -1048,10 +1048,12 @@
   // walls read as too big and too sparse in practice - halving the size
   // range while also raising both how often a chunk gets any walls at all
   // and how many it can roll gives noticeably more (smaller) obstacles per
-  // chunk instead of a few large ones.
-  const WALL_CHANCE_PER_CHUNK = 0.7;
+  // chunk instead of a few large ones. Chance 0.7->0.85 and count max 3->4
+  // (v1.36.54): still more wanted after playing with the above - roughly
+  // +50% average walls/chunk (1.4 -> 2.125) on top of the previous pass.
+  const WALL_CHANCE_PER_CHUNK = 0.85;
   const WALL_COUNT_MIN = 1;
-  const WALL_COUNT_MAX = 3;
+  const WALL_COUNT_MAX = 4;
   const WALL_SIZE_MIN = 50;
   const WALL_SIZE_MAX = 130;
   // A wall roll that would land on top of the player's CURRENT position is
