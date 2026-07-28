@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.51';
+  const GAME_VERSION = '1.36.52';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -1060,6 +1060,11 @@
   // popping into existence directly on top of them mid-run, not just at the
   // very first chunk at game start.
   const WALL_PLAYER_CLEARANCE = 250;
+  // See resolveWallCollision - repeated passes so a corner formed by two
+  // separate walls (possibly from two different chunks, which never check
+  // each other at generation time) still gets fully resolved instead of
+  // bouncing the entity from one wall straight into the other.
+  const WALL_COLLISION_PASSES = 4;
 
   // Flow-field pathfinding (see Game.buildFlowField/flowFieldDirectionAt):
   // only used by enemies whose direct line to the player is actually
@@ -2024,7 +2029,15 @@
         const x = p.x + Math.cos(angle) * spawnDist;
         const y = p.y + Math.sin(angle) * spawnDist;
         this.totalSpawned++;
-        this.enemies.push(new Enemy(type, x, y, hpMult, dmgMult));
+        const enemy = new Enemy(type, x, y, hpMult, dmgMult);
+        // spawnDist is chosen without any awareness of walls, so this spot
+        // can land inside one (or a chunk generated later can place a wall
+        // around an already-standing enemy - see generateChunkWalls' own
+        // enemy check). Resolving immediately means a spawn that does land
+        // in a wall gets shoved out to its edge before it's ever rendered,
+        // instead of appearing to spawn embedded in it for a frame.
+        this.resolveWallCollision(enemy);
+        this.enemies.push(enemy);
       }
     }
 
@@ -2447,8 +2460,14 @@
     // the chunk's own bounds (so a 3x3-chunk neighbor lookup, see
     // wallsNear(), always finds every wall that could plausibly overlap a
     // given point without needing to search further out). A roll that would
-    // land on the player's current position is simply dropped rather than
-    // relocated - see WALL_PLAYER_CLEARANCE above.
+    // land on the player's current position, or on any enemy CURRENTLY
+    // standing in this chunk, is simply dropped rather than relocated - see
+    // WALL_PLAYER_CLEARANCE above. The enemy check matters because chunks
+    // generate as the player explores (not all at once at game start) - an
+    // enemy can already be standing somewhere before its chunk is ever
+    // rolled, and without this check a wall could later spawn directly
+    // through/around it, reading as "an enemy stuck inside a wall" even
+    // though it was really the wall that arrived second.
     generateChunkWalls(cx, cy, key) {
       const list = [];
       if (Math.random() < WALL_CHANCE_PER_CHUNK) {
@@ -2460,9 +2479,30 @@
           const h = rand(WALL_SIZE_MIN, WALL_SIZE_MAX);
           const x = originX + rand(0, WALL_CHUNK_SIZE - w);
           const y = originY + rand(0, WALL_CHUNK_SIZE - h);
-          const closestX = clamp(p.x, x, x + w);
-          const closestY = clamp(p.y, y, y + h);
-          if (dist2(p.x, p.y, closestX, closestY) < WALL_PLAYER_CLEARANCE * WALL_PLAYER_CLEARANCE) continue;
+          const closestPX = clamp(p.x, x, x + w);
+          const closestPY = clamp(p.y, y, y + h);
+          if (dist2(p.x, p.y, closestPX, closestPY) < WALL_PLAYER_CLEARANCE * WALL_PLAYER_CLEARANCE) continue;
+          let blockedByEnemy = false;
+          for (const e of this.enemies) {
+            const closestEX = clamp(e.x, x, x + w);
+            const closestEY = clamp(e.y, y, y + h);
+            if (dist2(e.x, e.y, closestEX, closestEY) < e.radius * e.radius) { blockedByEnemy = true; break; }
+          }
+          if (blockedByEnemy) continue;
+          // Also skip a roll that would overlap a wall already placed
+          // earlier in this same chunk (WALL_COUNT_MAX can roll more than
+          // one) - two overlapping rects otherwise combine into a shape an
+          // entity's single-pass push-out (resolveWallCollision) isn't
+          // guaranteed to fully escape from (pushed clear of one, straight
+          // into the other).
+          let overlapsOwnWall = false;
+          for (const existing of list) {
+            if (x < existing.x + existing.w && x + w > existing.x && y < existing.y + existing.h && y + h > existing.y) {
+              overlapsOwnWall = true;
+              break;
+            }
+          }
+          if (overlapsOwnWall) continue;
           list.push(new Wall(x, y, w, h));
         }
       }
@@ -2494,29 +2534,46 @@
     // spawned there before ever being repelled) by pushing out along
     // whichever axis has the smaller penetration depth, rather than dividing
     // by a zero distance.
+    //
+    // Runs WALL_COLLISION_PASSES times rather than once: two walls (even
+    // from two different neighboring chunks, which never check each other
+    // at generation time) can end up close enough to form a corner where
+    // resolving one wall's overlap pushes the entity straight into the
+    // other's. A single pass over the wall list can't self-correct that if
+    // the other wall was already checked earlier in the same pass; a
+    // handful of repeated passes converges on a position clear of both.
     resolveWallCollision(entity) {
       const r = entity.radius;
-      for (const w of this.wallsNear(entity.x, entity.y)) {
-        const closestX = clamp(entity.x, w.x, w.x + w.w);
-        const closestY = clamp(entity.y, w.y, w.y + w.h);
-        const dx = entity.x - closestX, dy = entity.y - closestY;
-        const d2 = dx * dx + dy * dy;
-        if (d2 > 0) {
-          if (d2 >= r * r) continue;
-          const d = Math.sqrt(d2);
-          const overlap = r - d;
-          entity.x += (dx / d) * overlap;
-          entity.y += (dy / d) * overlap;
-        } else {
-          // Center is inside the rect - push out toward whichever edge is
-          // nearest instead (the closestX/closestY math above degenerates
-          // to the entity's own position with zero distance in this case).
-          const halfW = w.w / 2, halfH = w.h / 2;
-          const rectCx = w.x + halfW, rectCy = w.y + halfH;
-          const ox = entity.x - rectCx, oy = entity.y - rectCy;
-          const penX = halfW - Math.abs(ox), penY = halfH - Math.abs(oy);
-          if (penX < penY) entity.x = rectCx + (ox < 0 ? -(penX + r) : (penX + r));
-          else entity.y = rectCy + (oy < 0 ? -(penY + r) : (penY + r));
+      for (let pass = 0; pass < WALL_COLLISION_PASSES; pass++) {
+        for (const w of this.wallsNear(entity.x, entity.y)) {
+          const closestX = clamp(entity.x, w.x, w.x + w.w);
+          const closestY = clamp(entity.y, w.y, w.y + w.h);
+          const dx = entity.x - closestX, dy = entity.y - closestY;
+          const d2 = dx * dx + dy * dy;
+          if (d2 > 0) {
+            if (d2 >= r * r) continue;
+            const d = Math.sqrt(d2);
+            const overlap = r - d;
+            entity.x += (dx / d) * overlap;
+            entity.y += (dy / d) * overlap;
+          } else {
+            // Center is inside the rect - push out toward whichever edge is
+            // nearest instead (the closestX/closestY math above degenerates
+            // to the entity's own position with zero distance in this case).
+            // penX/penY (distance from center to the NEAREST same-axis edge)
+            // decide which axis to escape along - but the actual new
+            // position has to place the entity a full (halfW/halfH + r)
+            // from the rect's center, not (penX/penY + r), or it only moves
+            // to a different point still inside the rect (an earlier bug
+            // here did exactly that, producing a 2-cycle that could land
+            // back on the original position after an even number of passes).
+            const halfW = w.w / 2, halfH = w.h / 2;
+            const rectCx = w.x + halfW, rectCy = w.y + halfH;
+            const ox = entity.x - rectCx, oy = entity.y - rectCy;
+            const penX = halfW - Math.abs(ox), penY = halfH - Math.abs(oy);
+            if (penX < penY) entity.x = rectCx + (ox < 0 ? -(halfW + r) : (halfW + r));
+            else entity.y = rectCy + (oy < 0 ? -(halfH + r) : (halfH + r));
+          }
         }
       }
     }
@@ -2617,9 +2674,9 @@
     // Returns the angle an enemy at (x,y) should move in to make progress
     // around obstacles toward the player, using the cached flow field
     // (rebuilding it first if it's missing or stale). Returns null if (x,y)
-    // falls outside the field's coverage or its cell is unreachable
-    // (fully walled off) - callers should fall back to a straight line at
-    // the player in that case.
+    // falls outside the field's coverage, or no neighboring cell has a
+    // recorded (reachable) distance at all - callers should fall back to a
+    // straight line at the player in that case.
     flowFieldDirectionAt(x, y) {
       if (!this.flowFieldCache || this.time - this.flowFieldCache.computedAt >= FLOW_FIELD_REFRESH_INTERVAL) {
         this.buildFlowField();
@@ -2628,16 +2685,24 @@
       const col = Math.floor(x / ff.cellSize) - ff.originCol;
       const row = Math.floor(y / ff.cellSize) - ff.originRow;
       if (col < 0 || row < 0 || col >= ff.cols || row >= ff.rows) return null;
-      const idx = row * ff.cols + col;
-      const d0 = ff.dist[idx];
-      if (!isFinite(d0)) return null;
-      let bestDist = d0, bestDx = 0, bestDy = 0, found = false;
+      // Deliberately NOT gated on this cell's own distance being finite: an
+      // enemy resting right against a wall (exactly where resolveWallCollision
+      // leaves it after a collision) very plausibly stands in a cell the
+      // wall's rectangle partially overlaps, which the coarse per-cell
+      // blocked check marks fully impassable even though the enemy's actual
+      // circular position is fine. Bailing out on that would immediately
+      // fall back to the straight-line-at-the-player direction every single
+      // frame - straight back into the same wall - which is exactly the
+      // "stuck in place at the wall" symptom this is fixing. Looking at the
+      // neighbors' own recorded distances directly, regardless of what this
+      // cell's own value says, sidesteps that entirely.
+      let bestDist = Infinity, bestDx = 0, bestDy = 0, found = false;
       const neighbors = [[1, 0], [-1, 0], [0, 1], [0, -1]];
       for (const [ddx, ddy] of neighbors) {
         const nx = col + ddx, ny = row + ddy;
         if (nx < 0 || ny < 0 || nx >= ff.cols || ny >= ff.rows) continue;
         const nd = ff.dist[ny * ff.cols + nx];
-        if (nd < bestDist) { bestDist = nd; bestDx = ddx; bestDy = ddy; found = true; }
+        if (isFinite(nd) && nd < bestDist) { bestDist = nd; bestDx = ddx; bestDy = ddy; found = true; }
       }
       if (!found) return null;
       return Math.atan2(bestDy, bestDx);
