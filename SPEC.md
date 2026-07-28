@@ -1,6 +1,6 @@
 # Survivor Bites 仕様書
 
-現在バージョン: **v1.36.60**
+現在バージョン: **v1.36.61**
 
 ブラウザで動作するシンプルな2Dヴァンサバ(Vampire Survivors)ライクゲーム。
 Canvas + バニラJS、ビルド不要、外部ライブラリ不使用。タッチ操作対応。
@@ -306,7 +306,9 @@ grunt/fast/tank/bossが「常に自機へ直進する(壁があれば迂回す�
 **ガンナー(`gunner`)**: 自機からの距離に応じて「接近」と「静止射撃」を切り替える。
 
 - 自機との距離が`enemyEngagementRadius() * GUNNER_STOP_DIST_FRAC(0.4)`以下になるまでは、他の敵と全く同じ直進(壁があれば迂回)で接近する
-- その距離に達すると`Enemy.rangedHolding = true`になり、以後その場から一切動かなくなる。かわりに`GUNNER_ATK_INTERVAL = 1.8秒`間隔で自機に向けて`EnemyProjectile`を発射する(`GUNNER_PROJ_SPEED = 260px/秒`、ダメージは`GUNNER_ATK_DAMAGE_BASE = 6`に接触ダメージと同じ`dmgMult`を掛けた値で、難易度に応じてスケーリングする)。複数体が同時に静止射撃を始めても足並みを揃えて撃たないよう、`rangedCooldown`の初期値は出現時に`0〜GUNNER_ATK_INTERVAL`のランダムな値からスタートする
+- その距離に達すると`Enemy.rangedHolding = true`になり、以後その場から一切動かなくなる。かわりに`GUNNER_ATK_INTERVAL = 1.8秒`間隔で自機に向けて`EnemyProjectile`を発射する(`GUNNER_PROJ_SPEED = 260px/秒`、ダメージは`GUNNER_ATK_DAMAGE_BASE`に接触ダメージと同じ`dmgMult`を掛けた値で、難易度に応じてスケーリングする)。複数体が同時に静止射撃を始めても足並みを揃えて撃たないよう、`rangedCooldown`の初期値は出現時に`0〜GUNNER_ATK_INTERVAL`のランダムな値からスタートする
+  - **射撃ダメージの調整(v1.36.61)**: 初期値の`GUNNER_ATK_DAMAGE_BASE = 6`(接触ダメージと同値)は威力が高すぎるとのフィードバックを受け、`fast`の接触ダメージ(`ENEMY_TYPES.fast.dmg = 6`)のおよそ半分となる`3`に引き下げた
+  - **色の変更(v1.36.61)**: 本体・射撃弾ともに初期実装時は水色(`#3ad1ff`、ちょうどXPバーの左端の色と同じ)だったが、ジェムの色(`#7fffd4`)と紛らわしいというフィードバックを受け、緑(`#22c55e`)に変更した。射撃弾の描画色は本体の色(`ENEMY_TYPES.gunner.color`)をそのまま参照しているため、今後また変更しても2つが食い違うことはない
 - 自機が移動するなどして距離が`enemyEngagementRadius() * GUNNER_RESUME_DIST_FRAC(1.0)`(=ちょうど敵の出現距離、つまり画面外相当)を超えて開くと、`rangedHolding`が解除されて再び接近を再開する。停止距離(0.4倍)より再開距離(1.0倍)を大きく取っているのは、この2つの距離がもし同じだと、その境界上をうろつくだけで静止と接近を毎フレーム切り替えてしまう(ハンチング)ため
 - **弾は壁に当たると消える(ご要望通り)**: `EnemyProjectile`の移動処理は自機の弾(`Projectile`)と全く同じ`segmentHitsWall`判定を使い、壁と交差した時点で消滅する。プレイヤー側から見ると、壁の陰に隠れることでガンナーの射撃を防げる
 

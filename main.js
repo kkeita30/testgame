@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.60';
+  const GAME_VERSION = '1.36.61';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -762,11 +762,14 @@
     // Gunner (v1.36.60): approaches only until in mid-range, then holds
     // position and fires at the player instead of closing the rest of the
     // way - see Game.updateGunnerMovement. Low HP/contact damage on
-    // purpose: its real threat is the ranged chip damage, and it's meant to
-    // reward players who close the distance and kill it rather than
-    // tanking shots from range. `ranged: true` opts it into the
-    // hold-and-fire behavior (see the movement dispatch in update()).
-    gunner: { hp: 9,   speed: 70,  radius: 12, color: '#3ad1ff', dmg: 6,  xp: 5,  score: 2, burst: 1, ranged: true },
+    // purpose: its real threat is the ranged chip damage (further lowered
+    // in v1.36.61, see GUNNER_ATK_DAMAGE_BASE), and it's meant to reward
+    // players who close the distance and kill it rather than tanking shots
+    // from range. `ranged: true` opts it into the hold-and-fire behavior
+    // (see the movement dispatch in update()). Color changed from the
+    // original cyan (v1.36.61) - it read too close to the gems' mint green
+    // at a glance; both this and its projectile now use this same green.
+    gunner: { hp: 9,   speed: 70,  radius: 12, color: '#22c55e', dmg: 6,  xp: 5,  score: 2, burst: 1, ranged: true },
     // Blitz (v1.36.60): approaches to close range, pauses briefly (telegraph),
     // then locks a direction and dashes straight through at a large speed/
     // damage multiplier, continuing off past the player regardless of
@@ -1436,7 +1439,10 @@
   const GUNNER_STOP_DIST_FRAC = 0.4;
   const GUNNER_RESUME_DIST_FRAC = 1.0;
   const GUNNER_ATK_INTERVAL = 1.8;
-  const GUNNER_ATK_DAMAGE_BASE = 6; // scaled by dmgMult at spawn, same as contact damage
+  // 6->3 (v1.36.61): too strong at the original value - roughly half of
+  // fast's contact damage (ENEMY_TYPES.fast.dmg = 6) instead of matching it
+  // outright. Still scaled by dmgMult at spawn, same as contact damage.
+  const GUNNER_ATK_DAMAGE_BASE = 3;
   const GUNNER_PROJ_SPEED = 260;
   const GUNNER_PROJ_RADIUS = 6;
   const ENEMY_PROJ_LIFE = 4; // seconds before an unfired-into-anything shot just despawns
@@ -3743,11 +3749,13 @@
         ctx.fill();
       }
 
-      // enemy-fired projectiles (gunner) - the gunner's own accent color,
-      // so an incoming shot reads as coming from that enemy type specifically.
+      // enemy-fired projectiles (gunner) - reuses the gunner's own body
+      // color directly (rather than a second hardcoded copy of it) so an
+      // incoming shot always reads as coming from that enemy type and the
+      // two can never silently drift apart if the color changes again.
       for (const eproj of this.enemyProjectiles) {
         ctx.beginPath();
-        ctx.fillStyle = '#3ad1ff';
+        ctx.fillStyle = ENEMY_TYPES.gunner.color;
         ctx.arc(eproj.x, eproj.y, eproj.radius, 0, TAU);
         ctx.fill();
       }
