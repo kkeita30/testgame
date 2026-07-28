@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.56';
+  const GAME_VERSION = '1.36.57';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -938,10 +938,6 @@
       // from GEM_CAP below - the whole point of that ability is stockpiling
       // gems for one big level-up burst, which the cap would otherwise gut.
       this.forceKilled = false;
-      // Movement wander (v1.36.56, see ENEMY_WANDER_AMPLITUDE) - randomized
-      // per enemy so a spawned cluster doesn't all weave in sync.
-      this.wanderPhase = rand(0, TAU);
-      this.wanderFreq = rand(ENEMY_WANDER_FREQ_MIN, ENEMY_WANDER_FREQ_MAX);
     }
   }
 
@@ -1347,24 +1343,6 @@
   // The attack-power reduction that used to be bundled into slow was split
   // out into its own status, 衰弱/weaken (v1.36.8) - slow now only affects
   // movement speed, nothing else.
-
-  // Enemy movement wander (v1.36.56): every enemy used to walk in a
-  // perfectly straight line at the player (or straight along the flow
-  // field's direction when blocked) - fine functionally, but reads as
-  // robotic/predictable. A per-enemy sine wobble rotates that direction by
-  // a small, smoothly oscillating angle instead of replacing it outright,
-  // so enemies still make steady net progress toward the player but weave
-  // slightly rather than beelining. Phase and frequency are randomized per
-  // enemy (see Enemy constructor) so a whole cluster doesn't wobble in
-  // lockstep. Deliberately applied to BOTH the straight-line and flow-field
-  // cases (not just the common straight-line one) so the wobble reads
-  // consistently regardless of whether a wall is nearby - resolveWallCollision
-  // already runs every frame regardless, so a wobble that nudges an enemy
-  // into a wall is harmless (just gets pushed back out, same as any other
-  // approach angle would).
-  const ENEMY_WANDER_AMPLITUDE = 25 * Math.PI / 180; // max rotation, ~25 degrees each way
-  const ENEMY_WANDER_FREQ_MIN = 0.4; // rad/s - slow, organic weaving, not a jittery twitch
-  const ENEMY_WANDER_FREQ_MAX = 0.9;
 
   // Status-effect indicator dots (v1.36.0): rather than recoloring an
   // enemy's own body per status (which only ever supported showing one
@@ -2936,12 +2914,6 @@
           const ang = this.flowFieldDirectionAt(e.x, e.y);
           if (ang != null) { dirX = Math.cos(ang); dirY = Math.sin(ang); }
         }
-        // Wander wobble: rotate the chosen direction (straight-line or
-        // flow-field) by a small, smoothly oscillating angle unique to this
-        // enemy, so it weaves slightly instead of beelining exactly.
-        const wobble = ENEMY_WANDER_AMPLITUDE * Math.sin(this.time * e.wanderFreq + e.wanderPhase);
-        const baseAngle = Math.atan2(dirY, dirX) + wobble;
-        dirX = Math.cos(baseAngle); dirY = Math.sin(baseAngle);
         e.x += dirX * effSpeed * dt;
         e.y += dirY * effSpeed * dt;
         this.resolveWallCollision(e);
