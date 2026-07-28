@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.49';
+  const GAME_VERSION = '1.36.50';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -868,6 +868,15 @@
     return Math.max(W, H) * 0.5 * WEAPON_RANGE_OVERSHOOT * p.rangeMult;
   }
 
+  // Shared by spawnEnemy() (how far out a spawn burst appears) and the wall
+  // pathfinding flow field (how far around the player it needs to cover) -
+  // both are really asking the same question, "how far from the player does
+  // this run's active play area extend on this screen size", so it's pulled
+  // out once rather than risking the two formulas silently drifting apart.
+  function enemyEngagementRadius() {
+    return Math.max(W, H) * 0.65 + 60;
+  }
+
   // Camera zoom (v1.36.23): the 射程アップ upgrade raises rangeMult, which
   // would otherwise let the standard/charge weapons' auto-aim reach well
   // past what's actually visible on screen (weaponRange already extends
@@ -1013,6 +1022,74 @@
       this.x = x; this.y = y;
       this.radius = 12;
     }
+  }
+
+  // Terrain walls (v1.36.50): static, indestructible rectangular obstacles.
+  // Neither the player nor enemies can pass through one, and most attacks
+  // are stopped by one too (see segmentHitsWall's call sites) - the sole
+  // exception is the charge beam's genuinely infinite pierce, which bypasses
+  // wall checks entirely rather than getting stopped by the very first one
+  // in its path.
+  //
+  // Generation is chunk-based rather than a one-time batch near the start
+  // position: this game's world is effectively infinite (enemies/hearts
+  // already spawn relative to the player's CURRENT position, not some fixed
+  // map bounds - see spawnEnemy/heart spawning above), so a fixed batch of
+  // walls placed once near (0,0) would stop mattering the moment a run
+  // wanders far enough away. Instead, the world is divided into
+  // WALL_CHUNK_SIZE squares; whenever the player gets within
+  // WALL_GEN_RADIUS_CHUNKS chunks of an ungenerated one, that chunk rolls
+  // its own walls once and remembers the result forever (Game.wallChunks/
+  // generatedChunks) - so walls keep appearing as a run explores in any
+  // direction, for its entire duration, not just the opening moments.
+  const WALL_CHUNK_SIZE = 800;
+  const WALL_GEN_RADIUS_CHUNKS = 2;
+  const WALL_CHANCE_PER_CHUNK = 0.45;
+  const WALL_COUNT_MIN = 1;
+  const WALL_COUNT_MAX = 2;
+  const WALL_SIZE_MIN = 100;
+  const WALL_SIZE_MAX = 260;
+  // A wall roll that would land on top of the player's CURRENT position is
+  // simply skipped (not relocated) - since chunks generate continuously as
+  // the player explores, this is what actually prevents a wall from ever
+  // popping into existence directly on top of them mid-run, not just at the
+  // very first chunk at game start.
+  const WALL_PLAYER_CLEARANCE = 250;
+
+  // Flow-field pathfinding (see Game.buildFlowField/flowFieldDirectionAt):
+  // only used by enemies whose direct line to the player is actually
+  // blocked by a wall - most enemies most of the time never touch this at
+  // all and just walk straight at the player exactly as before this
+  // feature existed.
+  const FLOW_FIELD_CELL = 64;
+  const FLOW_FIELD_REFRESH_INTERVAL = 0.4;
+
+  class Wall {
+    constructor(x, y, w, h) {
+      this.x = x; this.y = y; // top-left corner, world space
+      this.w = w; this.h = h;
+    }
+  }
+
+  // Liang-Barsky line-clipping test: does segment (x1,y1)-(x2,y2) intersect
+  // axis-aligned rect (rx,ry,rw,rh)? Used for both projectile travel (has
+  // this shot's frame-to-frame movement crossed a wall) and line-of-sight
+  // checks (is a wall directly between two points) - see Game.segmentHitsWall.
+  function segmentIntersectsRect(x1, y1, x2, y2, rx, ry, rw, rh) {
+    const dx = x2 - x1, dy = y2 - y1;
+    const p = [-dx, dx, -dy, dy];
+    const q = [x1 - rx, (rx + rw) - x1, y1 - ry, (ry + rh) - y1];
+    let tmin = 0, tmax = 1;
+    for (let i = 0; i < 4; i++) {
+      if (p[i] === 0) {
+        if (q[i] < 0) return false; // parallel to this pair of edges and outside them
+      } else {
+        const t = q[i] / p[i];
+        if (p[i] < 0) { if (t > tmax) return false; if (t > tmin) tmin = t; }
+        else { if (t < tmin) return false; if (t < tmax) tmax = t; }
+      }
+    }
+    return tmin <= tmax;
   }
 
   class Particle {
@@ -1743,6 +1820,20 @@
       // RUSH_WINDOW_COOLDOWN on trigger, so back-to-back windows can't
       // both fire a rush even if killRate clears the threshold both times.
       this.rushWindowCooldown = 0;
+
+      // Terrain walls (v1.36.50): wallChunks maps a "cx,cy" chunk key to the
+      // (possibly empty) array of Wall instances generated for that chunk;
+      // generatedChunks just tracks which chunk keys have been rolled at all
+      // (including ones that rolled zero walls), so a chunk is never
+      // re-rolled once visited. flowFieldCache holds the last computed
+      // pathfinding grid (see buildFlowField) - null until the first enemy
+      // actually needs a detour. Chunks around the starting position are
+      // generated immediately so walls can exist from frame 1, not just
+      // after the first update() tick.
+      this.wallChunks = new Map();
+      this.generatedChunks = new Set();
+      this.flowFieldCache = null;
+      this.generateNearbyChunks();
     }
 
     onLevelUp() {
@@ -1917,7 +2008,7 @@
       const def = ENEMY_TYPES[type];
       const burstCount = def.burst * (this.rushState === 'active' ? RUSH_BURST_MULT : 1);
       const baseAngle = rand(0, TAU);
-      const spawnDist = Math.max(W, H) * 0.65 + 60;
+      const spawnDist = enemyEngagementRadius();
       for (let i = 0; i < burstCount; i++) {
         // Forced spawns (currently only the boss's periodic arrival) are
         // exempt from MAX_ALIVE_ENEMIES, same spirit as the emergency
@@ -2108,6 +2199,7 @@
         const inFront = localX >= -e.radius && localX <= WIDE_ATTACK_RANGE + e.radius;
         const inBack = localX <= e.radius && localX >= -WIDE_ATTACK_RANGE - e.radius;
         if (!inFront && !inBack) continue;
+        if (this.segmentHitsWall(p.x, p.y, e.x, e.y)) continue;
         hitAny = true;
         this.resolveProjectileHit(virtualProj, e);
       }
@@ -2196,6 +2288,10 @@
         const localY = dx * sinA + dy * cosA;
         if (localX < -e.radius || localX > range + e.radius) continue;
         if (Math.abs(localY) > halfWidth + e.radius) continue;
+        // No segmentHitsWall check here, deliberately - this is the one
+        // "infinite pierce" weapon walls don't stop (see Wall/segmentHitsWall
+        // above); every other attack (traveling projectiles, the wide sweep)
+        // does check.
         hitAny = true;
         this.resolveProjectileHit(virtualProj, e);
       }
@@ -2320,6 +2416,228 @@
       }
     }
 
+    // Rolls walls for any chunk within WALL_GEN_RADIUS_CHUNKS of the
+    // player's CURRENT chunk that hasn't been generated yet. Cheap even when
+    // called every frame (see update()) - once the surrounding block is
+    // generated, every check here is just a generatedChunks.has() lookup
+    // that immediately no-ops, so the actual roll only ever runs once per
+    // chunk for the entire run.
+    generateNearbyChunks() {
+      const p = this.player;
+      const ccx = Math.floor(p.x / WALL_CHUNK_SIZE);
+      const ccy = Math.floor(p.y / WALL_CHUNK_SIZE);
+      for (let dx = -WALL_GEN_RADIUS_CHUNKS; dx <= WALL_GEN_RADIUS_CHUNKS; dx++) {
+        for (let dy = -WALL_GEN_RADIUS_CHUNKS; dy <= WALL_GEN_RADIUS_CHUNKS; dy++) {
+          const cx = ccx + dx, cy = ccy + dy;
+          const key = cx + ',' + cy;
+          if (this.generatedChunks.has(key)) continue;
+          this.generatedChunks.add(key);
+          this.generateChunkWalls(cx, cy, key);
+        }
+      }
+    }
+
+    // Rolls 0 walls (WALL_CHANCE_PER_CHUNK miss) or WALL_COUNT_MIN..MAX walls
+    // for one chunk, each sized WALL_SIZE_MIN..MAX and placed fully inside
+    // the chunk's own bounds (so a 3x3-chunk neighbor lookup, see
+    // wallsNear(), always finds every wall that could plausibly overlap a
+    // given point without needing to search further out). A roll that would
+    // land on the player's current position is simply dropped rather than
+    // relocated - see WALL_PLAYER_CLEARANCE above.
+    generateChunkWalls(cx, cy, key) {
+      const list = [];
+      if (Math.random() < WALL_CHANCE_PER_CHUNK) {
+        const originX = cx * WALL_CHUNK_SIZE, originY = cy * WALL_CHUNK_SIZE;
+        const count = randInt(WALL_COUNT_MIN, WALL_COUNT_MAX);
+        const p = this.player;
+        for (let i = 0; i < count; i++) {
+          const w = rand(WALL_SIZE_MIN, WALL_SIZE_MAX);
+          const h = rand(WALL_SIZE_MIN, WALL_SIZE_MAX);
+          const x = originX + rand(0, WALL_CHUNK_SIZE - w);
+          const y = originY + rand(0, WALL_CHUNK_SIZE - h);
+          const closestX = clamp(p.x, x, x + w);
+          const closestY = clamp(p.y, y, y + h);
+          if (dist2(p.x, p.y, closestX, closestY) < WALL_PLAYER_CLEARANCE * WALL_PLAYER_CLEARANCE) continue;
+          list.push(new Wall(x, y, w, h));
+        }
+      }
+      this.wallChunks.set(key, list);
+    }
+
+    // Gathers every wall in the 3x3 block of chunks centered on (x,y) - since
+    // every wall is generated fully inside its own chunk's bounds, this is
+    // guaranteed to include every wall that could overlap anything within
+    // WALL_CHUNK_SIZE of (x,y), which comfortably covers the small
+    // circle/segment checks this is used for (collision radii and per-frame
+    // travel distances are both far smaller than one chunk).
+    wallsNear(x, y) {
+      const ccx = Math.floor(x / WALL_CHUNK_SIZE);
+      const ccy = Math.floor(y / WALL_CHUNK_SIZE);
+      const result = [];
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+          const arr = this.wallChunks.get((ccx + dx) + ',' + (ccy + dy));
+          if (arr) for (const w of arr) result.push(w);
+        }
+      }
+      return result;
+    }
+
+    // Circle-vs-rectangles push-out: after an entity (player or enemy) has
+    // already moved, shove it back out of any wall it ended up overlapping.
+    // Handles the entity's center landing fully inside a wall (e.g. an enemy
+    // spawned there before ever being repelled) by pushing out along
+    // whichever axis has the smaller penetration depth, rather than dividing
+    // by a zero distance.
+    resolveWallCollision(entity) {
+      const r = entity.radius;
+      for (const w of this.wallsNear(entity.x, entity.y)) {
+        const closestX = clamp(entity.x, w.x, w.x + w.w);
+        const closestY = clamp(entity.y, w.y, w.y + w.h);
+        const dx = entity.x - closestX, dy = entity.y - closestY;
+        const d2 = dx * dx + dy * dy;
+        if (d2 > 0) {
+          if (d2 >= r * r) continue;
+          const d = Math.sqrt(d2);
+          const overlap = r - d;
+          entity.x += (dx / d) * overlap;
+          entity.y += (dy / d) * overlap;
+        } else {
+          // Center is inside the rect - push out toward whichever edge is
+          // nearest instead (the closestX/closestY math above degenerates
+          // to the entity's own position with zero distance in this case).
+          const halfW = w.w / 2, halfH = w.h / 2;
+          const rectCx = w.x + halfW, rectCy = w.y + halfH;
+          const ox = entity.x - rectCx, oy = entity.y - rectCy;
+          const penX = halfW - Math.abs(ox), penY = halfH - Math.abs(oy);
+          if (penX < penY) entity.x = rectCx + (ox < 0 ? -(penX + r) : (penX + r));
+          else entity.y = rectCy + (oy < 0 ? -(penY + r) : (penY + r));
+        }
+      }
+    }
+
+    // Does any wall lie on the straight segment between these two points?
+    // Shared by: traveling-projectile wall collision (previous frame's
+    // position -> this frame's), the wide sweep's per-enemy line-of-sight
+    // check, and enemy movement's "can I walk straight at the player, or do
+    // I need to detour" check. Deliberately NOT used by the charge beam -
+    // that weapon's whole identity is genuinely infinite pierce, so it skips
+    // this check entirely rather than stopping at the first wall in its path.
+    segmentHitsWall(x1, y1, x2, y2) {
+      const minX = Math.min(x1, x2), maxX = Math.max(x1, x2);
+      const minY = Math.min(y1, y2), maxY = Math.max(y1, y2);
+      const minCol = Math.floor(minX / WALL_CHUNK_SIZE), maxCol = Math.floor(maxX / WALL_CHUNK_SIZE);
+      const minRow = Math.floor(minY / WALL_CHUNK_SIZE), maxRow = Math.floor(maxY / WALL_CHUNK_SIZE);
+      for (let cx = minCol; cx <= maxCol; cx++) {
+        for (let cy = minRow; cy <= maxRow; cy++) {
+          const arr = this.wallChunks.get(cx + ',' + cy);
+          if (!arr) continue;
+          for (const w of arr) {
+            if (segmentIntersectsRect(x1, y1, x2, y2, w.x, w.y, w.w, w.h)) return true;
+          }
+        }
+      }
+      return false;
+    }
+
+    // Builds a coarse walkable grid (FLOW_FIELD_CELL px per cell) centered
+    // on the player, then floods outward from the player's cell with a
+    // plain 4-directional BFS - since every step costs exactly 1, a FIFO
+    // queue alone already guarantees each cell's recorded distance is its
+    // true shortest number of steps (no Dijkstra/priority-queue needed, and
+    // no diagonal-corner-cutting edge case to worry about either). Only
+    // built lazily, the first time some enemy's straight line to the player
+    // is actually blocked (see the enemy movement loop in update()) - most
+    // chunks never have a wall at all, so most runs may never need this.
+    // Cached for FLOW_FIELD_REFRESH_INTERVAL seconds so many blocked enemies
+    // in the same frame (or the next several frames) share one build.
+    buildFlowField() {
+      const p = this.player;
+      const cellSize = FLOW_FIELD_CELL;
+      const halfSize = enemyEngagementRadius() + 400;
+      const cols = Math.ceil((halfSize * 2) / cellSize);
+      const rows = cols;
+      const originCol = Math.floor((p.x - halfSize) / cellSize);
+      const originRow = Math.floor((p.y - halfSize) / cellSize);
+
+      const blocked = new Uint8Array(cols * rows);
+      const minWorldX = originCol * cellSize, minWorldY = originRow * cellSize;
+      const maxWorldX = minWorldX + cols * cellSize, maxWorldY = minWorldY + rows * cellSize;
+      const minCol = Math.floor(minWorldX / WALL_CHUNK_SIZE), maxColChunk = Math.floor(maxWorldX / WALL_CHUNK_SIZE);
+      const minRow = Math.floor(minWorldY / WALL_CHUNK_SIZE), maxRowChunk = Math.floor(maxWorldY / WALL_CHUNK_SIZE);
+      for (let ccx = minCol; ccx <= maxColChunk; ccx++) {
+        for (let ccy = minRow; ccy <= maxRowChunk; ccy++) {
+          const arr = this.wallChunks.get(ccx + ',' + ccy);
+          if (!arr) continue;
+          for (const w of arr) {
+            const c0 = Math.max(0, Math.floor((w.x - minWorldX) / cellSize));
+            const c1 = Math.min(cols - 1, Math.floor((w.x + w.w - minWorldX) / cellSize));
+            const r0 = Math.max(0, Math.floor((w.y - minWorldY) / cellSize));
+            const r1 = Math.min(rows - 1, Math.floor((w.y + w.h - minWorldY) / cellSize));
+            for (let cy = r0; cy <= r1; cy++) {
+              for (let cx = c0; cx <= c1; cx++) blocked[cy * cols + cx] = 1;
+            }
+          }
+        }
+      }
+
+      const dist = new Float64Array(cols * rows).fill(Infinity);
+      let startCol = Math.floor(p.x / cellSize) - originCol;
+      let startRow = Math.floor(p.y / cellSize) - originRow;
+      startCol = clamp(startCol, 0, cols - 1);
+      startRow = clamp(startRow, 0, rows - 1);
+      const startIdx = startRow * cols + startCol;
+      blocked[startIdx] = 0; // the player's own cell is always walkable
+      dist[startIdx] = 0;
+      const queue = [startIdx];
+      let qHead = 0;
+      while (qHead < queue.length) {
+        const idx = queue[qHead++];
+        const cx = idx % cols, cy = Math.floor(idx / cols);
+        const d0 = dist[idx];
+        const neighbors = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+        for (const [ddx, ddy] of neighbors) {
+          const nx = cx + ddx, ny = cy + ddy;
+          if (nx < 0 || ny < 0 || nx >= cols || ny >= rows) continue;
+          const nidx = ny * cols + nx;
+          if (blocked[nidx] || dist[nidx] <= d0 + 1) continue;
+          dist[nidx] = d0 + 1;
+          queue.push(nidx);
+        }
+      }
+
+      this.flowFieldCache = { originCol, originRow, cols, rows, cellSize, dist, computedAt: this.time };
+    }
+
+    // Returns the angle an enemy at (x,y) should move in to make progress
+    // around obstacles toward the player, using the cached flow field
+    // (rebuilding it first if it's missing or stale). Returns null if (x,y)
+    // falls outside the field's coverage or its cell is unreachable
+    // (fully walled off) - callers should fall back to a straight line at
+    // the player in that case.
+    flowFieldDirectionAt(x, y) {
+      if (!this.flowFieldCache || this.time - this.flowFieldCache.computedAt >= FLOW_FIELD_REFRESH_INTERVAL) {
+        this.buildFlowField();
+      }
+      const ff = this.flowFieldCache;
+      const col = Math.floor(x / ff.cellSize) - ff.originCol;
+      const row = Math.floor(y / ff.cellSize) - ff.originRow;
+      if (col < 0 || row < 0 || col >= ff.cols || row >= ff.rows) return null;
+      const idx = row * ff.cols + col;
+      const d0 = ff.dist[idx];
+      if (!isFinite(d0)) return null;
+      let bestDist = d0, bestDx = 0, bestDy = 0, found = false;
+      const neighbors = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+      for (const [ddx, ddy] of neighbors) {
+        const nx = col + ddx, ny = row + ddy;
+        if (nx < 0 || ny < 0 || nx >= ff.cols || ny >= ff.rows) continue;
+        const nd = ff.dist[ny * ff.cols + nx];
+        if (nd < bestDist) { bestDist = nd; bestDx = ddx; bestDy = ddy; found = true; }
+      }
+      if (!found) return null;
+      return Math.atan2(bestDy, bestDx);
+    }
+
     update(dt) {
       if (this.over || this.levelingUp || paused) return;
       this.time += dt;
@@ -2425,6 +2743,8 @@
         if (mx !== 0) p.facing = mx > 0 ? 1 : -1;
         p.moveDirAngle = Math.atan2(my, mx);
       }
+      this.resolveWallCollision(p);
+      this.generateNearbyChunks();
 
       if (p.invulnTimer > 0) p.invulnTimer -= dt;
       if (p.regen > 0) p.hp = Math.min(p.maxHp, p.hp + p.regen * dt);
@@ -2512,8 +2832,19 @@
         const d = dist(e.x, e.y, p.x, p.y) || 1;
         const frenzySpeedMult = e.frenzyTimer > 0 ? FRENZY_SPEED_MULT : 1;
         const effSpeed = (e.slowTimer > 0 ? e.speed * SLOW_MULT : e.speed) * frenzySpeedMult * rushSpeedMult;
-        e.x += (p.x - e.x) / d * effSpeed * dt;
-        e.y += (p.y - e.y) / d * effSpeed * dt;
+        // A clear straight line to the player is by far the common case (most
+        // chunks have no wall at all), so that stays the default - the flow
+        // field only gets consulted for the enemies actually blocked by one,
+        // and falls back to the straight line too if the enemy is outside
+        // the field's coverage or the field can't find a way through.
+        let dirX = (p.x - e.x) / d, dirY = (p.y - e.y) / d;
+        if (this.segmentHitsWall(e.x, e.y, p.x, p.y)) {
+          const ang = this.flowFieldDirectionAt(e.x, e.y);
+          if (ang != null) { dirX = Math.cos(ang); dirY = Math.sin(ang); }
+        }
+        e.x += dirX * effSpeed * dt;
+        e.y += dirY * effSpeed * dt;
+        this.resolveWallCollision(e);
         if (e.hitFlash > 0) e.hitFlash -= dt;
         if (e.contactCd > 0) e.contactCd -= dt;
         if (e.slowTimer > 0) e.slowTimer -= dt;
@@ -2585,11 +2916,16 @@
         }
       }
 
-      // projectiles
+      // projectiles - every entry in this.projectiles is a real traveling
+      // shot (standard/rapid fire; wide/charge never add one), so all of
+      // them are stopped by walls uniformly, no per-weapon exception needed
+      // here (that exception is charge beam's, and it isn't a Projectile).
       for (const proj of this.projectiles) {
+        const prevX = proj.x, prevY = proj.y;
         proj.x += proj.vx * dt;
         proj.y += proj.vy * dt;
         proj.life -= dt;
+        if (proj.life > 0 && this.segmentHitsWall(prevX, prevY, proj.x, proj.y)) proj.life = 0;
       }
 
       // projectile-enemy collision
@@ -2933,6 +3269,29 @@
       }
       for (let y = startGY; y <= bottom; y += gridSize) {
         ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(right, y); ctx.stroke();
+      }
+      ctx.restore();
+
+      // walls (v1.36.50) - drawn right after the grid, before anything that
+      // moves, so they read as part of the terrain. Only walls in chunks
+      // overlapping the current viewport are gathered (reusing the
+      // left/right/top/bottom bounds computed above for the grid sweep),
+      // rather than iterating every wall generated so far this run.
+      ctx.save();
+      ctx.fillStyle = '#4a4a5a';
+      ctx.strokeStyle = '#6a6a7a';
+      ctx.lineWidth = 2 / scale;
+      const wMinCol = Math.floor(left / WALL_CHUNK_SIZE), wMaxCol = Math.floor(right / WALL_CHUNK_SIZE);
+      const wMinRow = Math.floor(top / WALL_CHUNK_SIZE), wMaxRow = Math.floor(bottom / WALL_CHUNK_SIZE);
+      for (let ccx = wMinCol; ccx <= wMaxCol; ccx++) {
+        for (let ccy = wMinRow; ccy <= wMaxRow; ccy++) {
+          const arr = this.wallChunks.get(ccx + ',' + ccy);
+          if (!arr) continue;
+          for (const wall of arr) {
+            ctx.fillRect(wall.x, wall.y, wall.w, wall.h);
+            ctx.strokeRect(wall.x, wall.y, wall.w, wall.h);
+          }
+        }
       }
       ctx.restore();
 
