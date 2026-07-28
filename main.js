@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.59';
+  const GAME_VERSION = '1.36.60';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -759,6 +759,21 @@
     // down alone, so surviving bosses well pushes toward also investing in
     // single-target-friendly upgrades (raw damage, explosion/chain).
     boss:   { hp: 333, speed: 35,  radius: 32, color: '#c81e3a', dmg: 20, xp: 50, score: 5, burst: 1 },
+    // Gunner (v1.36.60): approaches only until in mid-range, then holds
+    // position and fires at the player instead of closing the rest of the
+    // way - see Game.updateGunnerMovement. Low HP/contact damage on
+    // purpose: its real threat is the ranged chip damage, and it's meant to
+    // reward players who close the distance and kill it rather than
+    // tanking shots from range. `ranged: true` opts it into the
+    // hold-and-fire behavior (see the movement dispatch in update()).
+    gunner: { hp: 9,   speed: 70,  radius: 12, color: '#3ad1ff', dmg: 6,  xp: 5,  score: 2, burst: 1, ranged: true },
+    // Blitz (v1.36.60): approaches to close range, pauses briefly (telegraph),
+    // then locks a direction and dashes straight through at a large speed/
+    // damage multiplier, continuing off past the player regardless of
+    // whether it connects, before looping back to approach again - see
+    // Game.updateBlitzMovement. `charger: true` opts it into that state
+    // machine (see the movement dispatch in update()).
+    blitz:  { hp: 10,  speed: 55,  radius: 13, color: '#ff6fd8', dmg: 8,  xp: 6,  score: 2, burst: 1, charger: true },
   };
 
   // Bosses don't roll into the normal per-spawn type dice - they arrive on
@@ -950,6 +965,32 @@
         this.wanderPhase = rand(0, TAU);
         this.wanderFreq = rand(ENEMY_WANDER_FREQ_MIN, ENEMY_WANDER_FREQ_MAX);
       }
+      // Gunner (v1.36.60, see ENEMY_TYPES.gunner/Game.updateGunnerMovement).
+      // rangedCooldown starts at a random point within one interval so a
+      // burst/wave of gunners doesn't all fire in lockstep the moment they
+      // first hold position. rangedAtkDamage is computed here (not read
+      // fresh from a flat constant at fire time) so it scales with
+      // difficulty via dmgMult exactly like contact damage does.
+      this.ranged = !!def.ranged;
+      if (this.ranged) {
+        this.rangedCooldown = rand(0, GUNNER_ATK_INTERVAL);
+        this.rangedHolding = false;
+        this.rangedAtkDamage = Math.round(GUNNER_ATK_DAMAGE_BASE * dmgMult);
+      }
+      // Blitz (v1.36.60, see ENEMY_TYPES.blitz/Game.updateBlitzMovement).
+      // baseDmg preserves the difficulty-scaled contact damage (this.dmg
+      // above already has dmgMult applied) so the charge's damage
+      // multiplier has a stable value to multiply from and fully reverts
+      // once the charge ends, rather than compounding across charges.
+      this.charger = !!def.charger;
+      if (this.charger) {
+        this.blitzState = 'approach';
+        this.blitzTimer = 0;
+        this.blitzDirX = 0;
+        this.blitzDirY = 0;
+        this.blitzChargeDistanceRemaining = 0;
+        this.baseDmg = this.dmg;
+      }
     }
   }
 
@@ -969,6 +1010,23 @@
       this.frenzies = frenzies || false;
       this.bombifies = bombifies || false;
       this.weakens = weakens || false;
+    }
+  }
+
+  // Enemy-fired projectile (v1.36.60, gunner only for now) - deliberately
+  // much lighter than Projectile: no pierce/hitSet/bullet-effect fields at
+  // all, since it only ever needs to hit the single player once and then be
+  // gone. Kept as its own class/array (Game.enemyProjectiles) rather than
+  // reusing Projectile/this.projectiles so the existing projectile-vs-enemy
+  // collision loop never has to distinguish "whose shot is this" - enemy
+  // shots simply never enter that array or that collision check at all.
+  class EnemyProjectile {
+    constructor(x, y, vx, vy, damage, radius) {
+      this.x = x; this.y = y;
+      this.vx = vx; this.vy = vy;
+      this.damage = damage;
+      this.radius = radius;
+      this.life = ENEMY_PROJ_LIFE;
     }
   }
 
@@ -1366,6 +1424,38 @@
   const ENEMY_WANDER_AMPLITUDE = 25 * Math.PI / 180; // max rotation, ~25 degrees each way
   const ENEMY_WANDER_FREQ_MIN = 0.4; // rad/s - slow, organic weaving, not a jittery twitch
   const ENEMY_WANDER_FREQ_MAX = 0.9;
+
+  // Gunner (v1.36.60): approaches until within GUNNER_STOP_DIST_FRAC of the
+  // player's engagement radius (roughly mid-screen), then holds position
+  // and fires. GUNNER_RESUME_DIST_FRAC is deliberately larger than the stop
+  // fraction (both expressed as fractions of enemyEngagementRadius(), so
+  // this scales with screen size the same way spawning already does) -
+  // that gap is what stops it from flickering between holding and
+  // approaching right at one single boundary distance: it only resumes
+  // once the player has drifted far enough to be roughly off-screen again.
+  const GUNNER_STOP_DIST_FRAC = 0.4;
+  const GUNNER_RESUME_DIST_FRAC = 1.0;
+  const GUNNER_ATK_INTERVAL = 1.8;
+  const GUNNER_ATK_DAMAGE_BASE = 6; // scaled by dmgMult at spawn, same as contact damage
+  const GUNNER_PROJ_SPEED = 260;
+  const GUNNER_PROJ_RADIUS = 6;
+  const ENEMY_PROJ_LIFE = 4; // seconds before an unfired-into-anything shot just despawns
+
+  // Blitz (v1.36.60): approaches to BLITZ_STOP_DIST_FRAC of the engagement
+  // radius (closer than the gunner's hold distance - it wants to actually
+  // reach the player, not linger at range), pauses BLITZ_PAUSE_DURATION
+  // seconds as a telegraph, then commits to a straight-line dash in
+  // whatever direction the player was in at that instant (not homing - see
+  // Game.updateBlitzMovement) at BLITZ_CHARGE_SPEED_MULT times its normal
+  // speed, dealing BLITZ_CHARGE_DAMAGE_MULT times its normal contact damage
+  // for the dash's duration. The dash covers a full screen-diameter's
+  // worth of distance (2x engagement radius) before giving up and
+  // reverting to approach, guaranteeing it visibly exits off-screen on the
+  // far side regardless of where it started or whether it hit the player.
+  const BLITZ_STOP_DIST_FRAC = 0.3;
+  const BLITZ_PAUSE_DURATION = 1.0;
+  const BLITZ_CHARGE_SPEED_MULT = 4;
+  const BLITZ_CHARGE_DAMAGE_MULT = 1.8;
 
   // Status-effect indicator dots (v1.36.0): rather than recoloring an
   // enemy's own body per status (which only ever supported showing one
@@ -1788,6 +1878,7 @@
       this.player = new Player(character, weapon);
       this.enemies = [];
       this.projectiles = [];
+      this.enemyProjectiles = [];
       this.gems = [];
       this.hearts = [];
       this.heartSpawnTimer = HEART_SPAWN_CHECK_INTERVAL;
@@ -1980,8 +2071,14 @@
       let type = forceType || 'grunt';
       if (!forceType) {
         const r = Math.random();
+        // gunner/blitz (v1.36.60) are appended as further slices of this
+        // same roll, purely additive - the existing tank/fast thresholds
+        // and shares are untouched, these two just eat further into what
+        // would otherwise have been grunt at higher difficulty tiers.
         if (D >= 5 && r < 0.22) type = 'tank';
         else if (D >= 2 && r < 0.5) type = 'fast';
+        else if (D >= 6 && r < 0.6) type = 'blitz';
+        else if (D >= 3 && r < 0.75) type = 'gunner';
       }
 
       // Stepped time-based baseline, plus a build-aware top-up: enemy HP
@@ -2731,6 +2828,96 @@
       return Math.atan2(bestDy, bestDx);
     }
 
+    // Gunner's movement (v1.36.60, see ENEMY_TYPES.gunner): approaches the
+    // player exactly like a normal enemy (straight line, or the flow field
+    // once a wall blocks that line) until within GUNNER_STOP_DIST_FRAC of
+    // the engagement radius, then holds position entirely and fires
+    // instead. Resumes approaching only once the player has drifted back
+    // out past the (larger) GUNNER_RESUME_DIST_FRAC - seeing that gap is
+    // what keeps it from flickering between the two right at one boundary.
+    updateGunnerMovement(e, p, d, dt, effSpeed) {
+      const stopDist = enemyEngagementRadius() * GUNNER_STOP_DIST_FRAC;
+      const resumeDist = enemyEngagementRadius() * GUNNER_RESUME_DIST_FRAC;
+      if (e.rangedHolding && d > resumeDist) e.rangedHolding = false;
+      else if (!e.rangedHolding && d <= stopDist) e.rangedHolding = true;
+
+      if (e.rangedHolding) {
+        e.rangedCooldown -= dt;
+        if (e.rangedCooldown <= 0) {
+          e.rangedCooldown += GUNNER_ATK_INTERVAL;
+          const ang = Math.atan2(p.y - e.y, p.x - e.x);
+          this.enemyProjectiles.push(new EnemyProjectile(
+            e.x, e.y, Math.cos(ang) * GUNNER_PROJ_SPEED, Math.sin(ang) * GUNNER_PROJ_SPEED,
+            e.rangedAtkDamage, GUNNER_PROJ_RADIUS
+          ));
+        }
+        return; // holds position - no movement while in range
+      }
+
+      let dirX = (p.x - e.x) / d, dirY = (p.y - e.y) / d;
+      if (this.segmentHitsWall(e.x, e.y, p.x, p.y)) {
+        const ang = this.flowFieldDirectionAt(e.x, e.y);
+        if (ang != null) { dirX = Math.cos(ang); dirY = Math.sin(ang); }
+      }
+      e.x += dirX * effSpeed * dt;
+      e.y += dirY * effSpeed * dt;
+    }
+
+    // Blitz's movement (v1.36.60, see ENEMY_TYPES.blitz): a 3-state machine.
+    // 'approach' behaves exactly like a normal enemy until within
+    // BLITZ_STOP_DIST_FRAC of the engagement radius, then transitions to
+    // 'pause' (a stationary telegraph window). Once that expires, it locks
+    // in the direction toward the player's position at that exact instant
+    // (not a homing direction - it will not correct course mid-charge) and
+    // enters 'charging': a fast straight-line dash with elevated contact
+    // damage (via a temporarily boosted e.dmg, consumed by the existing
+    // generic contact-damage check in update() unmodified) that continues
+    // for a full screen-diameter's worth of distance regardless of whether
+    // it actually connects with the player, then reverts to 'approach' and
+    // repeats. A wall in the charge's path isn't dodged (charging skips the
+    // wall-avoidance/flow-field logic entirely, unlike 'approach') - it
+    // just runs into it like anything else, resolveWallCollision (called
+    // unconditionally after this in update()) stops it there, and the
+    // charge's own distance budget still winds down to 0 and ends the
+    // charge on schedule even if it's stuck against that wall the whole time.
+    updateBlitzMovement(e, p, d, dt, effSpeed) {
+      if (e.blitzState === 'approach') {
+        const stopDist = enemyEngagementRadius() * BLITZ_STOP_DIST_FRAC;
+        if (d <= stopDist) {
+          e.blitzState = 'pause';
+          e.blitzTimer = BLITZ_PAUSE_DURATION;
+          return;
+        }
+        let dirX = (p.x - e.x) / d, dirY = (p.y - e.y) / d;
+        if (this.segmentHitsWall(e.x, e.y, p.x, p.y)) {
+          const ang = this.flowFieldDirectionAt(e.x, e.y);
+          if (ang != null) { dirX = Math.cos(ang); dirY = Math.sin(ang); }
+        }
+        e.x += dirX * effSpeed * dt;
+        e.y += dirY * effSpeed * dt;
+      } else if (e.blitzState === 'pause') {
+        e.blitzTimer -= dt;
+        if (e.blitzTimer <= 0) {
+          const ang = Math.atan2(p.y - e.y, p.x - e.x);
+          e.blitzDirX = Math.cos(ang);
+          e.blitzDirY = Math.sin(ang);
+          e.blitzChargeDistanceRemaining = enemyEngagementRadius() * 2;
+          e.dmg = Math.round(e.baseDmg * BLITZ_CHARGE_DAMAGE_MULT);
+          e.blitzState = 'charging';
+        }
+      } else { // 'charging'
+        const chargeSpeed = effSpeed * BLITZ_CHARGE_SPEED_MULT;
+        const step = chargeSpeed * dt;
+        e.x += e.blitzDirX * step;
+        e.y += e.blitzDirY * step;
+        e.blitzChargeDistanceRemaining -= step;
+        if (e.blitzChargeDistanceRemaining <= 0) {
+          e.dmg = e.baseDmg;
+          e.blitzState = 'approach';
+        }
+      }
+    }
+
     update(dt) {
       if (this.over || this.levelingUp || paused) return;
       this.time += dt;
@@ -2924,23 +3111,36 @@
       for (const e of this.enemies) {
         const d = dist(e.x, e.y, p.x, p.y) || 1;
         const effSpeed = (e.slowTimer > 0 ? e.speed * SLOW_MULT : e.speed) * rushSpeedMult;
-        // A clear straight line to the player is by far the common case (most
-        // chunks have no wall at all), so that stays the default - the flow
-        // field only gets consulted for the enemies actually blocked by one,
-        // and falls back to the straight line too if the enemy is outside
-        // the field's coverage or the field can't find a way through.
-        let dirX = (p.x - e.x) / d, dirY = (p.y - e.y) / d;
-        if (this.segmentHitsWall(e.x, e.y, p.x, p.y)) {
-          const ang = this.flowFieldDirectionAt(e.x, e.y);
-          if (ang != null) { dirX = Math.cos(ang); dirY = Math.sin(ang); }
+        // Gunner/blitz (v1.36.60) each have their own movement state machine
+        // (hold-and-fire / approach-pause-charge) - everything else still
+        // gets the plain straight-line-or-flow-field-with-wander movement
+        // below. Either way, resolveWallCollision and all the per-frame
+        // status-effect ticking/contact-damage logic further down apply
+        // uniformly regardless of which branch moved this enemy.
+        if (e.ranged) {
+          this.updateGunnerMovement(e, p, d, dt, effSpeed);
+        } else if (e.charger) {
+          this.updateBlitzMovement(e, p, d, dt, effSpeed);
+        } else {
+          // A clear straight line to the player is by far the common case
+          // (most chunks have no wall at all), so that stays the default -
+          // the flow field only gets consulted for the enemies actually
+          // blocked by one, and falls back to the straight line too if the
+          // enemy is outside the field's coverage or the field can't find a
+          // way through.
+          let dirX = (p.x - e.x) / d, dirY = (p.y - e.y) / d;
+          if (this.segmentHitsWall(e.x, e.y, p.x, p.y)) {
+            const ang = this.flowFieldDirectionAt(e.x, e.y);
+            if (ang != null) { dirX = Math.cos(ang); dirY = Math.sin(ang); }
+          }
+          if (e.wanders) {
+            const wobble = ENEMY_WANDER_AMPLITUDE * Math.sin(this.time * e.wanderFreq + e.wanderPhase);
+            const baseAngle = Math.atan2(dirY, dirX) + wobble;
+            dirX = Math.cos(baseAngle); dirY = Math.sin(baseAngle);
+          }
+          e.x += dirX * effSpeed * dt;
+          e.y += dirY * effSpeed * dt;
         }
-        if (e.wanders) {
-          const wobble = ENEMY_WANDER_AMPLITUDE * Math.sin(this.time * e.wanderFreq + e.wanderPhase);
-          const baseAngle = Math.atan2(dirY, dirX) + wobble;
-          dirX = Math.cos(baseAngle); dirY = Math.sin(baseAngle);
-        }
-        e.x += dirX * effSpeed * dt;
-        e.y += dirY * effSpeed * dt;
         this.resolveWallCollision(e);
         if (e.hitFlash > 0) e.hitFlash -= dt;
         if (e.contactCd > 0) e.contactCd -= dt;
@@ -3039,6 +3239,25 @@
         }
       }
 
+      // enemy-fired projectiles (gunner) - same wall-collision treatment as
+      // the player's own shots (segmentHitsWall, destroyed on hit), but
+      // only ever needs to check collision against the single player, no
+      // pierce/hitSet lifecycle.
+      for (const eproj of this.enemyProjectiles) {
+        const prevX = eproj.x, prevY = eproj.y;
+        eproj.x += eproj.vx * dt;
+        eproj.y += eproj.vy * dt;
+        eproj.life -= dt;
+        if (eproj.life > 0 && this.segmentHitsWall(prevX, prevY, eproj.x, eproj.y)) eproj.life = 0;
+      }
+      for (const eproj of this.enemyProjectiles) {
+        if (eproj.life <= 0) continue;
+        if (dist2(eproj.x, eproj.y, p.x, p.y) < (eproj.radius + p.radius) * (eproj.radius + p.radius)) {
+          p.takeDamage(eproj.damage);
+          eproj.life = 0;
+        }
+      }
+
       // Bombify detonation: any bombified enemy that ends this frame at
       // hp<=0 (from a projectile, poison, frenzy friendly fire, or an
       // earlier detonation this same frame) explodes for a percent of its
@@ -3099,6 +3318,7 @@
       });
 
       this.projectiles = this.projectiles.filter(pr => pr.life > 0);
+      this.enemyProjectiles = this.enemyProjectiles.filter(pr => pr.life > 0);
 
       // gems: attract + collect
       // Which specials grant a pickup-range/XP buff (and by how much) is
@@ -3520,6 +3740,15 @@
         ctx.beginPath();
         ctx.fillStyle = '#ffe45a';
         ctx.arc(proj.x, proj.y, proj.radius, 0, TAU);
+        ctx.fill();
+      }
+
+      // enemy-fired projectiles (gunner) - the gunner's own accent color,
+      // so an incoming shot reads as coming from that enemy type specifically.
+      for (const eproj of this.enemyProjectiles) {
+        ctx.beginPath();
+        ctx.fillStyle = '#3ad1ff';
+        ctx.arc(eproj.x, eproj.y, eproj.radius, 0, TAU);
         ctx.fill();
       }
 
