@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.52';
+  const GAME_VERSION = '1.36.53';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -3168,6 +3168,13 @@
             const pull = Math.min(MAGNETSTORM_PULL_SPEED * dt, d); // clamp so it can't overshoot past center
             e.x += (fx.x - e.x) / d * pull;
             e.y += (fx.y - e.y) / d * pull;
+            // Without this, a wall sitting between an enemy and the zone
+            // center left the enemy settling into a stable, slightly-
+            // embedded position against the wall's face every frame - this
+            // pull runs after the main enemy movement loop's own
+            // resolveWallCollision (see above), so it's the last thing to
+            // move this enemy's position before it's ever rendered.
+            this.resolveWallCollision(e);
           }
         } else {
           const inside = new Set();
