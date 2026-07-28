@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.48';
+  const GAME_VERSION = '1.36.49';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -413,13 +413,16 @@
   const CHARGE_BASE_HALF_WIDTH = 8;
   const CHARGE_WIDTH_PER_STAGE = 8;
   function chargeHalfWidthForStage(stage) { return CHARGE_BASE_HALF_WIDTH + CHARGE_WIDTH_PER_STAGE * (stage - 1); }
-  // Damage is a flat, relatively high multiplier regardless of charge
-  // stage (v1.36.20) - charge time no longer scales damage at all. What it
-  // scales instead is the beam's width: the longer you wait to release,
-  // the more enemies have accumulated on screen, so a longer hold buys
-  // wider coverage to actually clear them, rather than just a harder hit
-  // on however few are in a narrow beam.
+  // Damage used to be a flat multiplier regardless of charge stage
+  // (v1.36.20) - only the beam's width scaled with how long you held it.
+  // Re-added stage-scaling damage on top of that (v1.36.49): CHARGE_DAMAGE_MULT
+  // is now just the stage-1 value, and each additional completed stage adds
+  // CHARGE_DAMAGE_MULT_PER_STAGE on top (see chargeDamageMultForStage below),
+  // so a longer hold now buys both a wider beam AND a harder hit, not width
+  // alone.
   const CHARGE_DAMAGE_MULT = 3.0;
+  const CHARGE_DAMAGE_MULT_PER_STAGE = 0.75;
+  function chargeDamageMultForStage(stage) { return CHARGE_DAMAGE_MULT + CHARGE_DAMAGE_MULT_PER_STAGE * (stage - 1); }
 
   // Rapid Fire (v1.36.45, rebalanced v1.36.46): fires shots along the
   // player's current movement direction (Player.moveDirAngle, updated in
@@ -492,7 +495,7 @@
     {
       id: 'charge',
       name: 'チャージビーム',
-      desc: '画面を押し続けている間チャージが進み(移動操作と同じ操作なので、チャージ自体は移動を妨げない)、指を離すと無限貫通のビームを発射する。ごく短い即離しでは発射されない。連射は不可能だが、威力は常に高め。その代わりチャージ段階が進むほどビームの幅が広がる。ランクアップで最大チャージ段階数が増える(1段階あたりの時間は変わらないため、最大までの時間も伸びる)。',
+      desc: '画面を押し続けている間チャージが進み(移動操作と同じ操作なので、チャージ自体は移動を妨げない)、指を離すと無限貫通のビームを発射する。ごく短い即離しでは発射されない。連射は不可能だが、威力は常に高め。チャージ段階が進むほどビームの幅と威力の両方が上がる。ランクアップで最大チャージ段階数が増える(1段階あたりの時間は変わらないため、最大までの時間も伸びる)。',
       apply: (p) => {},
       innateEffect: {
         name: '最大チャージ数アップ',
@@ -2148,14 +2151,14 @@
     // along a straight line toward the nearest in-range enemy, using the
     // same rotated-local-frame box test as the wide weapon's sweep
     // (fireWideSweep) but reaching out to the normal long weaponRange()
-    // instead of a short melee range, and in one direction only. Damage is
-    // a flat CHARGE_DAMAGE_MULT regardless of how long it was held - what
-    // scales with hold time is the beam's width, in discrete steps per
-    // completed stage (chargeHalfWidthForStage), since a longer wait means
-    // more enemies have accumulated on screen to clear, not a need to hit
-    // harder. chargeTime always resets to 0 on release, even if no target
-    // was in range to actually hit - committing to a release at the wrong
-    // moment genuinely wastes the charge.
+    // instead of a short melee range, and in one direction only. Both the
+    // beam's width (chargeHalfWidthForStage) and its damage
+    // (chargeDamageMultForStage) scale together with whatever stage was
+    // reached at release, so a longer hold buys wider coverage AND a
+    // harder hit rather than just one or the other. chargeTime always
+    // resets to 0 on release, even if no target was in range to actually
+    // hit - committing to a release at the wrong moment genuinely wastes
+    // the charge.
     fireChargeBeam() {
       const p = this.player;
       const stage = Math.min(p.chargeMaxStages, Math.floor(p.chargeTime / CHARGE_TIME_PER_STAGE));
@@ -2176,7 +2179,7 @@
       const buffDamageMult = p.specialBuffTimer > 0 && p.special && p.special.buffDamageMult != null
         ? p.special.buffDamageMult : 1;
       const virtualProj = {
-        damage: p.damage * buffDamageMult * CHARGE_DAMAGE_MULT,
+        damage: p.damage * buffDamageMult * chargeDamageMultForStage(stage),
         explosionRadius: p.explosionLevel > 0 ? explosionRadiusForLevel(p.explosionLevel) : 0,
         chainHops: p.chainLevel,
         slowDuration: p.slowLevel > 0 ? slowDurationForLevel(p.slowLevel) : 0,
