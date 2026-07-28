@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.50';
+  const GAME_VERSION = '1.36.51';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -1044,11 +1044,16 @@
   // direction, for its entire duration, not just the opening moments.
   const WALL_CHUNK_SIZE = 800;
   const WALL_GEN_RADIUS_CHUNKS = 2;
-  const WALL_CHANCE_PER_CHUNK = 0.45;
+  // Chance 0.45->0.7 and count 1-2->1-3, size 100-260->50-130 (v1.36.51):
+  // walls read as too big and too sparse in practice - halving the size
+  // range while also raising both how often a chunk gets any walls at all
+  // and how many it can roll gives noticeably more (smaller) obstacles per
+  // chunk instead of a few large ones.
+  const WALL_CHANCE_PER_CHUNK = 0.7;
   const WALL_COUNT_MIN = 1;
-  const WALL_COUNT_MAX = 2;
-  const WALL_SIZE_MIN = 100;
-  const WALL_SIZE_MAX = 260;
+  const WALL_COUNT_MAX = 3;
+  const WALL_SIZE_MIN = 50;
+  const WALL_SIZE_MAX = 130;
   // A wall roll that would land on top of the player's CURRENT position is
   // simply skipped (not relocated) - since chunks generate continuously as
   // the player explores, this is what actually prevents a wall from ever
