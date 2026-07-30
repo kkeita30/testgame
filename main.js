@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.62';
+  const GAME_VERSION = '1.36.63';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -352,17 +352,34 @@
     return Math.min(WEAPON_INNATE_MAX_RANK, Math.floor((level - 1) / WEAPON_INNATE_LEVELS_PER_RANK) + 1);
   }
 
-  // Intercept: a passive aura around the player, independent of any bullet
-  // hit, that slows enemies which get too close. Level raises how many
-  // enemies it can affect at once (nearest-first); its duration piggybacks
-  // on the slow bullet effect's rank if the player has it (same scaling),
-  // else falls back to a short base duration that's really just meant to
-  // survive one frame - it re-applies continuously while an enemy stays
-  // within range anyway.
+  // Auxiliary weapon (補助武器, v1.36.63): a passive aura around the player,
+  // independent of any bullet hit, that acts on whatever enemies get too
+  // close. Unlike bullet effects, only one can ever be held at a time -
+  // picking a different one replaces whichever was active, carrying its
+  // numeric rank over unchanged (see auxWeaponUpgrade below) rather than
+  // resetting to 1. auxWeaponTargetCount (how many nearby enemies it can
+  // affect at once, nearest-first) is the one dimension every aux weapon
+  // shares and scales by rank identically - what actually happens to each
+  // affected enemy differs per weapon (see the dispatch in update()).
+  // INTERCEPT_RADIUS/INTERCEPT_BASE_DURATION predate this generalization
+  // (intercept was the only one, and the sole bullet effect this aura ever
+  // applied) - kept under their original names since intercept itself is
+  // unchanged, just reclassified into this new category.
   const INTERCEPT_RADIUS = 60;
   const INTERCEPT_BASE_DURATION = 0.4;
   function interceptDuration(p) { return p.slowLevel > 0 ? slowDurationForLevel(p.slowLevel) : INTERCEPT_BASE_DURATION; }
-  function interceptTargetCount(level) { return level; }
+  function auxWeaponTargetCount(level) { return level; }
+  // Shockwave (衝撃, v1.36.63): the second aux weapon - pushes whatever's
+  // caught in the same aura directly away from the player instead of
+  // slowing it. Continuous, not a one-time knock: for as long as an enemy
+  // stays among the nearest N (N = auxWeaponTargetCount(rank)) inside
+  // INTERCEPT_RADIUS, it keeps getting shoved outward every frame, so it
+  // reads as a soft barrier an approaching enemy has to fight through
+  // rather than a single bump. Fixed push speed regardless of rank - rank
+  // only raises how many enemies it can hold back at once, exactly like
+  // intercept's own rank only raises its target count rather than the
+  // slow's own strength.
+  const SHOCKWAVE_PUSH_SPEED = 300;
 
   // Wide weapon (v1.36.15): a short-range melee-style sweep that hits every
   // enemy inside a cone in front of the player in one go, instead of firing
@@ -610,7 +627,12 @@
       this.explosionLevel = 0;
       this.chainLevel = 0;
       this.slowLevel = 0;
-      this.interceptLevel = 0;
+      // Auxiliary weapon (v1.36.63, see AUX_WEAPONS) - unlike the bullet
+      // effect levels above, only one can be held at a time, so this is
+      // "which one" (or null) plus a single shared rank, not a per-type
+      // level field each.
+      this.auxWeaponId = null;
+      this.auxWeaponLevel = 0;
       this.poisonLevel = 0;
       this.frenzyLevel = 0;
       // Named bombifyLevel (not "bomb") to avoid confusion with the
@@ -882,12 +904,15 @@
     // Max HP's own contribution is dampened (only half the overshoot
     // counts) - at full weight, stacking HP mostly just fed back into
     // harder-hitting enemies and cancelled out its own survivability gain.
-    // Slow/intercept/weaken count at full weight since they reduce how
+    // Slow/aux-weapon/weaken count at full weight since they reduce how
     // often the player actually gets hit at all, or how hard, rather than
-    // just how tanky a hit is.
+    // just how tanky a hit is. Either aux weapon counts here identically
+    // (auxWeaponLevel regardless of which one is currently held) - both
+    // intercept and shockwave exist to keep enemies from reaching/hitting
+    // the player, just via different means.
     const hpExtra = Math.max(0, p.maxHp / BASELINE_STATS.maxHp - 1) * 0.5;
     const base = 1 + hpExtra;
-    return base * (1 + p.slowLevel * 0.15) * (1 + p.interceptLevel * 0.15) * (1 + p.weakenLevel * 0.15);
+    return base * (1 + p.slowLevel * 0.15) * (1 + p.auxWeaponLevel * 0.15) * (1 + p.weakenLevel * 0.15);
   }
 
   // The weapon can only target enemies within this radius. Tied to the
@@ -1711,15 +1736,6 @@
       upgradeDesc: level => `減速時間が増加する`,
     },
     {
-      id: 'intercept',
-      name: '迎撃',
-      maxLevel: 5,
-      getLevel: p => p.interceptLevel,
-      levelUp: p => { p.interceptLevel++; },
-      introDesc: '自機のごく至近距離に入った敵を自動で低速化するようになる(低速を取得済みならその減速時間がそのまま適用される)',
-      upgradeDesc: level => `迎撃で同時に低速化できる敵の数が増加する`,
-    },
-    {
       id: 'pierce',
       name: '貫通',
       maxLevel: 5,
@@ -1862,6 +1878,57 @@
       title: level === 0 ? `${effect.name}(New)` : `${effect.name} Lv.${level}→${level + 1}`,
       desc: level === 0 ? effect.introDesc : effect.upgradeDesc(level),
       apply: p => effect.levelUp(p),
+    };
+  }
+
+  // Auxiliary weapons (補助武器, v1.36.63): unlike BULLET_EFFECTS, only one
+  // of these can ever be held at once (Player.auxWeaponId), so there's no
+  // per-type level field to read via getLevel() the way bulletEffectUpgrade
+  // does - each entry only needs a name/maxLevel/introDesc/upgradeDesc, and
+  // auxWeaponUpgrade below handles both "deepen the one already held" and
+  // "switch to a different one" (inheriting its rank unchanged) itself.
+  const AUX_WEAPONS = [
+    {
+      id: 'intercept',
+      name: '迎撃',
+      maxLevel: 5,
+      introDesc: '自機のごく至近距離に入った敵を自動で低速化するようになる(低速を取得済みならその減速時間がそのまま適用される)',
+      upgradeDesc: level => `迎撃で同時に低速化できる敵の数が増加する`,
+    },
+    {
+      id: 'shockwave',
+      name: '衝撃',
+      maxLevel: 5,
+      introDesc: '自機のごく至近距離に入った敵を自動で自機から遠ざかる方向へ押し出すようになる',
+      upgradeDesc: level => `衝撃で同時に押し出せる敵の数が増加する`,
+    },
+  ];
+
+  function auxWeaponUpgrade(aux, player) {
+    if (player.auxWeaponId === aux.id) {
+      const level = player.auxWeaponLevel;
+      return {
+        id: `aux-${aux.id}`,
+        title: `${aux.name} Lv.${level}→${level + 1}`,
+        desc: aux.upgradeDesc(level),
+        apply: p => { p.auxWeaponLevel = Math.min(aux.maxLevel, p.auxWeaponLevel + 1); },
+      };
+    }
+    // Switching: the new weapon inherits whatever rank was already held
+    // (clamped to its own maxLevel), never resetting to 1 - only true
+    // "never held any aux weapon before" starts fresh at 1. See the
+    // worked examples in the level-up card's own desc text (not shown
+    // here - the abstract-text policy keeps this card's copy free of the
+    // mechanic's exact numbers, same as every other upgrade card).
+    const replacing = player.auxWeaponId != null;
+    return {
+      id: `aux-${aux.id}`,
+      title: `${aux.name}(New)`,
+      desc: replacing ? `${aux.introDesc}(保有中の補助武器と入れ替わる形で獲得し、ランクはそのまま引き継がれる)` : aux.introDesc,
+      apply: p => {
+        p.auxWeaponLevel = Math.min(aux.maxLevel, Math.max(1, p.auxWeaponLevel));
+        p.auxWeaponId = aux.id;
+      },
     };
   }
 
@@ -2023,10 +2090,24 @@
       // than every entry needing to declare one - only atkspeed/trade-atkspeed
       // currently gate on it, since STAT_LIMITS.minAtkCooldown is a floor on
       // their own upside rather than a downside that's fine to saturate.
+      // Auxiliary weapon candidates (v1.36.63): the currently-held one (if
+      // any) offers its own rank-up card only while under maxLevel, same
+      // as a bullet effect; every OTHER aux weapon is always offered
+      // regardless of the held one's level, since switching to it doesn't
+      // depend on that weapon's own maxLevel at all (it inherits the held
+      // one's rank outright - see auxWeaponUpgrade). Not part of the
+      // bullet-effect priority slot below (that's specifically for
+      // BULLET_EFFECTS) or the bullet-effect pity-weight discount
+      // (pickWeightedIndex only discounts ids prefixed `bullet-`) - these
+      // draw at the normal weight like UPGRADE_POOL/TRADEOFF_POOL entries.
+      const auxCandidates = AUX_WEAPONS
+        .filter(aux => this.player.auxWeaponId === aux.id ? this.player.auxWeaponLevel < aux.maxLevel : true)
+        .map(aux => auxWeaponUpgrade(aux, this.player));
       const pool = [
         ...UPGRADE_POOL.filter(up => !up.available || up.available(this.player)),
         ...TRADEOFF_POOL.filter(up => !up.available || up.available(this.player)),
         ...notMaxedEffects.map(eff => bulletEffectUpgrade(eff, this.player)),
+        ...auxCandidates,
       ];
 
       // Slot 1 is a "bullet effect priority" slot: if the player already
@@ -3123,25 +3204,43 @@
 
       this.fireWeapon(dt);
 
-      // Intercept: slow whatever wanders inside the tiny aura radius,
-      // regardless of whether any shot has actually hit it. Capped to the
-      // nearest N enemies (N = intercept level) so a full swarm doesn't get
-      // slowed for free - only the immediate threats pressing right up
-      // against the player do.
-      if (p.interceptLevel > 0) {
+      // Auxiliary weapon (v1.36.63): acts on whatever wanders inside the
+      // tiny aura radius, regardless of whether any shot has actually hit
+      // it. Capped to the nearest N enemies (N = auxWeaponTargetCount(rank))
+      // so a full swarm doesn't get affected for free - only the immediate
+      // threats pressing right up against the player do. Which effect
+      // actually happens to those N enemies depends on which aux weapon is
+      // currently held; only one can be held at a time (Player.auxWeaponId).
+      if (p.auxWeaponId) {
         const nearby = this.enemies
           .filter(e => dist2(e.x, e.y, p.x, p.y) <= INTERCEPT_RADIUS * INTERCEPT_RADIUS)
           .sort((a, b) => dist2(a.x, a.y, p.x, p.y) - dist2(b.x, b.y, p.x, p.y));
-        const duration = interceptDuration(p);
-        const maxTargets = interceptTargetCount(p.interceptLevel);
-        for (let i = 0; i < Math.min(maxTargets, nearby.length); i++) {
-          const e = nearby[i];
-          // Only flash on the newly-caught transition (slowTimer was at 0),
-          // not every single frame it continues to sit in range - otherwise
-          // the line would just be permanently on-screen instead of reading
-          // as a "zap" the way chain's does.
-          if (e.slowTimer <= 0) this.chainZaps.push(new ChainZap(p.x, p.y, e.x, e.y));
-          e.slowTimer = Math.max(e.slowTimer, duration);
+        const maxTargets = auxWeaponTargetCount(p.auxWeaponLevel);
+        const targets = nearby.slice(0, maxTargets);
+        if (p.auxWeaponId === 'intercept') {
+          const duration = interceptDuration(p);
+          for (const e of targets) {
+            // Only flash on the newly-caught transition (slowTimer was at
+            // 0), not every single frame it continues to sit in range -
+            // otherwise the line would just be permanently on-screen
+            // instead of reading as a "zap" the way chain's does.
+            if (e.slowTimer <= 0) this.chainZaps.push(new ChainZap(p.x, p.y, e.x, e.y));
+            e.slowTimer = Math.max(e.slowTimer, duration);
+          }
+        } else if (p.auxWeaponId === 'shockwave') {
+          // Continuous outward push, not a one-time knock - keeps shoving
+          // for as long as an enemy stays among the nearest N inside the
+          // radius, so it reads as a soft barrier rather than a single bump.
+          for (const e of targets) {
+            const d = dist(e.x, e.y, p.x, p.y) || 1;
+            const push = SHOCKWAVE_PUSH_SPEED * dt;
+            e.x += (e.x - p.x) / d * push;
+            e.y += (e.y - p.y) / d * push;
+            // Without this, shockwave could push an enemy straight into
+            // (or through) a wall - see the same fix already applied to
+            // magnetstorm's pull (v1.36.53) for the identical reasoning.
+            this.resolveWallCollision(e);
+          }
         }
       }
 
@@ -4012,7 +4111,6 @@
     if (p.explosionLevel > 0) bulletLines.push(`爆発 Lv.${p.explosionLevel}`);
     if (p.chainLevel > 0) bulletLines.push(`連鎖 Lv.${p.chainLevel}`);
     if (p.slowLevel > 0) bulletLines.push(`低速 Lv.${p.slowLevel}`);
-    if (p.interceptLevel > 0) bulletLines.push(`迎撃 Lv.${p.interceptLevel}`);
     if (p.pierce > 0) bulletLines.push(`貫通 Lv.${p.pierce}`);
     if (p.poisonLevel > 0) bulletLines.push(`猛毒 Lv.${p.poisonLevel}`);
     if (p.frenzyLevel > 0) bulletLines.push(`狂乱 Lv.${p.frenzyLevel}`);
@@ -4022,6 +4120,9 @@
     if (p.killzoneLevel > 0) bulletLines.push(`キルゾーン Lv.${p.killzoneLevel}`);
     if (p.frenzyfountainLevel > 0) bulletLines.push(`狂乱の泉 Lv.${p.frenzyfountainLevel}`);
     if (p.poisoncloudLevel > 0) bulletLines.push(`ポイズンクラウド Lv.${p.poisoncloudLevel}`);
+    const auxWeaponLine = p.auxWeaponId
+      ? `${AUX_WEAPONS.find(aux => aux.id === p.auxWeaponId).name} Lv.${p.auxWeaponLevel}`
+      : null;
     pauseStatsEl.innerHTML = `
       <p>HP: ${Math.ceil(p.hp)} / ${p.maxHp}</p>
       <p>レベル: ${p.level}</p>
@@ -4029,6 +4130,7 @@
       <p>同時発射数: ${p.projCount} / 射程: ${Math.round(p.rangeMult * 100)}%</p>
       <p>移動速度: ${Math.round(p.speed)}</p>
       <p>HP自然回復: ${p.regen}/秒 / 回収範囲: ${Math.round(p.pickupRadius)}</p>
+      ${auxWeaponLine ? `<p>補助武器: ${auxWeaponLine}</p>` : ''}
       ${bulletLines.length ? `<p>弾丸効果: ${bulletLines.join(' / ')}</p>` : ''}
       <p>生存時間: ${mm}:${ss} / 撃破数: ${g.kills} / 難易度: ${g.difficulty}</p>
     `;
