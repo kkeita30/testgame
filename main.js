@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.61';
+  const GAME_VERSION = '1.36.62';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -743,21 +743,29 @@
   // crowd-build scaling - see the spawn-pacing block in update() below,
   // which now scales purely via how often a spawn event fires, not via
   // how many enemies each event produces.
+  // minDifficulty (v1.36.62): each non-boss type's own unlock threshold,
+  // now read directly off ENEMY_TYPES by both spawnEnemy() (forced spawns
+  // aside) and Game.rollSpawnPattern() (see below) instead of being
+  // hardcoded separately in each place - a type is only ever eligible to
+  // spawn (via the normal roll) once the current difficulty meets its own
+  // minDifficulty, full stop, regardless of which spawn pattern is active.
   const ENEMY_TYPES = {
     // HP values are the pre-v1.28.0 baseline divided by ENEMY_SPAWN_RATE_MULT
     // (18/10/70/500 -> 12/7/47/333), rounded.
-    grunt:  { hp: 12,  speed: 78,  radius: 13, color: '#ff5a5a', dmg: 8,  xp: 3,  score: 1, burst: 1 },
+    grunt:  { hp: 12,  speed: 78,  radius: 13, color: '#ff5a5a', dmg: 8,  xp: 3,  score: 1, burst: 1, minDifficulty: 1 },
     // wander (v1.36.58): a per-enemy movement wobble was tried on every
     // type in v1.36.56 and reverted the same session (v1.36.57) - it read
     // as visually nauseating overall, but fast specifically didn't have
     // that problem and looked good wobbling, so it's opted back in alone
     // here rather than reintroducing it globally.
-    fast:   { hp: 7,   speed: 140, radius: 10, color: '#ffd23a', dmg: 6,  xp: 4,  score: 1, burst: 2, wander: true },
-    tank:   { hp: 47,  speed: 48,  radius: 20, color: '#a15aff', dmg: 14, xp: 10, score: 2, burst: 1 },
+    fast:   { hp: 7,   speed: 140, radius: 10, color: '#ffd23a', dmg: 6,  xp: 4,  score: 1, burst: 2, wander: true, minDifficulty: 2 },
+    tank:   { hp: 47,  speed: 48,  radius: 20, color: '#a15aff', dmg: 14, xp: 10, score: 2, burst: 1, minDifficulty: 5 },
     // Deliberately huge single-target HP pool: a pure multishot build
     // spreads its damage across many enemies and struggles to burn this
     // down alone, so surviving bosses well pushes toward also investing in
-    // single-target-friendly upgrades (raw damage, explosion/chain).
+    // single-target-friendly upgrades (raw damage, explosion/chain). No
+    // minDifficulty - bosses don't participate in the normal type roll or
+    // spawn-pattern system at all (see BOSS_MIN_DIFFICULTY/spawnEnemy below).
     boss:   { hp: 333, speed: 35,  radius: 32, color: '#c81e3a', dmg: 20, xp: 50, score: 5, burst: 1 },
     // Gunner (v1.36.60): approaches only until in mid-range, then holds
     // position and fires at the player instead of closing the rest of the
@@ -769,15 +777,22 @@
     // (see the movement dispatch in update()). Color changed from the
     // original cyan (v1.36.61) - it read too close to the gems' mint green
     // at a glance; both this and its projectile now use this same green.
-    gunner: { hp: 9,   speed: 70,  radius: 12, color: '#22c55e', dmg: 6,  xp: 5,  score: 2, burst: 1, ranged: true },
+    gunner: { hp: 9,   speed: 70,  radius: 12, color: '#22c55e', dmg: 6,  xp: 5,  score: 2, burst: 1, ranged: true, minDifficulty: 3 },
     // Blitz (v1.36.60): approaches to close range, pauses briefly (telegraph),
     // then locks a direction and dashes straight through at a large speed/
     // damage multiplier, continuing off past the player regardless of
     // whether it connects, before looping back to approach again - see
     // Game.updateBlitzMovement. `charger: true` opts it into that state
     // machine (see the movement dispatch in update()).
-    blitz:  { hp: 10,  speed: 55,  radius: 13, color: '#ff6fd8', dmg: 8,  xp: 6,  score: 2, burst: 1, charger: true },
+    blitz:  { hp: 10,  speed: 55,  radius: 13, color: '#ff6fd8', dmg: 8,  xp: 6,  score: 2, burst: 1, charger: true, minDifficulty: 6 },
   };
+
+  // All spawnable non-boss types, derived from ENEMY_TYPES itself (not a
+  // separately maintained list) so a future new type just needs a
+  // minDifficulty field to automatically participate in both the normal
+  // roll and the spawn-pattern system below - boss is excluded by name
+  // since it never participates in either (see Game.rollSpawnPattern).
+  const NON_BOSS_ENEMY_TYPES = Object.keys(ENEMY_TYPES).filter(t => t !== 'boss');
 
   // Bosses don't roll into the normal per-spawn type dice - they arrive on
   // their own clock once difficulty is high enough, as a rare, singular
@@ -1964,6 +1979,33 @@
       this.generatedChunks = new Set();
       this.flowFieldCache = null;
       this.generateNearbyChunks();
+
+      // Spawn pattern (v1.36.62, see rollSpawnPattern) - which non-boss
+      // types are even eligible to spawn this wave. Rolled once here so
+      // it's already valid for the very first spawn, then re-rolled at
+      // every wave boundary (see update()).
+      this.currentSpawnPattern = [];
+      this.rollSpawnPattern();
+    }
+
+    // Picks which non-boss enemy types are allowed to spawn for the
+    // current wave: a random-sized subset (1, 2, 3, or "all currently
+    // unlocked") drawn from whichever types this.difficulty has actually
+    // unlocked (ENEMY_TYPES[type].minDifficulty) at the moment the wave
+    // starts. Re-rolled independently each wave (no rotation state to
+    // track) - a run might see the same size or type set again next wave
+    // purely by chance, which is fine given the ask was for random
+    // variety, not a strict round-robin sequence.
+    rollSpawnPattern() {
+      const unlocked = NON_BOSS_ENEMY_TYPES.filter(t => this.difficulty >= ENEMY_TYPES[t].minDifficulty);
+      const sizeOptions = [1, 2, 3, unlocked.length];
+      const size = Math.min(sizeOptions[randInt(0, sizeOptions.length - 1)], unlocked.length);
+      const pool = unlocked.slice();
+      const pattern = [];
+      for (let i = 0; i < size; i++) {
+        pattern.push(pool.splice(randInt(0, pool.length - 1), 1)[0]);
+      }
+      this.currentSpawnPattern = pattern;
     }
 
     onLevelUp() {
@@ -2074,18 +2116,15 @@
       const p = this.player;
       const D = this.difficulty;
 
-      let type = forceType || 'grunt';
-      if (!forceType) {
-        const r = Math.random();
-        // gunner/blitz (v1.36.60) are appended as further slices of this
-        // same roll, purely additive - the existing tank/fast thresholds
-        // and shares are untouched, these two just eat further into what
-        // would otherwise have been grunt at higher difficulty tiers.
-        if (D >= 5 && r < 0.22) type = 'tank';
-        else if (D >= 2 && r < 0.5) type = 'fast';
-        else if (D >= 6 && r < 0.6) type = 'blitz';
-        else if (D >= 3 && r < 0.75) type = 'gunner';
-      }
+      // Type roll (v1.36.62): replaced the old fixed-probability dice
+      // (tank/fast/blitz/gunner each at their own hardcoded % once
+      // difficulty-unlocked) with a uniform pick among whichever types
+      // this wave's spawn pattern currently allows (see
+      // Game.rollSpawnPattern) - the pattern itself is what now controls
+      // both variety (how many distinct types can appear at once) and,
+      // implicitly, relative frequency (fewer active types means each one
+      // individually spawns more often).
+      let type = forceType || this.currentSpawnPattern[randInt(0, this.currentSpawnPattern.length - 1)];
 
       // Stepped time-based baseline, plus a build-aware top-up: enemy HP
       // tracks how much dps the player has stacked (damage x attack speed)
@@ -2999,6 +3038,10 @@
         // Whatever's still alive right now carries into the new wave as
         // its starting backlog, read by this same block next checkpoint.
         this.aliveAtWaveStart = this.enemies.length;
+        // Re-rolled after difficulty is finalized above, so the new
+        // wave's pattern is drawn from whichever types are unlocked at
+        // the difficulty this wave will actually run at (see v1.36.62).
+        this.rollSpawnPattern();
       }
 
       // Rush's warning -> active transition, independent of the 50s check
