@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.63';
+  const GAME_VERSION = '1.36.64';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -369,17 +369,20 @@
   const INTERCEPT_BASE_DURATION = 0.4;
   function interceptDuration(p) { return p.slowLevel > 0 ? slowDurationForLevel(p.slowLevel) : INTERCEPT_BASE_DURATION; }
   function auxWeaponTargetCount(level) { return level; }
+  // Attack interval (v1.36.64): the aura originally applied its effect
+  // every single frame to anything in range - far stronger than intended
+  // (both aux weapons effectively never let go once something wandered
+  // in). Gated to once every AUX_WEAPON_ATK_INTERVAL seconds instead, like
+  // a real weapon's cooldown, rather than a continuous field.
+  const AUX_WEAPON_ATK_INTERVAL = 1.0;
   // Shockwave (衝撃, v1.36.63): the second aux weapon - pushes whatever's
   // caught in the same aura directly away from the player instead of
-  // slowing it. Continuous, not a one-time knock: for as long as an enemy
-  // stays among the nearest N (N = auxWeaponTargetCount(rank)) inside
-  // INTERCEPT_RADIUS, it keeps getting shoved outward every frame, so it
-  // reads as a soft barrier an approaching enemy has to fight through
-  // rather than a single bump. Fixed push speed regardless of rank - rank
-  // only raises how many enemies it can hold back at once, exactly like
-  // intercept's own rank only raises its target count rather than the
-  // slow's own strength.
-  const SHOCKWAVE_PUSH_SPEED = 300;
+  // slowing it, once per AUX_WEAPON_ATK_INTERVAL (a discrete knockback per
+  // "shot", not a continuous force - see v1.36.64 above). Fixed push
+  // distance regardless of rank - rank only raises how many enemies it can
+  // hit at once, exactly like intercept's own rank only raises its target
+  // count rather than the slow's own strength.
+  const SHOCKWAVE_PUSH_DISTANCE = 50;
 
   // Wide weapon (v1.36.15): a short-range melee-style sweep that hits every
   // enemy inside a cone in front of the player in one go, instead of firing
@@ -633,6 +636,10 @@
       // level field each.
       this.auxWeaponId = null;
       this.auxWeaponLevel = 0;
+      // Attack-interval cooldown (v1.36.64) - starts at 0 so a freshly
+      // acquired aux weapon can fire the very frame it's picked up rather
+      // than waiting out a full interval first.
+      this.auxWeaponCooldown = 0;
       this.poisonLevel = 0;
       this.frenzyLevel = 0;
       // Named bombifyLevel (not "bomb") to avoid confusion with the
@@ -3204,14 +3211,23 @@
 
       this.fireWeapon(dt);
 
-      // Auxiliary weapon (v1.36.63): acts on whatever wanders inside the
-      // tiny aura radius, regardless of whether any shot has actually hit
-      // it. Capped to the nearest N enemies (N = auxWeaponTargetCount(rank))
-      // so a full swarm doesn't get affected for free - only the immediate
-      // threats pressing right up against the player do. Which effect
-      // actually happens to those N enemies depends on which aux weapon is
+      // Auxiliary weapon (v1.36.63, throttled to a real attack interval in
+      // v1.36.64): acts on whatever wanders inside the tiny aura radius,
+      // regardless of whether any shot has actually hit it. Capped to the
+      // nearest N enemies (N = auxWeaponTargetCount(rank)) so a full swarm
+      // doesn't get affected for free - only the immediate threats
+      // pressing right up against the player do. Which effect actually
+      // happens to those N enemies depends on which aux weapon is
       // currently held; only one can be held at a time (Player.auxWeaponId).
       if (p.auxWeaponId) {
+        p.auxWeaponCooldown -= dt;
+      }
+      // Originally applied every single frame (effectively an unbreakable
+      // field, far stronger than intended) - now gated behind
+      // AUX_WEAPON_ATK_INTERVAL like a normal weapon's cooldown, so this
+      // only actually fires roughly once a second.
+      if (p.auxWeaponId && p.auxWeaponCooldown <= 0) {
+        p.auxWeaponCooldown += AUX_WEAPON_ATK_INTERVAL;
         const nearby = this.enemies
           .filter(e => dist2(e.x, e.y, p.x, p.y) <= INTERCEPT_RADIUS * INTERCEPT_RADIUS)
           .sort((a, b) => dist2(a.x, a.y, p.x, p.y) - dist2(b.x, b.y, p.x, p.y));
@@ -3220,22 +3236,20 @@
         if (p.auxWeaponId === 'intercept') {
           const duration = interceptDuration(p);
           for (const e of targets) {
-            // Only flash on the newly-caught transition (slowTimer was at
-            // 0), not every single frame it continues to sit in range -
-            // otherwise the line would just be permanently on-screen
-            // instead of reading as a "zap" the way chain's does.
-            if (e.slowTimer <= 0) this.chainZaps.push(new ChainZap(p.x, p.y, e.x, e.y));
+            // Now a genuinely periodic "shot" (once per
+            // AUX_WEAPON_ATK_INTERVAL) rather than a per-frame refresh, so
+            // it flashes every time it actually fires on a target instead
+            // of only on the first newly-caught transition.
+            this.chainZaps.push(new ChainZap(p.x, p.y, e.x, e.y));
             e.slowTimer = Math.max(e.slowTimer, duration);
           }
         } else if (p.auxWeaponId === 'shockwave') {
-          // Continuous outward push, not a one-time knock - keeps shoving
-          // for as long as an enemy stays among the nearest N inside the
-          // radius, so it reads as a soft barrier rather than a single bump.
+          // A discrete knockback per shot now, not a continuous force -
+          // see AUX_WEAPON_ATK_INTERVAL/SHOCKWAVE_PUSH_DISTANCE above.
           for (const e of targets) {
             const d = dist(e.x, e.y, p.x, p.y) || 1;
-            const push = SHOCKWAVE_PUSH_SPEED * dt;
-            e.x += (e.x - p.x) / d * push;
-            e.y += (e.y - p.y) / d * push;
+            e.x += (e.x - p.x) / d * SHOCKWAVE_PUSH_DISTANCE;
+            e.y += (e.y - p.y) / d * SHOCKWAVE_PUSH_DISTANCE;
             // Without this, shockwave could push an enemy straight into
             // (or through) a wall - see the same fix already applied to
             // magnetstorm's pull (v1.36.53) for the identical reasoning.
