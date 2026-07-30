@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.64';
+  const GAME_VERSION = '1.36.65';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -217,11 +217,27 @@
   // Multiple CHARACTERS entries exist now; WEAPONS still has only the one
   // placeholder. New options slot in by adding array entries, each with an
   // `apply(player)` that tweaks starting stats.
-  // Tank's reflect passive scales off two of the player's own stats rather
-  // than a fixed number, so investing in either raw damage or (fittingly,
-  // for a tank) max HP both feed back into how hard the counter hits.
+  // Reflect passive scales off two of the player's own stats rather than a
+  // fixed number, so investing in either raw damage or max HP both feed
+  // back into how hard the counter hits.
   const REFLECT_DMG_PCT_OF_ATTACK = 0.3;
   const REFLECT_DMG_PCT_OF_MAXHP = 0.08;
+
+  // 鉄の反撃(旧タンクのパッシブ)。ヒーラーへの改名(v1.36.65)に伴い自然回復
+  // パッシブへ差し替えたため、現在はどのキャラクターにも割り当てられていない
+  // - ただし処理自体は将来の再利用に備えてそのまま残してある(onContactDamage
+  // フックの仕組み自体はキャラクター固有ではない汎用の仕組みなので、この定数
+  // ・オブジェクトを消してもエンジン側には影響しない)。
+  const REFLECT_PASSIVE = {
+    name: '鉄の反撃',
+    desc: '被ダメージ時、攻撃してきた敵に反射ダメージを与える',
+    apply(p) {},
+    onContactDamage(p, enemy, game) {
+      const reflect = Math.round(p.damage * REFLECT_DMG_PCT_OF_ATTACK + p.maxHp * REFLECT_DMG_PCT_OF_MAXHP);
+      game.damageEnemy(enemy, reflect);
+      enemy.hitFlash = 0.12;
+    },
+  };
 
   const CHARACTERS = [
     {
@@ -256,20 +272,24 @@
       },
     },
     {
-      id: 'tank',
-      name: 'タンク',
-      desc: '最大HPが高く、移動速度は低いタフ型。被弾しても反撃パッシブで攻撃してきた敵にダメージを返せる。',
+      id: 'healer',
+      // タンク→ヒーラーへ改名(v1.36.65): 移動速度が遅いという特徴が、
+      // fast・ガンナーのような足の速い/遠距離型の敵に対して回避不能な
+      // 不利になり、「移動速度アップグレードを取らないと一部ウェーブを
+      // 突破できない」というバランス崩壊を起こしていたため、移動速度の
+      // ペナルティ自体を撤廃し、代わりにHP自然回復を持つ耐久型に再設計。
+      name: 'ヒーラー',
+      desc: '最大HPがやや高く、移動速度はスタンダードと同じタフ型。攻撃力は控えめだが、HPが時間経過で徐々に回復するパッシブを持つ。',
       apply: (p) => {
-        p.maxHp = 180;
+        p.maxHp = 130;
         p.hp = p.maxHp;
-        p.speedMult *= 0.7;
+        p.damage = Math.max(STAT_LIMITS.minDamage, Math.round(p.damage * 0.7));
       },
       // Special: a burst of survivability rather than raw offense - heals
       // a big chunk back and grants a temporary mobility window to
-      // reposition/collect gems (and keep landing the reflect passive
-      // below) instead of just tanking hits in place. Short cooldown
-      // relative to Standard's bomb since it's a sustain tool, not a
-      // one-shot-clears-the-screen panic button.
+      // reposition/collect gems instead of just tanking hits in place.
+      // Short cooldown relative to Standard's bomb since it's a sustain
+      // tool, not a one-shot-clears-the-screen panic button.
       special: {
         name: 'リカバリーダッシュ',
         // 被ダメージ70%カット追加(v1.36.34): 移動速度アップだけだと結局
@@ -285,18 +305,14 @@
           p.specialBuffTimer = 20;
         },
       },
-      // Passive: always-on counterattack. Scales with both attack power
-      // and max HP, so it pays off whether the build goes offense-heavy
-      // or leans into Tank's naturally high HP pool even further.
+      // Passive: always-on HP regen (v1.36.65, replaces the old reflect
+      // passive - see REFLECT_PASSIVE below). Matches the old removed
+      // 'リジェネ' upgrade's rate exactly (+1/sec) rather than inventing a
+      // new number.
       passive: {
-        name: '鉄の反撃',
-        desc: '被ダメージ時、攻撃してきた敵に反射ダメージを与える',
-        apply(p) {},
-        onContactDamage(p, enemy, game) {
-          const reflect = Math.round(p.damage * REFLECT_DMG_PCT_OF_ATTACK + p.maxHp * REFLECT_DMG_PCT_OF_MAXHP);
-          game.damageEnemy(enemy, reflect);
-          enemy.hitFlash = 0.12;
-        },
+        name: '自然回復',
+        desc: 'HPが時間経過で徐々に回復する',
+        apply(p) { p.regen += 1; },
       },
     },
     {
