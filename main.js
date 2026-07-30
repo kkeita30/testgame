@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.65';
+  const GAME_VERSION = '1.36.66';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -3242,34 +3242,47 @@
       // field, far stronger than intended) - now gated behind
       // AUX_WEAPON_ATK_INTERVAL like a normal weapon's cooldown, so this
       // only actually fires roughly once a second.
+      //
+      // The cooldown is only consumed once a real target is found
+      // (v1.36.66) - mirroring fireWeapon()'s own guard (p.atkTimer is left
+      // untouched whenever `sorted.length === 0`, so a weapon with nothing
+      // to shoot never burns its own cooldown). Without this, a ready-but-
+      // empty aura (e.g. the main weapon kills the one enemy that had just
+      // wandered into range, the instant before the aux weapon's own
+      // cooldown expires) would still consume the whole interval on a
+      // no-op, pushing the next real proc a further AUX_WEAPON_ATK_INTERVAL
+      // out - exactly why the aura could feel noticeably slower than the
+      // intended ~1/sec in practice.
       if (p.auxWeaponId && p.auxWeaponCooldown <= 0) {
-        p.auxWeaponCooldown += AUX_WEAPON_ATK_INTERVAL;
         const nearby = this.enemies
           .filter(e => dist2(e.x, e.y, p.x, p.y) <= INTERCEPT_RADIUS * INTERCEPT_RADIUS)
           .sort((a, b) => dist2(a.x, a.y, p.x, p.y) - dist2(b.x, b.y, p.x, p.y));
         const maxTargets = auxWeaponTargetCount(p.auxWeaponLevel);
         const targets = nearby.slice(0, maxTargets);
-        if (p.auxWeaponId === 'intercept') {
-          const duration = interceptDuration(p);
-          for (const e of targets) {
-            // Now a genuinely periodic "shot" (once per
-            // AUX_WEAPON_ATK_INTERVAL) rather than a per-frame refresh, so
-            // it flashes every time it actually fires on a target instead
-            // of only on the first newly-caught transition.
-            this.chainZaps.push(new ChainZap(p.x, p.y, e.x, e.y));
-            e.slowTimer = Math.max(e.slowTimer, duration);
-          }
-        } else if (p.auxWeaponId === 'shockwave') {
-          // A discrete knockback per shot now, not a continuous force -
-          // see AUX_WEAPON_ATK_INTERVAL/SHOCKWAVE_PUSH_DISTANCE above.
-          for (const e of targets) {
-            const d = dist(e.x, e.y, p.x, p.y) || 1;
-            e.x += (e.x - p.x) / d * SHOCKWAVE_PUSH_DISTANCE;
-            e.y += (e.y - p.y) / d * SHOCKWAVE_PUSH_DISTANCE;
-            // Without this, shockwave could push an enemy straight into
-            // (or through) a wall - see the same fix already applied to
-            // magnetstorm's pull (v1.36.53) for the identical reasoning.
-            this.resolveWallCollision(e);
+        if (targets.length > 0) {
+          p.auxWeaponCooldown += AUX_WEAPON_ATK_INTERVAL;
+          if (p.auxWeaponId === 'intercept') {
+            const duration = interceptDuration(p);
+            for (const e of targets) {
+              // Now a genuinely periodic "shot" (once per
+              // AUX_WEAPON_ATK_INTERVAL) rather than a per-frame refresh, so
+              // it flashes every time it actually fires on a target instead
+              // of only on the first newly-caught transition.
+              this.chainZaps.push(new ChainZap(p.x, p.y, e.x, e.y));
+              e.slowTimer = Math.max(e.slowTimer, duration);
+            }
+          } else if (p.auxWeaponId === 'shockwave') {
+            // A discrete knockback per shot now, not a continuous force -
+            // see AUX_WEAPON_ATK_INTERVAL/SHOCKWAVE_PUSH_DISTANCE above.
+            for (const e of targets) {
+              const d = dist(e.x, e.y, p.x, p.y) || 1;
+              e.x += (e.x - p.x) / d * SHOCKWAVE_PUSH_DISTANCE;
+              e.y += (e.y - p.y) / d * SHOCKWAVE_PUSH_DISTANCE;
+              // Without this, shockwave could push an enemy straight into
+              // (or through) a wall - see the same fix already applied to
+              // magnetstorm's pull (v1.36.53) for the identical reasoning.
+              this.resolveWallCollision(e);
+            }
           }
         }
       }
