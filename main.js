@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.67';
+  const GAME_VERSION = '1.36.68';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -418,17 +418,19 @@
 
   // Wide weapon (v1.36.15): a short-range melee-style sweep that hits every
   // enemy inside a cone in front of the player in one go, instead of firing
-  // a traveling Projectile. WIDE_ATTACK_RANGE piggybacks on INTERCEPT_RADIUS
-  // (already the game's established "close" distance), just a bit longer -
-  // the tradeoff for guaranteed multi-target coverage and above-average
-  // damage is that the player has to get in close to use it at all. Its
-  // innate effect (see WEAPONS below) widens the cone with rank instead of
-  // adding more shots, so this weapon never gets multishot's raw
-  // shot-count scaling. Declared here (ahead of its usual position among
-  // the other bullet-effect constants) because WEAPONS' desc strings below
-  // reference it directly at module-load time, not just from inside a
-  // later-called function.
-  const WIDE_ATTACK_RANGE = INTERCEPT_RADIUS + 30;
+  // a traveling Projectile. WIDE_ATTACK_RANGE piggybacks on AUX_WEAPON_RADIUS
+  // (v1.36.68, previously INTERCEPT_RADIUS - see AUX_WEAPON_RADIUS above),
+  // just a bit longer, so this weapon's reach stays deliberately ahead of
+  // the aux weapon aura's own range rather than merely equal to it - the
+  // tradeoff for guaranteed multi-target coverage and above-average damage
+  // is that the player has to get in close to use it at all. Its innate
+  // effect (see WEAPONS below) widens the cone with rank instead of adding
+  // more shots, so this weapon never gets multishot's raw shot-count
+  // scaling. Declared here (ahead of its usual position among the other
+  // bullet-effect constants) because WEAPONS' desc strings below reference
+  // it directly at module-load time, not just from inside a later-called
+  // function.
+  const WIDE_ATTACK_RANGE = AUX_WEAPON_RADIUS + 30;
   const WIDE_DAMAGE_MULT = 2.0;
   function wideHalfWidthForRank(rank) { return 16 + 10 * (rank - 1); }
 
@@ -2154,22 +2156,33 @@
         ...auxCandidates,
       ];
 
-      // Slot 1 is a "bullet effect priority" slot: if the player already
-      // has at least one level in some not-yet-maxed effect, that slot is
+      // Slot 1 is an "already invested" priority slot: if the player
+      // already has at least one level in some not-yet-maxed bullet effect,
+      // or already holds a not-yet-maxed aux weapon (v1.36.68 - previously
+      // aux weapons were excluded from this slot entirely), that slot is
       // reserved for deepening one of those instead of a plain random draw,
-      // so committing to an effect keeps paying off instead of getting
+      // so committing to something keeps paying off instead of getting
       // diluted by the rest of the pool. With nothing owned yet (or
       // everything owned already maxed), it just behaves like a normal slot
       // (and so gets the same pity-weighted draw as slots 2-3 - pity's
       // whole point is helping a wanted upgrade actually get OFFERED, which
-      // this fallback case is; the owned-effects branch above it is a
-      // deliberately narrow, already-favorable choice on its own and isn't
-      // what players are missing out on).
+      // this fallback case is; the owned branch above it is a deliberately
+      // narrow, already-favorable choice on its own and isn't what players
+      // are missing out on). Only the currently-held aux weapon's own
+      // rank-up card qualifies here, not the "switch to a different aux
+      // weapon" cards for whatever isn't currently held - those aren't
+      // "deepening" anything already owned, same reasoning as why a
+      // not-yet-acquired bullet effect doesn't qualify either.
       const ownedEffects = notMaxedEffects.filter(eff => eff.getLevel(this.player) > (eff.baseLevel || 0));
+      const heldAux = AUX_WEAPONS.find(aux => aux.id === this.player.auxWeaponId);
+      const ownedAuxUpgrade = (heldAux && this.player.auxWeaponLevel < heldAux.maxLevel)
+        ? auxWeaponUpgrade(heldAux, this.player)
+        : null;
       const missStreak = this.player.upgradeMissStreak;
       let firstPick;
-      if (ownedEffects.length > 0) {
+      if (ownedEffects.length > 0 || ownedAuxUpgrade) {
         const firstSlotPool = ownedEffects.map(eff => bulletEffectUpgrade(eff, this.player));
+        if (ownedAuxUpgrade) firstSlotPool.push(ownedAuxUpgrade);
         firstPick = firstSlotPool[randInt(0, firstSlotPool.length - 1)];
       } else {
         const idx = pickWeightedIndex(pool, missStreak);
