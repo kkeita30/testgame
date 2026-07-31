@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.72';
+  const GAME_VERSION = '1.36.73';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -919,6 +919,25 @@
   // below backs off by more than the normal -1 in a single window.
   const DIFFICULTY_STEP_HIGH_KILL_RATE = 2; // killRate >= RUSH_KILL_RATE_THRESHOLD, non-rush window
   const DIFFICULTY_STEP_LOW_KILL_RATE = 2; // killRate <= 0.3 (magnitude subtracted)
+
+  // Early-game HP relief (v1.36.73): D1-5 enemies felt too tanky for a
+  // fresh, no-upgrades-yet build - grunt specifically could take 2+ hits
+  // from base Standard/Rapid Fire, forcing a damage-side pick on the very
+  // first level-up just to keep killing anything. Only enemy HP is
+  // affected (not their damage or how often they spawn - both already felt
+  // fine per feedback), and only through this multiplier, layered on top
+  // of tierHpMult below so nothing about the tier curve's own math changes.
+  // Fades linearly from EARLY_GAME_HP_DISCOUNT at D1 to fully gone (1.0,
+  // no effect at all) by EARLY_GAME_HP_DISCOUNT_END_DIFFICULTY, so the rest
+  // of the difficulty curve - and every enemy type that only unlocks at
+  // D >= that threshold (tank included) - is completely untouched.
+  const EARLY_GAME_HP_DISCOUNT = 0.25;
+  const EARLY_GAME_HP_DISCOUNT_END_DIFFICULTY = 5;
+  function earlyGameHpMult(D) {
+    if (D >= EARLY_GAME_HP_DISCOUNT_END_DIFFICULTY) return 1;
+    const frac = (EARLY_GAME_HP_DISCOUNT_END_DIFFICULTY - D) / (EARLY_GAME_HP_DISCOUNT_END_DIFFICULTY - 1);
+    return 1 - EARLY_GAME_HP_DISCOUNT * frac;
+  }
 
   // These three convert "how far past baseline has the player pushed this
   // stat" into a multiplier (1 = no upgrades in that direction yet). Difficulty
@@ -2449,7 +2468,9 @@
       // tougher enemies instead (see SPAWN_OVERFLOW_HP_COEFF). Enemies
       // spawned during an active rush get a further flat RUSH_HP_MULT on
       // top, so the burst is a real spike in danger, not just more targets.
-      const hpMult = tierHpMult * (1 + offenseExtra * 0.25) * (1 + this.spawnRateOverflow * SPAWN_OVERFLOW_HP_COEFF) * (this.rushState === 'active' ? RUSH_HP_MULT : 1);
+      // earlyGameHpMult (v1.36.73) softens only the D1-5 window on top of
+      // all of that - see its own definition above for why.
+      const hpMult = tierHpMult * earlyGameHpMult(D) * (1 + offenseExtra * 0.25) * (1 + this.spawnRateOverflow * SPAWN_OVERFLOW_HP_COEFF) * (this.rushState === 'active' ? RUSH_HP_MULT : 1);
 
       const tierDmgMult = 1 + (D - 1) * 0.070125;
       const survivalExtra = Math.max(0, survivalPowerMult(p) - 1);
