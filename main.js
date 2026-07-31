@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.71';
+  const GAME_VERSION = '1.36.72';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -932,6 +932,14 @@
     // offense power the same way raw damage/attack-speed does.
     return base * (1 + p.explosionLevel * 0.15);
   }
+  // Reassigned (v1.36.72) to line up with the upgrade categories (§4-5-2):
+  // crowdPowerMult now feeds off the same 5 upgrades as the "クラウド"
+  // category (連鎖/貫通/キルゾーン/磁気嵐) plus 射程アップ - all upgrades
+  // whose actual gameplay effect is "handle more enemies busier/wider per
+  // engagement", which is exactly what a faster spawn pace tests. Bombify
+  // (previously counted here) has no clear read as "more enemies handled at
+  // once" on its own (its payoff depends entirely on already having
+  // explosion built up) and now has no difficulty feedback at all.
   function crowdPowerMult(p) {
     // Multishot no longer counts here - it's now the standard weapon's
     // innate effect (auto-ranks with player level, see WEAPONS) rather
@@ -942,26 +950,40 @@
     // Chain is effectively "hit more enemies per shot", the same crowd-
     // clearing role pierce plays, so it feeds the same multiplier.
     const crowdBase = base * (1 + p.chainLevel * 0.15);
-    // Bombify (v1.36.10) is a genuine AoE payoff (a percent of the target's
-    // own maxHp splashed to every other enemy in a wide radius, with
-    // chain-reaction potential - see §4-3) even though it's not framed as a
-    // per-hit crowd-clearing tool like pierce/chain, so it feeds the same
-    // spawn-pace scaling those do rather than sitting outside it for free.
-    return crowdBase * (1 + p.bombifyLevel * 0.15);
+    // Killzone/magnetstorm (v1.36.72) are area-effect zones that damage or
+    // corral multiple enemies at once, the same "handle a crowd, not just
+    // one target" role as pierce/chain.
+    const withKillzone = crowdBase * (1 + p.killzoneLevel * 0.15);
+    const withMagnetstorm = withKillzone * (1 + p.magnetstormLevel * 0.15);
+    // Range (v1.36.72): more reach means more enemies are simultaneously
+    // in engagement range at once (weaponRange/enemyEngagementRadius both
+    // scale with it), which is the same "facing more enemies per moment"
+    // pressure a faster spawn pace tests - same damping pattern as
+    // survivalPowerMult's maxHp term below (only half the overshoot
+    // counts).
+    const rangeExtra = Math.max(0, p.rangeMult - 1) * 0.5;
+    return withMagnetstorm * (1 + rangeExtra);
   }
+  // Reassigned (v1.36.72): now covers 最大HPアップ/ハート回復量増加/
+  // 鉄壁の構え(all p.maxHp)/低速 - the upgrades whose payoff is "take
+  // less net damage over time" (bigger or more frequently-refilled HP
+  // pool, or fewer/weaker hits landing at all). Aux weapons (迎撃/衝撃)
+  // and 衰弱/weaken previously counted here too but were judged too
+  // situational/minor a payoff to warrant their own difficulty feedback,
+  // so both were dropped with no replacement axis.
   function survivalPowerMult(p) {
     // Max HP's own contribution is dampened (only half the overshoot
     // counts) - at full weight, stacking HP mostly just fed back into
     // harder-hitting enemies and cancelled out its own survivability gain.
-    // Slow/aux-weapon/weaken count at full weight since they reduce how
-    // often the player actually gets hit at all, or how hard, rather than
-    // just how tanky a hit is. Either aux weapon counts here identically
-    // (auxWeaponLevel regardless of which one is currently held) - both
-    // intercept and shockwave exist to keep enemies from reaching/hitting
-    // the player, just via different means.
     const hpExtra = Math.max(0, p.maxHp / BASELINE_STATS.maxHp - 1) * 0.5;
-    const base = 1 + hpExtra;
-    return base * (1 + p.slowLevel * 0.15) * (1 + p.auxWeaponLevel * 0.15) * (1 + p.weakenLevel * 0.15);
+    // Heart heal (v1.36.72) follows the exact same reasoning/damping as
+    // maxHp above - a bigger heal is really just a bigger *effective* HP
+    // pool spread out over the run instead of all upfront.
+    const heartHealExtra = Math.max(0, p.heartHealFrac / HEART_HEAL_FRAC - 1) * 0.5;
+    const base = 1 + hpExtra + heartHealExtra;
+    // Slow counts at full weight since it reduces how often the player
+    // actually gets hit at all, rather than just how tanky a hit is.
+    return base * (1 + p.slowLevel * 0.15);
   }
 
   // The weapon can only target enemies within this radius. Tied to the
