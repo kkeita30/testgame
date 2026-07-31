@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.73';
+  const GAME_VERSION = '1.36.74';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -855,7 +855,12 @@
     // whether it connects, before looping back to approach again - see
     // Game.updateBlitzMovement. `charger: true` opts it into that state
     // machine (see the movement dispatch in update()).
-    blitz:  { hp: 10,  speed: 55,  radius: 13, color: '#ff6fd8', dmg: 8,  xp: 6,  score: 2, burst: 1, charger: true, minDifficulty: 6 },
+    // hp 10->18 (v1.36.74): too easy to just kill before the dash ever
+    // triggered, across every difficulty/weapon/build tested - it barely
+    // registered as a distinct threat. Still well short of tank (47,
+    // minDifficulty 5) despite unlocking one tier later, since blitz's
+    // real danger is the dash itself, not a war of attrition.
+    blitz:  { hp: 18,  speed: 55,  radius: 13, color: '#ff6fd8', dmg: 8,  xp: 6,  score: 2, burst: 1, charger: true, minDifficulty: 6 },
   };
 
   // All spawnable non-boss types, derived from ENEMY_TYPES itself (not a
@@ -1608,7 +1613,17 @@
   // far side regardless of where it started or whether it hit the player.
   const BLITZ_STOP_DIST_FRAC = 0.3;
   const BLITZ_PAUSE_DURATION = 1.0;
-  const BLITZ_CHARGE_SPEED_MULT = 4;
+  // 4 -> derived from GUNNER_PROJ_SPEED (v1.36.74): the dash felt like it
+  // didn't stand out enough from fast's own 140 base speed - at the old
+  // multiplier, a baseline (unslowed) charge was only 55*4=220. Retargeted
+  // so a baseline charge's absolute speed matches GUNNER_PROJ_SPEED (260)
+  // exactly instead of just being "some multiple of blitz's own base
+  // speed" - derived as a ratio (not a hardcoded 260/55) so it stays in
+  // sync automatically if either constant changes later. Still expressed
+  // as a multiplier on effSpeed (not a flat 260), so a slowed or
+  // rush-sped-up blitz's charge continues to scale proportionally exactly
+  // like before.
+  const BLITZ_CHARGE_SPEED_MULT = GUNNER_PROJ_SPEED / ENEMY_TYPES.blitz.speed;
   const BLITZ_CHARGE_DAMAGE_MULT = 1.8;
 
   // Status-effect indicator dots (v1.36.0): rather than recoloring an
