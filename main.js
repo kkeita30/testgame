@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.68';
+  const GAME_VERSION = '1.36.69';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -1156,21 +1156,22 @@
   // now coexist, so a search doesn't always mean chasing a single distant
   // point - there may be a closer one worth detouring for instead.
   const HEART_MAX_COUNT = 5;
-  // 0.1->0.2 (v1.36.29), then back to 0.1 (v1.36.32): the 0.2 bump was meant
-  // to offset how hard hearts were to find; the heart compass (v1.36.31)
-  // solved that more directly, so the base heal reverted to 0.1. The extra
-  // headroom moved into the 'heartheal' upgrade (STAT_LIMITS.maxHeartHealFrac)
-  // instead, so investment - not the base rate - is what reaches the old 0.2
-  // level and beyond.
-  const HEART_HEAL_FRAC = 0.1;
+  // 0.1->0.2 (v1.36.29), then back to 0.1 (v1.36.32), then doubled again to
+  // 0.2 (v1.36.69): the 0.2 bump was originally meant to offset how hard
+  // hearts were to find, and got reverted once the heart compass (v1.36.31)
+  // solved that more directly. This second doubling is a separate, later
+  // balance pass unrelated to that original reasoning - hearts simply
+  // needed to be worth more given how (now, also v1.36.69) narrower their
+  // spawn range is.
+  const HEART_HEAL_FRAC = 0.2;
   const HEART_SPAWN_MIN_DIST = 200;
-  // 400->1200 (v1.36.28): the old range never reached past the edge of a
-  // typical viewport, so a heart was always at least partially visible the
-  // moment it appeared. Widening it so a heart can land well outside the
-  // current screen turns "get a heart" into an actual search-and-detour
-  // decision under pressure, not just a walk to a visible marker - and
-  // gives the move-speed upgrade a second reason to matter beyond dodging.
-  const HEART_SPAWN_MAX_DIST = 1200;
+  // 400->1200 (v1.36.28), then narrowed to 900 (v1.36.69): the 1200 range
+  // was originally widened so a heart could land well outside the current
+  // screen, turning "get a heart" into a real search-and-detour decision.
+  // 900 keeps that search-and-detour feel (still comfortably past a typical
+  // viewport) while reining in how far a heart can end up from the player,
+  // as part of the same balance pass that also doubled HEART_HEAL_FRAC.
+  const HEART_SPAWN_MAX_DIST = 900;
   class Heart {
     constructor(x, y) {
       this.x = x; this.y = y;
@@ -1430,9 +1431,12 @@
   // "available: false" from the very start for that character. maxPickupRadius
   // similarly caps the re-added pickup-range upgrade (v1.36.24, see UPGRADE_POOL).
   // maxHeartHealFrac caps the 'heartheal' upgrade (v1.36.32) - lets full
-  // investment reach 25% per heart (up from the 10% base), without an
+  // investment reach 2.5x the current HEART_HEAL_FRAC base, without an
   // unbounded stack turning hearts into a full-heal-on-demand button.
-  const STAT_LIMITS = { minDamage: 3, maxAtkCooldown: 1.4, minAtkCooldown: 0.15, maxRangeMult: 2.0, maxSpeedMult: 1.5, maxPickupRadius: 200, maxHeartHealFrac: 0.25 };
+  // Raised 0.25->0.5 (v1.36.69) in lockstep with HEART_HEAL_FRAC's own
+  // 0.1->0.2 doubling, to keep that same 2.5x headroom ratio rather than
+  // leaving the upgrade with almost no room left to raise it further.
+  const STAT_LIMITS = { minDamage: 3, maxAtkCooldown: 1.4, minAtkCooldown: 0.15, maxRangeMult: 2.0, maxSpeedMult: 1.5, maxPickupRadius: 200, maxHeartHealFrac: 0.5 };
 
   // Each grants a strong upside alongside a real downside, for players who
   // want to commit to a build rather than only stacking safe, one-sided
