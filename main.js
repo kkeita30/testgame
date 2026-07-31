@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.70';
+  const GAME_VERSION = '1.36.71';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -1341,7 +1341,7 @@
       id: 'range',
       title: '射程アップ',
       desc: '射程が上昇する(視界も拡大)',
-      category: 'offense',
+      category: 'utility',
       // rangeMult drives both weaponRange() (standard/charge weapons'
       // auto-aim reach) and viewScale() (camera zoom, see draw()) - the
       // two are deliberately the same multiplier, so a longer reach never
@@ -1789,7 +1789,7 @@
       id: 'chain',
       name: '連鎖',
       maxLevel: 5,
-      category: 'offense',
+      category: 'crowd',
       getLevel: p => p.chainLevel,
       levelUp: p => { p.chainLevel++; },
       introDesc: '着弾時、一定確率で近くの敵にもダメージが連鎖するようになる',
@@ -1809,7 +1809,7 @@
       id: 'pierce',
       name: '貫通',
       maxLevel: 5,
-      category: 'offense',
+      category: 'crowd',
       getLevel: p => p.pierce,
       levelUp: p => { p.pierce++; },
       introDesc: '弾が敵を貫通するようになる',
@@ -1883,7 +1883,7 @@
       id: 'killzone',
       name: 'キルゾーン',
       maxLevel: 5,
-      category: 'offense',
+      category: 'crowd',
       getLevel: p => p.killzoneLevel,
       levelUp: p => { p.killzoneLevel++; },
       introDesc: '着弾地点に一定時間残る領域を発生させ、範囲内に留まる敵に継続的にダメージを与え続けるようになる(連鎖では発生しない)',
@@ -1893,7 +1893,7 @@
       id: 'frenzyfountain',
       name: '狂乱の泉',
       maxLevel: 5,
-      category: 'offense',
+      category: 'crowd',
       getLevel: p => p.frenzyfountainLevel,
       levelUp: p => { p.frenzyfountainLevel++; },
       // Gated behind 狂乱 having at least 1 rank - this zone applies
@@ -1908,7 +1908,7 @@
       id: 'poisoncloud',
       name: 'ポイズンクラウド',
       maxLevel: 5,
-      category: 'offense',
+      category: 'crowd',
       getLevel: p => p.poisoncloudLevel,
       levelUp: p => { p.poisoncloudLevel++; },
       // Same reasoning as 狂乱の泉's gate, mirrored for 猛毒/poison.
@@ -2052,8 +2052,13 @@
   // re-draws the top 3 slots from just that category (excluding whatever
   // was already shown) and always ends with a plain skip as the 4th slot
   // this second time (no reroll-of-a-reroll).
-  const UPGRADE_CATEGORIES = ['offense', 'defense', 'utility'];
-  const CATEGORY_NAMES = { offense: 'オフェンス', defense: 'ディフェンス', utility: 'ユーティリティ' };
+  // 4 categories (v1.36.71, up from 3): offense was disproportionately
+  // large (14 of 24 entries) since it had absorbed everything
+  // damage-related regardless of single-target vs multi-target. Split out
+  // a 'crowd' category (multi-target/AoE tools: hits or affects more than
+  // one enemy per activation) to thin offense back down.
+  const UPGRADE_CATEGORIES = ['offense', 'crowd', 'defense', 'utility'];
+  const CATEGORY_NAMES = { offense: 'オフェンス', crowd: 'クラウド', defense: 'ディフェンス', utility: 'ユーティリティ' };
   const REROLL_OFFER_CHANCE = 0.5;
 
   // ---------- Game controller ----------
