@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.66';
+  const GAME_VERSION = '1.36.67';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -385,12 +385,23 @@
   const INTERCEPT_BASE_DURATION = 0.4;
   function interceptDuration(p) { return p.slowLevel > 0 ? slowDurationForLevel(p.slowLevel) : INTERCEPT_BASE_DURATION; }
   function auxWeaponTargetCount(level) { return level; }
-  // Attack interval (v1.36.64): the aura originally applied its effect
-  // every single frame to anything in range - far stronger than intended
-  // (both aux weapons effectively never let go once something wandered
-  // in). Gated to once every AUX_WEAPON_ATK_INTERVAL seconds instead, like
-  // a real weapon's cooldown, rather than a continuous field.
-  const AUX_WEAPON_ATK_INTERVAL = 1.0;
+  // Attack interval (v1.36.64, shortened v1.36.67): the aura originally
+  // applied its effect every single frame to anything in range - far
+  // stronger than intended (both aux weapons effectively never let go once
+  // something wandered in). Gated to once every AUX_WEAPON_ATK_INTERVAL
+  // seconds instead, like a real weapon's cooldown, rather than a
+  // continuous field. 1.0s (paired with the v1.36.66 wasted-cooldown fix)
+  // ended up feeling considerably weaker than the old always-on version, so
+  // shortened to 0.5s here, alongside widening the aura itself (see
+  // AUX_WEAPON_RADIUS) to compensate from the other direction too.
+  const AUX_WEAPON_ATK_INTERVAL = 0.5;
+  // Aura radius (v1.36.67): widened to 1.5x the original INTERCEPT_RADIUS.
+  // Kept as its own constant rather than just multiplying INTERCEPT_RADIUS
+  // itself, since WIDE_ATTACK_RANGE (the Pulse Wave weapon's range, below)
+  // piggybacks on INTERCEPT_RADIUS's original value - widening that
+  // constant directly would have silently also buffed Pulse Wave's range,
+  // which nobody asked for.
+  const AUX_WEAPON_RADIUS = INTERCEPT_RADIUS * 1.5;
   // Shockwave (衝撃, v1.36.63): the second aux weapon - pushes whatever's
   // caught in the same aura directly away from the player instead of
   // slowing it, once per AUX_WEAPON_ATK_INTERVAL (a discrete knockback per
@@ -399,6 +410,11 @@
   // hit at once, exactly like intercept's own rank only raises its target
   // count rather than the slow's own strength.
   const SHOCKWAVE_PUSH_DISTANCE = 50;
+  // Shockwave's own activation flash color (v1.36.67) - same ChainZap line
+  // effect intercept already uses, just a different color so the two aux
+  // weapons read as visually distinct when either fires (orange for
+  // shockwave's knockback vs intercept's cyan slow).
+  const SHOCKWAVE_ZAP_COLOR = '#ffa53d';
 
   // Wide weapon (v1.36.15): a short-range melee-style sweep that hits every
   // enemy inside a cone in front of the player in one go, instead of firing
@@ -1258,8 +1274,13 @@
   // so the chain effect reads as visibly "arcing" between enemies rather
   // than just being invisible bonus damage.
   class ChainZap {
-    constructor(x1, y1, x2, y2) {
+    // color (v1.36.67): optional, defaults to the original cyan (used by
+    // both chain lightning and intercept) - shockwave passes its own
+    // orange (SHOCKWAVE_ZAP_COLOR) so the two aux weapons' activation
+    // flashes read as visually distinct.
+    constructor(x1, y1, x2, y2, color) {
       this.x1 = x1; this.y1 = y1; this.x2 = x2; this.y2 = y2;
+      this.color = color || '#7ec8ff';
       this.life = 0.15;
       this.maxLife = 0.15;
     }
@@ -3255,7 +3276,7 @@
       // intended ~1/sec in practice.
       if (p.auxWeaponId && p.auxWeaponCooldown <= 0) {
         const nearby = this.enemies
-          .filter(e => dist2(e.x, e.y, p.x, p.y) <= INTERCEPT_RADIUS * INTERCEPT_RADIUS)
+          .filter(e => dist2(e.x, e.y, p.x, p.y) <= AUX_WEAPON_RADIUS * AUX_WEAPON_RADIUS)
           .sort((a, b) => dist2(a.x, a.y, p.x, p.y) - dist2(b.x, b.y, p.x, p.y));
         const maxTargets = auxWeaponTargetCount(p.auxWeaponLevel);
         const targets = nearby.slice(0, maxTargets);
@@ -3282,6 +3303,10 @@
               // (or through) a wall - see the same fix already applied to
               // magnetstorm's pull (v1.36.53) for the identical reasoning.
               this.resolveWallCollision(e);
+              // Activation flash (v1.36.67) - same line effect intercept
+              // already gets, in shockwave's own color so it's clear which
+              // aux weapon just fired.
+              this.chainZaps.push(new ChainZap(p.x, p.y, e.x, e.y, SHOCKWAVE_ZAP_COLOR));
             }
           }
         }
@@ -3917,7 +3942,7 @@
       // chain zaps
       for (const zap of this.chainZaps) {
         ctx.globalAlpha = clamp(zap.life / zap.maxLife, 0, 1);
-        ctx.strokeStyle = '#7ec8ff';
+        ctx.strokeStyle = zap.color;
         ctx.lineWidth = 2;
         ctx.beginPath();
         ctx.moveTo(zap.x1, zap.y1);
