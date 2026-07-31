@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.74';
+  const GAME_VERSION = '1.36.75';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -906,6 +906,13 @@
   // Without this, a player clearing 90%+ every window gets a rush every
   // single window, which stops reading as a special event - see §6-6.
   const RUSH_WINDOW_COOLDOWN = 3;
+  // Earliest wave a rush can trigger on (v1.36.75): previously a rush could
+  // fire as early as wave 3 (rushWindowCooldown starts at 0, so the very
+  // first 50s window was already eligible) - too early for a build that's
+  // barely had 1-2 level-ups to actually weather RUSH_HP_MULT/RUSH_BURST_MULT
+  // enemies. Gates the trigger check in update() so a rush's warning/active
+  // phase can't begin until this wave.
+  const RUSH_MIN_WAVE = 6;
 
   // Player stat values at game start, used as the "no upgrades taken" yardstick
   // for the build-aware difficulty scaling below.
@@ -3354,7 +3361,11 @@
         // keeps the "once every RUSH_WINDOW_COOLDOWN windows" cadence
         // accurate regardless of how that window was otherwise spent.
         if (this.rushWindowCooldown > 0) this.rushWindowCooldown--;
-        if (this.rushState === 'idle' && this.rushWindowCooldown <= 0 && killRate > RUSH_KILL_RATE_THRESHOLD) {
+        // this.wave was just incremented above, so this reads as "the wave
+        // we're now entering" - RUSH_MIN_WAVE (v1.36.75) blocks a rush from
+        // ever starting before then, on top of the existing cooldown/kill-
+        // rate gates.
+        if (this.rushState === 'idle' && this.rushWindowCooldown <= 0 && killRate > RUSH_KILL_RATE_THRESHOLD && this.wave >= RUSH_MIN_WAVE) {
           this.rushState = 'warning';
           this.rushTimer = RUSH_WARNING_DURATION;
           this.rushWindowCooldown = RUSH_WINDOW_COOLDOWN;
