@@ -305,6 +305,14 @@ html, body {
   background: #23232e;
 }
 
+/* Reroll (v1.36.70) shares the skip slot's dashed 4th-card look (it's a
+   genuine alternative to picking one of the top 3, same as skip), but it's
+   an active choice rather than a decline - its title keeps the normal
+   upgrade-card teal instead of skip's grayed-out color. */
+.upgrade-card.skip-card.reroll-card .u-title {
+  color: #7fffd4;
+}
+
 .upgrade-card .u-title {
   font-size: 16px;
   font-weight: 700;

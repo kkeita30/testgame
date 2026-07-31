@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.69';
+  const GAME_VERSION = '1.36.70';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -579,9 +579,17 @@
   // than intended, making very long runs feel like they stalled out on
   // leveling; capping around the LV33-equivalent keeps late-run leveling
   // pace steady instead of grinding to a near-halt.
-  const XP_NEXT_CAP = 1527;
+  // Scaled to 70% of the original curve (v1.36.70) - the upgrade pool has
+  // grown substantially since this curve was tuned (bullet effects, aux
+  // weapons, category rerolls), so a flatter requirement means more
+  // level-ups - and more chances to actually see that larger pool - over
+  // the same run length. Applied as a flat multiplier over the original
+  // formula (including the cap) rather than re-deriving new constants, so
+  // the underlying growth shape is unchanged, just uniformly faster.
+  const XP_REQUIREMENT_MULT = 0.7;
+  const XP_NEXT_CAP = Math.round(1527 * XP_REQUIREMENT_MULT);
   function xpNextForLevel(level) {
-    return Math.min(XP_NEXT_CAP, Math.round(10 + 8 * Math.pow(level, 1.5)));
+    return Math.min(XP_NEXT_CAP, Math.round((10 + 8 * Math.pow(level, 1.5)) * XP_REQUIREMENT_MULT));
   }
 
   // Grace-period invulnerability granted when control returns to the
@@ -1328,11 +1336,12 @@
   // one pick, making repeat picks pure filler either way. Their value was
   // folded into the base stats instead (see Player constructor).
   const UPGRADE_POOL = [
-    { id: 'damage', title: 'ダメージ強化', desc: '攻撃ダメージが大きく上昇する', apply: p => p.damage = Math.round(p.damage * 1.5) },
+    { id: 'damage', title: 'ダメージ強化', desc: '攻撃ダメージが大きく上昇する', category: 'offense', apply: p => p.damage = Math.round(p.damage * 1.5) },
     {
       id: 'range',
       title: '射程アップ',
       desc: '射程が上昇する(視界も拡大)',
+      category: 'offense',
       // rangeMult drives both weaponRange() (standard/charge weapons'
       // auto-aim reach) and viewScale() (camera zoom, see draw()) - the
       // two are deliberately the same multiplier, so a longer reach never
@@ -1346,6 +1355,7 @@
       id: 'movespeed',
       title: '移動速度アップ',
       desc: '移動速度が上昇する',
+      category: 'utility',
       // Re-added (v1.36.24) after being folded into the base speed and
       // removed entirely in v1.35.0 - that removal's actual complaint was
       // the old version being uncapped (too much speed makes precise
@@ -1359,6 +1369,7 @@
       id: 'pickup',
       title: '回収範囲アップ',
       desc: 'XP回収範囲が拡大する',
+      category: 'utility',
       // Re-added (v1.36.24) after v1.35.0 folded it into the base pickup
       // radius and removed it - the old complaint was that a single pick
       // already covered practically every situation, making a 2nd+ pick
@@ -1373,6 +1384,7 @@
       id: 'atkspeed',
       title: '攻撃速度アップ',
       desc: '攻撃間隔が短縮する(攻撃速度アップ)',
+      category: 'offense',
       apply: p => p.atkCooldown = Math.max(STAT_LIMITS.minAtkCooldown, p.atkCooldown * 0.8),
       // Once atkCooldown is already at its floor, this upgrade does nothing
       // at all - stop offering it rather than presenting a dead choice.
@@ -1382,6 +1394,7 @@
       id: 'maxhp',
       title: '最大HPアップ',
       desc: '最大HPが上昇し、その分HPが回復する',
+      category: 'defense',
       // Percentage rather than a flat +25, so it stays meaningfully
       // proportional to whatever the current maxHp already is (e.g. much
       // bigger in absolute terms on Tank's 180 base than a flat number
@@ -1396,6 +1409,7 @@
       id: 'heartheal',
       title: 'ハート回復量増加',
       desc: 'ハートの回復量が増加する',
+      category: 'defense',
       // Multiplicative-with-cap, same shape as range/movespeed/pickup above.
       // Base heal reverted to 10% (v1.36.32, see HEART_HEAL_FRAC) once the
       // heart compass made finding one reliable enough that the extra value
@@ -1446,6 +1460,7 @@
       id: 'trade-damage',
       title: '捨て身の一撃',
       desc: 'ダメージが大幅に上昇する代わりに、攻撃間隔が延びる(発射速度ダウン)',
+      category: 'offense',
       apply: p => {
         p.damage = Math.round(p.damage * 1.8);
         p.atkCooldown = Math.min(STAT_LIMITS.maxAtkCooldown, p.atkCooldown * 1.15);
@@ -1455,6 +1470,7 @@
       id: 'trade-atkspeed',
       title: '速射特化',
       desc: '攻撃間隔が大幅に短縮する(発射速度アップ)代わりに、ダメージが低下する',
+      category: 'offense',
       apply: p => {
         p.atkCooldown = Math.max(STAT_LIMITS.minAtkCooldown, p.atkCooldown / 1.45);
         p.damage = Math.max(STAT_LIMITS.minDamage, Math.round(p.damage * 0.8));
@@ -1470,6 +1486,7 @@
       id: 'trade-maxhp',
       title: '鉄壁の構え',
       desc: '最大HPが大きく上昇する代わりに、ダメージが低下する',
+      category: 'defense',
       apply: p => {
         const added = Math.round(p.maxHp * 0.25);
         p.maxHp += added;
@@ -1762,6 +1779,7 @@
       id: 'explosion',
       name: '爆発',
       maxLevel: 5,
+      category: 'offense',
       getLevel: p => p.explosionLevel,
       levelUp: p => { p.explosionLevel++; },
       introDesc: '着弾時、一定確率で着弾地点の周囲に範囲ダメージを与えるようになる',
@@ -1771,6 +1789,7 @@
       id: 'chain',
       name: '連鎖',
       maxLevel: 5,
+      category: 'offense',
       getLevel: p => p.chainLevel,
       levelUp: p => { p.chainLevel++; },
       introDesc: '着弾時、一定確率で近くの敵にもダメージが連鎖するようになる',
@@ -1780,6 +1799,7 @@
       id: 'slow',
       name: '低速',
       maxLevel: 5,
+      category: 'defense',
       getLevel: p => p.slowLevel,
       levelUp: p => { p.slowLevel++; },
       introDesc: '着弾した敵を一時的に減速させるようになる',
@@ -1789,6 +1809,7 @@
       id: 'pierce',
       name: '貫通',
       maxLevel: 5,
+      category: 'offense',
       getLevel: p => p.pierce,
       levelUp: p => { p.pierce++; },
       introDesc: '弾が敵を貫通するようになる',
@@ -1804,6 +1825,7 @@
       id: 'poison',
       name: '猛毒',
       maxLevel: 5,
+      category: 'offense',
       getLevel: p => p.poisonLevel,
       levelUp: p => { p.poisonLevel++; },
       introDesc: '着弾した敵を毒状態にし、継続的に毒ダメージを与えるようになる。毒状態中に再度攻撃が当たると重ね掛けされ、毒ダメージが増加する(持続時間は延長されない)',
@@ -1813,6 +1835,7 @@
       id: 'frenzy',
       name: '狂乱',
       maxLevel: 5,
+      category: 'offense',
       getLevel: p => p.frenzyLevel,
       levelUp: p => { p.frenzyLevel++; },
       introDesc: '着弾した敵を狂乱状態にし、攻撃力を強化するが、自機だけでなく他の敵も攻撃するようになる(同士討ち)。重ね掛けするほど攻撃力の強化は緩和され、被ダメージは増加する',
@@ -1822,6 +1845,7 @@
       id: 'bombify',
       name: '爆弾化',
       maxLevel: 5,
+      category: 'offense',
       getLevel: p => p.bombifyLevel,
       levelUp: p => { p.bombifyLevel++; },
       // Gated behind 爆発 being fully ranked up (v1.36.7) - on its own,
@@ -1837,6 +1861,7 @@
       id: 'weaken',
       name: '衰弱',
       maxLevel: 5,
+      category: 'defense',
       getLevel: p => p.weakenLevel,
       levelUp: p => { p.weakenLevel++; },
       // Gated behind 低速 being fully ranked up, same idea as bombify/爆発.
@@ -1848,6 +1873,7 @@
       id: 'magnetstorm',
       name: '磁気嵐',
       maxLevel: 5,
+      category: 'utility',
       getLevel: p => p.magnetstormLevel,
       levelUp: p => { p.magnetstormLevel++; },
       introDesc: '着弾地点に一定時間残る渦を発生させ、範囲内の敵を中心に引き寄せて留め置くようになる(連鎖では発生しない)',
@@ -1857,6 +1883,7 @@
       id: 'killzone',
       name: 'キルゾーン',
       maxLevel: 5,
+      category: 'offense',
       getLevel: p => p.killzoneLevel,
       levelUp: p => { p.killzoneLevel++; },
       introDesc: '着弾地点に一定時間残る領域を発生させ、範囲内に留まる敵に継続的にダメージを与え続けるようになる(連鎖では発生しない)',
@@ -1866,6 +1893,7 @@
       id: 'frenzyfountain',
       name: '狂乱の泉',
       maxLevel: 5,
+      category: 'offense',
       getLevel: p => p.frenzyfountainLevel,
       levelUp: p => { p.frenzyfountainLevel++; },
       // Gated behind 狂乱 having at least 1 rank - this zone applies
@@ -1880,6 +1908,7 @@
       id: 'poisoncloud',
       name: 'ポイズンクラウド',
       maxLevel: 5,
+      category: 'offense',
       getLevel: p => p.poisoncloudLevel,
       levelUp: p => { p.poisoncloudLevel++; },
       // Same reasoning as 狂乱の泉's gate, mirrored for 猛毒/poison.
@@ -1927,6 +1956,7 @@
       id: `bullet-${effect.id}`,
       title: level === 0 ? `${effect.name}(New)` : `${effect.name} Lv.${level}→${level + 1}`,
       desc: level === 0 ? effect.introDesc : effect.upgradeDesc(level),
+      category: effect.category,
       apply: p => effect.levelUp(p),
     };
   }
@@ -1942,6 +1972,7 @@
       id: 'intercept',
       name: '迎撃',
       maxLevel: 5,
+      category: 'defense',
       introDesc: '自機のごく至近距離に入った敵を自動で低速化するようになる(低速を取得済みならその減速時間がそのまま適用される)',
       upgradeDesc: level => `迎撃で同時に低速化できる敵の数が増加する`,
     },
@@ -1949,6 +1980,7 @@
       id: 'shockwave',
       name: '衝撃',
       maxLevel: 5,
+      category: 'defense',
       introDesc: '自機のごく至近距離に入った敵を自動で自機から遠ざかる方向へ押し出すようになる',
       upgradeDesc: level => `衝撃で同時に押し出せる敵の数が増加する`,
     },
@@ -1961,6 +1993,7 @@
         id: `aux-${aux.id}`,
         title: `${aux.name} Lv.${level}→${level + 1}`,
         desc: aux.upgradeDesc(level),
+        category: aux.category,
         apply: p => { p.auxWeaponLevel = Math.min(aux.maxLevel, p.auxWeaponLevel + 1); },
       };
     }
@@ -1975,6 +2008,7 @@
       id: `aux-${aux.id}`,
       title: `${aux.name}(New)`,
       desc: replacing ? `${aux.introDesc}(保有中の補助武器と入れ替わる形で獲得し、ランクはそのまま引き継がれる)` : aux.introDesc,
+      category: aux.category,
       apply: p => {
         p.auxWeaponLevel = Math.min(aux.maxLevel, Math.max(1, p.auxWeaponLevel));
         p.auxWeaponId = aux.id;
@@ -2009,6 +2043,18 @@
       p.xp = p.xpNext * p.skipRefundPct;
     },
   };
+
+  // Category-targeted reroll (v1.36.70): every upgrade/tradeoff/bullet
+  // effect/aux weapon above is tagged with one of these three categories
+  // (see each entry's `category` field). REROLL_OFFER_CHANCE of the time,
+  // the level-up screen's 4th slot (normally always SKIP_UPGRADE) instead
+  // offers a reroll restricted to one randomly-chosen category - picking it
+  // re-draws the top 3 slots from just that category (excluding whatever
+  // was already shown) and always ends with a plain skip as the 4th slot
+  // this second time (no reroll-of-a-reroll).
+  const UPGRADE_CATEGORIES = ['offense', 'defense', 'utility'];
+  const CATEGORY_NAMES = { offense: 'オフェンス', defense: 'ディフェンス', utility: 'ユーティリティ' };
+  const REROLL_OFFER_CHANCE = 0.5;
 
   // ---------- Game controller ----------
   class Game {
@@ -2125,9 +2171,13 @@
       this.currentSpawnPattern = pattern;
     }
 
-    onLevelUp() {
-      this.levelingUp = true;
-      const picks = [];
+    // Builds the full eligible-upgrade pool for the player's current state
+    // (same `available` gating as always). Factored out of onLevelUp() so
+    // rerollCategory() (v1.36.70) can build the identical pool for its own
+    // category-restricted draw without duplicating the gating logic - the
+    // only thing that should ever differ between an initial draw and a
+    // reroll is which subset of this same pool gets sampled from.
+    buildUpgradePool() {
       // `available` is the same opt-in gate used by UPGRADE_POOL/
       // TRADEOFF_POOL below - most BULLET_EFFECTS have no such prerequisite,
       // only bombify/weaken do (require explosion/slow maxed respectively -
@@ -2153,12 +2203,21 @@
       const auxCandidates = AUX_WEAPONS
         .filter(aux => this.player.auxWeaponId === aux.id ? this.player.auxWeaponLevel < aux.maxLevel : true)
         .map(aux => auxWeaponUpgrade(aux, this.player));
-      const pool = [
+      return [
         ...UPGRADE_POOL.filter(up => !up.available || up.available(this.player)),
         ...TRADEOFF_POOL.filter(up => !up.available || up.available(this.player)),
         ...notMaxedEffects.map(eff => bulletEffectUpgrade(eff, this.player)),
         ...auxCandidates,
       ];
+    }
+
+    onLevelUp() {
+      this.levelingUp = true;
+      const picks = [];
+      const notMaxedEffects = BULLET_EFFECTS.filter(eff =>
+        eff.getLevel(this.player) < eff.maxLevel && (!eff.available || eff.available(this.player))
+      );
+      const pool = this.buildUpgradePool();
 
       // Slot 1 is an "already invested" priority slot: if the player
       // already has at least one level in some not-yet-maxed bullet effect,
@@ -2209,6 +2268,20 @@
         missStreak[up.id] = offeredIds.has(up.id) ? 0 : (missStreak[up.id] || 0) + 1;
       }
 
+      // allowRerollOffer=true: this is the initial draw, so the 4th slot
+      // may become a category reroll instead of a plain skip (v1.36.70,
+      // see renderUpgradeCards).
+      this.renderUpgradeCards(picks, true);
+    }
+
+    // Renders the level-up screen: `picks` (always 3 real upgrade cards)
+    // plus a 4th slot that's either a plain skip or, when allowRerollOffer
+    // is true, a REROLL_OFFER_CHANCE roll for a category-targeted reroll
+    // card instead (v1.36.70). allowRerollOffer is false when called from
+    // rerollCategory() itself - a reroll's own result screen always ends
+    // with a plain skip, never a second reroll offer (per spec: "4つ目の
+    // 選択肢はスキップになる").
+    renderUpgradeCards(picks, allowRerollOffer) {
       upgradeChoicesEl.innerHTML = '';
       for (const up of picks) {
         const card = document.createElement('div');
@@ -2217,12 +2290,60 @@
         card.addEventListener('click', () => this.pickUpgrade(up));
         upgradeChoicesEl.appendChild(card);
       }
-      const skipCard = document.createElement('div');
-      skipCard.className = 'upgrade-card skip-card';
-      skipCard.innerHTML = `<div class="u-title">${SKIP_UPGRADE.title}</div><div class="u-desc">${SKIP_UPGRADE.desc(this.player)}</div>`;
-      skipCard.addEventListener('click', () => this.pickUpgrade(SKIP_UPGRADE));
-      upgradeChoicesEl.appendChild(skipCard);
+
+      const fourthCard = document.createElement('div');
+      fourthCard.className = 'upgrade-card skip-card';
+      const offerReroll = allowRerollOffer && Math.random() < REROLL_OFFER_CHANCE;
+      if (offerReroll) {
+        const category = UPGRADE_CATEGORIES[randInt(0, UPGRADE_CATEGORIES.length - 1)];
+        // Captured now, while `picks` still refers to what's actually on
+        // screen - these are exactly the 3 ids the reroll must not draw
+        // again (per spec: "リロール前に出現していたアップグレードは
+        // 再抽選されない").
+        const excludedIds = new Set(picks.map(up => up.id));
+        fourthCard.classList.add('reroll-card');
+        fourthCard.innerHTML = `<div class="u-title">リロール:${CATEGORY_NAMES[category]}</div><div class="u-desc">上3つの選択肢を「${CATEGORY_NAMES[category]}」系のアップグレードに絞って再抽選する(表示中の3つは再抽選の対象外。この次は必ずスキップになる)</div>`;
+        fourthCard.addEventListener('click', () => this.rerollCategory(category, excludedIds));
+      } else {
+        fourthCard.innerHTML = `<div class="u-title">${SKIP_UPGRADE.title}</div><div class="u-desc">${SKIP_UPGRADE.desc(this.player)}</div>`;
+        fourthCard.addEventListener('click', () => this.pickUpgrade(SKIP_UPGRADE));
+      }
+      upgradeChoicesEl.appendChild(fourthCard);
       levelupScreen.classList.remove('hidden');
+    }
+
+    // Category-targeted reroll (v1.36.70): draws 3 fresh cards restricted to
+    // `category`, excluding whatever was already shown (excludedIds). Reuses
+    // the same weighted draw (pity + bullet-effect discount) as a normal
+    // level-up's slots 2-3 - the only difference is the pool is pre-filtered
+    // to one category first. If that category doesn't have 3 eligible
+    // entries left on its own (a real possibility for the currently-thin
+    // utility category), backfills the shortfall from the full pool rather
+    // than ever showing fewer than 3 cards - still excluding excludedIds and
+    // whatever the category draw already picked.
+    rerollCategory(category, excludedIds) {
+      const pool = this.buildUpgradePool().filter(up => !excludedIds.has(up.id));
+      const missStreak = this.player.upgradeMissStreak;
+      const categoryPool = pool.filter(up => up.category === category);
+      const picks = [];
+      for (let i = 0; i < 3 && categoryPool.length; i++) {
+        const idx = pickWeightedIndex(categoryPool, missStreak);
+        picks.push(categoryPool.splice(idx, 1)[0]);
+      }
+      if (picks.length < 3) {
+        const pickedIds = new Set(picks.map(up => up.id));
+        const backfillPool = pool.filter(up => !pickedIds.has(up.id));
+        for (let i = picks.length; i < 3 && backfillPool.length; i++) {
+          const idx = pickWeightedIndex(backfillPool, missStreak);
+          picks.push(backfillPool.splice(idx, 1)[0]);
+        }
+      }
+      // Deliberately does NOT touch upgradeMissStreak here - pity tracks
+      // "eligible but not offered across independent level-ups", and a
+      // reroll is a continuation of the same level-up event the pity
+      // bookkeeping already accounted for when onLevelUp() first ran, not
+      // a second independent one.
+      this.renderUpgradeCards(picks, false);
     }
 
     pickUpgrade(up) {
