@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.77';
+  const GAME_VERSION = '1.36.78';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -478,6 +478,16 @@
   const CHARGE_DAMAGE_MULT_PER_STAGE = 0.75;
   function chargeDamageMultForStage(stage) { return CHARGE_DAMAGE_MULT + CHARGE_DAMAGE_MULT_PER_STAGE * (stage - 1); }
 
+  // Target lock interval (v1.36.78, see Game.updateChargeBeam): replaces
+  // the v1.36.77 forward-strip targeting experiment, which was reverted
+  // after not actually feeling better in practice. Targeting itself is
+  // back to the original "nearest enemy anywhere in range" rule - this
+  // constant instead rate-limits how often that search is allowed to
+  // change which enemy is locked on, so a multi-second hold doesn't keep
+  // re-chasing whatever's nearest frame to frame and flip to a totally
+  // different enemy right before release.
+  const CHARGE_TARGET_LOCK_INTERVAL = 1.0;
+
   // Rapid Fire (v1.36.45, rebalanced v1.36.46): fires shots along the
   // player's current movement direction (Player.moveDirAngle, updated in
   // update()'s movement block whenever actually moving, and otherwise just
@@ -648,6 +658,11 @@
       this.chargeTime = 0;
       this.chargeMaxStages = 1;
       this.chargeWasHeld = false;
+      // Target lock (v1.36.78, see updateChargeBeam/CHARGE_TARGET_LOCK_INTERVAL)
+      // - the enemy currently locked onto during a hold, and how much
+      // longer that lock has left before it's allowed to switch.
+      this.chargeTarget = null;
+      this.chargeTargetLockTimer = 0;
       // Rapid Fire weapon only (see WEAPONS/fireRapidFire) - unused by any
       // other weapon, harmless default otherwise.
       this.rapidfireBarrels = 1;
@@ -2757,6 +2772,36 @@
       const p = this.player;
       const holding = isMoveInputHeld();
       if (holding) {
+        // Target lock (v1.36.78): replaces the v1.36.77 forward-strip
+        // experiment (reverted - it didn't actually feel better in
+        // practice), while still fixing the original complaint a
+        // different way. Targeting itself is back to plain "nearest enemy
+        // anywhere in range" (exactly as it was before v1.36.77) - what's
+        // new is that this search only actually re-runs (and is only
+        // allowed to switch to a different enemy) once every
+        // CHARGE_TARGET_LOCK_INTERVAL seconds, or immediately if the
+        // currently-locked target died/left play in the meantime. A
+        // multi-second hold no longer re-aims at whatever's nearest every
+        // single frame, so it can't flip to a completely different enemy
+        // the instant before release just because something briefly got
+        // closer.
+        p.chargeTargetLockTimer -= dt;
+        const stillAlive = p.chargeTarget && this.enemies.includes(p.chargeTarget);
+        if (!stillAlive || p.chargeTargetLockTimer <= 0) {
+          const range2 = weaponRange(p) ** 2;
+          let nearest = null, nearestD2 = range2;
+          for (const e of this.enemies) {
+            const d2 = dist2(e.x, e.y, p.x, p.y);
+            if (d2 <= nearestD2) { nearest = e; nearestD2 = d2; }
+          }
+          p.chargeTarget = nearest;
+          // Only start the lock once something was actually found - with
+          // nothing in range yet, retry every frame instead of sitting out
+          // a full second "locked onto nothing" once an enemy does wander
+          // into range.
+          if (nearest) p.chargeTargetLockTimer = CHARGE_TARGET_LOCK_INTERVAL;
+        }
+
         const chargeRate = ATK_COOLDOWN_BASE / p.atkCooldown;
         const chargeTimeMax = p.chargeMaxStages * CHARGE_TIME_PER_STAGE;
         p.chargeTime = Math.min(chargeTimeMax, p.chargeTime + dt * chargeRate);
@@ -2764,56 +2809,38 @@
       if (p.chargeWasHeld && !holding) {
         if (p.chargeTime >= CHARGE_TIME_PER_STAGE) this.fireChargeBeam();
         else p.chargeTime = 0;
+        // Fresh lock the next time a hold begins, regardless of whether
+        // this release actually fired.
+        p.chargeTarget = null;
+        p.chargeTargetLockTimer = 0;
       }
       p.chargeWasHeld = holding;
     }
 
     // Fires the charge beam on release: an instant, infinite-pierce hit
-    // along a straight line toward a target chosen by the same
-    // forward-strip auto-aim as Rapid Fire (fireRapidFire, v1.36.77 -
-    // previously the single nearest enemy anywhere within range). During a
-    // multi-second charge hold, "nearest enemy in any direction" could
-    // flip to a completely different enemy - possibly behind or off to the
-    // side - the instant before release, firing somewhere the player never
-    // intended. Aiming at whatever's nearest inside a narrow rectangle
-    // extending along moveDirAngle (which only changes via deliberate drag
-    // input, not enemy movement) keeps the release direction tracking what
-    // the player was actually pointing at. Unlike Rapid Fire, there's no
-    // "fire straight ahead anyway" fallback when nothing's in the strip -
-    // re-adding an all-around nearest-enemy fallback here would just
-    // reintroduce the same instability through a back door, and this
-    // weapon already treats "nothing to hit at release" as a genuinely
-    // wasted charge (see below), so it stays that way rather than firing
-    // at nothing in particular. Uses the same rotated-local-frame box test
-    // as the wide weapon's sweep (fireWideSweep) but reaching out to the
-    // normal long weaponRange() instead of a short melee range, and in one
-    // direction only. Both the beam's width (chargeHalfWidthForStage) and
-    // its damage (chargeDamageMultForStage) scale together with whatever
-    // stage was reached at release, so a longer hold buys wider coverage
-    // AND a harder hit rather than just one or the other. chargeTime
-    // always resets to 0 on release, even if no target was in range to
-    // actually hit - committing to a release at the wrong moment genuinely
-    // wastes the charge.
+    // along a straight line toward whatever updateChargeBeam() last locked
+    // onto (Player.chargeTarget, see its target-lock comment above) - not
+    // re-searched here, so this always fires at exactly what the lock (and
+    // the aim preview showing it) said it would. Uses the same
+    // rotated-local-frame box test as the wide weapon's sweep
+    // (fireWideSweep) but reaching out to the normal long weaponRange()
+    // instead of a short melee range, and in one direction only. Both the
+    // beam's width (chargeHalfWidthForStage) and its damage
+    // (chargeDamageMultForStage) scale together with whatever stage was
+    // reached at release, so a longer hold buys wider coverage AND a
+    // harder hit rather than just one or the other. chargeTime always
+    // resets to 0 on release, even if no target was in range to actually
+    // hit - committing to a release at the wrong moment genuinely wastes
+    // the charge.
     fireChargeBeam() {
       const p = this.player;
       const stage = Math.min(p.chargeMaxStages, Math.floor(p.chargeTime / CHARGE_TIME_PER_STAGE));
       p.chargeTime = 0;
 
-      const range = weaponRange(p);
-      const fwdX = Math.cos(p.moveDirAngle), fwdY = Math.sin(p.moveDirAngle);
-      const latX = -fwdY, latY = fwdX;
-      let target = null, targetD2 = Infinity;
-      for (const e of this.enemies) {
-        const dx = e.x - p.x, dy = e.y - p.y;
-        const fwd = dx * fwdX + dy * fwdY;
-        if (fwd < 0 || fwd > range) continue;
-        const lat = dx * latX + dy * latY;
-        if (Math.abs(lat) > RAPIDFIRE_AUTOAIM_HALF_WIDTH) continue;
-        const d2 = dx * dx + dy * dy;
-        if (d2 < targetD2) { target = e; targetD2 = d2; }
-      }
+      const target = p.chargeTarget;
       if (!target) return;
 
+      const range = weaponRange(p);
       const aimAngle = Math.atan2(target.y - p.y, target.x - p.x);
       const halfWidth = chargeHalfWidthForStage(stage);
       const cosA = Math.cos(-aimAngle), sinA = Math.sin(-aimAngle);
@@ -4299,26 +4326,19 @@
         ctx.stroke();
         ctx.restore();
 
-        // Aim preview: which enemy fireChargeBeam would actually target if
-        // released this instant, and the exact hitbox (direction + current
-        // stage's width) that would result - re-derived fresh every frame
-        // with the same forward-strip auto-aim search fireChargeBeam
-        // itself uses (v1.36.77), so it's never out of sync with where a
-        // real release would go. Solves "which direction will it fire"
-        // being otherwise invisible until the shot has already committed.
+        // Aim preview: whichever enemy is currently locked on
+        // (Player.chargeTarget, see updateChargeBeam's target-lock
+        // comment) and the exact hitbox (direction + current stage's
+        // width) that a release would produce right now. Reads the same
+        // locked reference fireChargeBeam itself fires at, so the preview
+        // is never out of sync with where a real release would go - and,
+        // since the lock only actually changes once every
+        // CHARGE_TARGET_LOCK_INTERVAL seconds, the preview stays stable
+        // through most of a hold instead of jumping every frame. Solves
+        // "which direction will it fire" being otherwise invisible until
+        // the shot has already committed.
         const range = weaponRange(p);
-        const fwdX = Math.cos(p.moveDirAngle), fwdY = Math.sin(p.moveDirAngle);
-        const latX = -fwdY, latY = fwdX;
-        let previewTarget = null, previewD2 = Infinity;
-        for (const e of this.enemies) {
-          const dx = e.x - p.x, dy = e.y - p.y;
-          const fwd = dx * fwdX + dy * fwdY;
-          if (fwd < 0 || fwd > range) continue;
-          const lat = dx * latX + dy * latY;
-          if (Math.abs(lat) > RAPIDFIRE_AUTOAIM_HALF_WIDTH) continue;
-          const d2 = dx * dx + dy * dy;
-          if (d2 < previewD2) { previewTarget = e; previewD2 = d2; }
-        }
+        const previewTarget = p.chargeTarget;
         if (previewTarget) {
           const aimAngle = Math.atan2(previewTarget.y - p.y, previewTarget.x - p.x);
           const stage = Math.min(p.chargeMaxStages, Math.floor(p.chargeTime / CHARGE_TIME_PER_STAGE));
