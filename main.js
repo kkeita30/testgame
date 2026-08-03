@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.76';
+  const GAME_VERSION = '1.36.77';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -2769,31 +2769,52 @@
     }
 
     // Fires the charge beam on release: an instant, infinite-pierce hit
-    // along a straight line toward the nearest in-range enemy, using the
-    // same rotated-local-frame box test as the wide weapon's sweep
-    // (fireWideSweep) but reaching out to the normal long weaponRange()
-    // instead of a short melee range, and in one direction only. Both the
-    // beam's width (chargeHalfWidthForStage) and its damage
-    // (chargeDamageMultForStage) scale together with whatever stage was
-    // reached at release, so a longer hold buys wider coverage AND a
-    // harder hit rather than just one or the other. chargeTime always
-    // resets to 0 on release, even if no target was in range to actually
-    // hit - committing to a release at the wrong moment genuinely wastes
-    // the charge.
+    // along a straight line toward a target chosen by the same
+    // forward-strip auto-aim as Rapid Fire (fireRapidFire, v1.36.77 -
+    // previously the single nearest enemy anywhere within range). During a
+    // multi-second charge hold, "nearest enemy in any direction" could
+    // flip to a completely different enemy - possibly behind or off to the
+    // side - the instant before release, firing somewhere the player never
+    // intended. Aiming at whatever's nearest inside a narrow rectangle
+    // extending along moveDirAngle (which only changes via deliberate drag
+    // input, not enemy movement) keeps the release direction tracking what
+    // the player was actually pointing at. Unlike Rapid Fire, there's no
+    // "fire straight ahead anyway" fallback when nothing's in the strip -
+    // re-adding an all-around nearest-enemy fallback here would just
+    // reintroduce the same instability through a back door, and this
+    // weapon already treats "nothing to hit at release" as a genuinely
+    // wasted charge (see below), so it stays that way rather than firing
+    // at nothing in particular. Uses the same rotated-local-frame box test
+    // as the wide weapon's sweep (fireWideSweep) but reaching out to the
+    // normal long weaponRange() instead of a short melee range, and in one
+    // direction only. Both the beam's width (chargeHalfWidthForStage) and
+    // its damage (chargeDamageMultForStage) scale together with whatever
+    // stage was reached at release, so a longer hold buys wider coverage
+    // AND a harder hit rather than just one or the other. chargeTime
+    // always resets to 0 on release, even if no target was in range to
+    // actually hit - committing to a release at the wrong moment genuinely
+    // wastes the charge.
     fireChargeBeam() {
       const p = this.player;
       const stage = Math.min(p.chargeMaxStages, Math.floor(p.chargeTime / CHARGE_TIME_PER_STAGE));
       p.chargeTime = 0;
 
       const range = weaponRange(p);
-      let nearest = null, nearestD2 = range * range;
+      const fwdX = Math.cos(p.moveDirAngle), fwdY = Math.sin(p.moveDirAngle);
+      const latX = -fwdY, latY = fwdX;
+      let target = null, targetD2 = Infinity;
       for (const e of this.enemies) {
-        const d2 = dist2(e.x, e.y, p.x, p.y);
-        if (d2 <= nearestD2) { nearest = e; nearestD2 = d2; }
+        const dx = e.x - p.x, dy = e.y - p.y;
+        const fwd = dx * fwdX + dy * fwdY;
+        if (fwd < 0 || fwd > range) continue;
+        const lat = dx * latX + dy * latY;
+        if (Math.abs(lat) > RAPIDFIRE_AUTOAIM_HALF_WIDTH) continue;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < targetD2) { target = e; targetD2 = d2; }
       }
-      if (!nearest) return;
+      if (!target) return;
 
-      const aimAngle = Math.atan2(nearest.y - p.y, nearest.x - p.x);
+      const aimAngle = Math.atan2(target.y - p.y, target.x - p.x);
       const halfWidth = chargeHalfWidthForStage(stage);
       const cosA = Math.cos(-aimAngle), sinA = Math.sin(-aimAngle);
 
@@ -4281,15 +4302,22 @@
         // Aim preview: which enemy fireChargeBeam would actually target if
         // released this instant, and the exact hitbox (direction + current
         // stage's width) that would result - re-derived fresh every frame
-        // with the same nearest-in-range-enemy search fireChargeBeam
-        // itself uses, so it's never out of sync with where a real release
-        // would go. Solves "which direction will it fire" being otherwise
-        // invisible until the shot has already committed.
+        // with the same forward-strip auto-aim search fireChargeBeam
+        // itself uses (v1.36.77), so it's never out of sync with where a
+        // real release would go. Solves "which direction will it fire"
+        // being otherwise invisible until the shot has already committed.
         const range = weaponRange(p);
-        let previewTarget = null, previewD2 = range * range;
+        const fwdX = Math.cos(p.moveDirAngle), fwdY = Math.sin(p.moveDirAngle);
+        const latX = -fwdY, latY = fwdX;
+        let previewTarget = null, previewD2 = Infinity;
         for (const e of this.enemies) {
-          const d2 = dist2(e.x, e.y, p.x, p.y);
-          if (d2 <= previewD2) { previewTarget = e; previewD2 = d2; }
+          const dx = e.x - p.x, dy = e.y - p.y;
+          const fwd = dx * fwdX + dy * fwdY;
+          if (fwd < 0 || fwd > range) continue;
+          const lat = dx * latX + dy * latY;
+          if (Math.abs(lat) > RAPIDFIRE_AUTOAIM_HALF_WIDTH) continue;
+          const d2 = dx * dx + dy * dy;
+          if (d2 < previewD2) { previewTarget = e; previewD2 = d2; }
         }
         if (previewTarget) {
           const aimAngle = Math.atan2(previewTarget.y - p.y, previewTarget.x - p.x);
