@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.78';
+  const GAME_VERSION = '1.36.79';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -415,6 +415,14 @@
   // weapons read as visually distinct when either fires (orange for
   // shockwave's knockback vs intercept's cyan slow).
   const SHOCKWAVE_ZAP_COLOR = '#ffa53d';
+  // Strike (打撃, v1.36.79): the third aux weapon - a direct damage hit
+  // instead of a status effect/knockback, once per AUX_WEAPON_ATK_INTERVAL
+  // like the other two. Damage formula is the old tank passive's reflect
+  // math verbatim (REFLECT_DMG_PCT_OF_ATTACK/OF_MAXHP) - see the dispatch
+  // in update(). Zap color matches the "offense" category's red (same red
+  // used for offense-category upgrade cards, §4-5-3) rather than reusing
+  // intercept/shockwave's cyan/orange, both already spoken for.
+  const STRIKE_ZAP_COLOR = '#ff5a5a';
 
   // Wide weapon (v1.36.15): a short-range melee-style sweep that hits every
   // enemy inside a cone in front of the player in one go, instead of firing
@@ -2062,6 +2070,21 @@
       introDesc: '自機のごく至近距離に入った敵を自動で自機から遠ざかる方向へ押し出すようになる',
       upgradeDesc: level => `衝撃で同時に押し出せる敵の数が増加する`,
     },
+    {
+      // Damage formula reuses REFLECT_DMG_PCT_OF_ATTACK/OF_MAXHP verbatim -
+      // the same numbers the old tank passive (REFLECT_PASSIVE, now dead
+      // code kept around for exactly this kind of reuse - see its own
+      // comment) used for its reflected counter-hit. This aux weapon fires
+      // it proactively on the shared aux-weapon interval instead of
+      // reactively on taking damage, but the "how hard does it hit" math
+      // is identical.
+      id: 'strike',
+      name: '打撃',
+      maxLevel: 5,
+      category: 'offense',
+      introDesc: '自機のごく至近距離に入った敵に自動で攻撃を行うようになる(威力は自機の最大HP・攻撃力に応じて上昇する)',
+      upgradeDesc: level => `打撃で同時に攻撃できる敵の数が増加する`,
+    },
   ];
 
   function auxWeaponUpgrade(aux, player) {
@@ -3580,6 +3603,20 @@
               // already gets, in shockwave's own color so it's clear which
               // aux weapon just fired.
               this.chainZaps.push(new ChainZap(p.x, p.y, e.x, e.y, SHOCKWAVE_ZAP_COLOR));
+            }
+          } else if (p.auxWeaponId === 'strike') {
+            // Direct damage instead of a status effect/knockback - same
+            // formula as the old tank passive's reflect hit
+            // (REFLECT_DMG_PCT_OF_ATTACK/OF_MAXHP), just fired proactively
+            // on the shared aux-weapon interval instead of reactively on
+            // taking damage. Routed through damageEnemy() like every other
+            // damage source (§6-2's difficulty-scaling multiplier, etc.)
+            // rather than decrementing hp directly.
+            const dmg = Math.round(p.damage * REFLECT_DMG_PCT_OF_ATTACK + p.maxHp * REFLECT_DMG_PCT_OF_MAXHP);
+            for (const e of targets) {
+              this.damageEnemy(e, dmg);
+              e.hitFlash = 0.12;
+              this.chainZaps.push(new ChainZap(p.x, p.y, e.x, e.y, STRIKE_ZAP_COLOR));
             }
           }
         }
