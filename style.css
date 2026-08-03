@@ -305,18 +305,43 @@ html, body {
   background: #23232e;
 }
 
-/* Reroll (v1.36.70) shares the skip slot's dashed 4th-card look (it's a
-   genuine alternative to picking one of the top 3, same as skip), but it's
-   an active choice rather than a decline - its title keeps the normal
-   upgrade-card teal instead of skip's grayed-out color. */
-.upgrade-card.skip-card.reroll-card .u-title {
-  color: #7fffd4;
-}
-
 .upgrade-card .u-title {
   font-size: 16px;
   font-weight: 700;
   color: #7fffd4;
+}
+
+/* Category color-coding (v1.36.76, see §4-5-2/UPGRADE_CATEGORIES): a left
+   border accent + matching title color per category, so a card's category
+   (offense/crowd/defense/utility) reads at a glance. Placed after the
+   plainer rules above/below so these longhand overrides win regardless of
+   selector specificity quirks. Reroll cards (which also carry
+   .skip-card) get the same treatment - this doubles as the "active choice,
+   not a decline" signal that used to be a separate hardcoded teal
+   override, now superseded by whichever category color applies. */
+.upgrade-card.cat-offense { border-left: 4px solid #ff5a5a; }
+.upgrade-card.cat-offense .u-title { color: #ff5a5a; }
+.upgrade-card.cat-crowd { border-left: 4px solid #c084fc; }
+.upgrade-card.cat-crowd .u-title { color: #c084fc; }
+.upgrade-card.cat-defense { border-left: 4px solid #4ade80; }
+.upgrade-card.cat-defense .u-title { color: #4ade80; }
+.upgrade-card.cat-utility { border-left: 4px solid #60a5fa; }
+.upgrade-card.cat-utility .u-title { color: #60a5fa; }
+
+/* Aux weapon badge (v1.36.76): small pill marking a card as one of the two
+   mutually-exclusive aux weapons (迎撃/衝撃, §4-3-3), distinguishing it
+   from an otherwise near-identical-looking bullet effect card. */
+.aux-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: #3a3a4a;
+  color: #ddd;
+  margin-right: 6px;
+  vertical-align: middle;
+  letter-spacing: 0.5px;
 }
 
 .upgrade-card .u-desc {

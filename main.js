@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.75';
+  const GAME_VERSION = '1.36.76';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -2353,8 +2353,16 @@
       upgradeChoicesEl.innerHTML = '';
       for (const up of picks) {
         const card = document.createElement('div');
-        card.className = 'upgrade-card';
-        card.innerHTML = `<div class="u-title">${up.title}</div><div class="u-desc">${up.desc}</div>`;
+        // Category color-coding (v1.36.76): a `cat-<category>` class per
+        // card (offense/crowd/defense/utility, see UPGRADE_CATEGORIES)
+        // drives a left border accent + matching title color in CSS, so
+        // a card's category reads at a glance without opening §4-5-2's
+        // documentation. Aux weapon cards (id prefixed `aux-`) additionally
+        // get a small "補助武器" badge in the title, since those upgrades
+        // otherwise look identical to a bullet effect card.
+        card.className = `upgrade-card cat-${up.category}`;
+        const auxBadge = up.id.startsWith('aux-') ? '<span class="aux-badge">補助武器</span>' : '';
+        card.innerHTML = `<div class="u-title">${auxBadge}${up.title}</div><div class="u-desc">${up.desc}</div>`;
         card.addEventListener('click', () => this.pickUpgrade(up));
         upgradeChoicesEl.appendChild(card);
       }
@@ -2369,7 +2377,12 @@
         // again (per spec: "リロール前に出現していたアップグレードは
         // 再抽選されない").
         const excludedIds = new Set(picks.map(up => up.id));
-        fourthCard.classList.add('reroll-card');
+        // Tinted the same as the category it's about to reroll into (v1.36.76)
+        // - reinforces which color means what, and doubles as the "this is
+        // an active choice, not a decline" signal that used to be a
+        // hardcoded teal override (see the removed reroll-card title rule
+        // in style.css).
+        fourthCard.classList.add('reroll-card', `cat-${category}`);
         fourthCard.innerHTML = `<div class="u-title">リロール:${CATEGORY_NAMES[category]}</div><div class="u-desc">上3つの選択肢を「${CATEGORY_NAMES[category]}」系のアップグレードに絞って再抽選する(表示中の3つは再抽選の対象外。この次は必ずスキップになる)</div>`;
         fourthCard.addEventListener('click', () => this.rerollCategory(category, excludedIds));
       } else {
