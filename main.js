@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.79';
+  const GAME_VERSION = '1.36.80';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -1629,6 +1629,15 @@
   const GUNNER_PROJ_SPEED = 260;
   const GUNNER_PROJ_RADIUS = 6;
   const ENEMY_PROJ_LIFE = 4; // seconds before an unfired-into-anything shot just despawns
+  // Per-type alive cap (v1.36.80): a spawn pattern that happens to be
+  // gunner-heavy (or a single-type "all gunner" wave, see rollSpawnPattern)
+  // could let dozens pile up simultaneously, each independently shooting
+  // from range - a swarm of ranged attackers spikes difficulty far harder
+  // than the same headcount of any melee type, since there's no single
+  // position that dodges all of their fire at once. Capped independently
+  // of (and well under) MAX_ALIVE_ENEMIES, which still applies on top for
+  // every type combined.
+  const GUNNER_MAX_ALIVE = 10;
 
   // Blitz (v1.36.60): approaches to BLITZ_STOP_DIST_FRAC of the engagement
   // radius (closer than the gunner's hold distance - it wants to actually
@@ -2507,6 +2516,17 @@
       // implicitly, relative frequency (fewer active types means each one
       // individually spawns more often).
       let type = forceType || this.currentSpawnPattern[randInt(0, this.currentSpawnPattern.length - 1)];
+
+      // Gunner cap (v1.36.80, see GUNNER_MAX_ALIVE): this spawn attempt
+      // simply produces nothing if the roll landed on gunner and the cap's
+      // already reached - the spawn timer that called this still ticks
+      // normally either way (spawnEnemy() doesn't own that pacing), so
+      // this only ever suppresses gunners specifically, never slows down
+      // spawning overall. Exempt forced spawns (forceType) for the same
+      // reason MAX_ALIVE_ENEMIES exempts them below - not currently
+      // reachable for gunner in practice, but kept consistent with that
+      // existing exemption's own reasoning.
+      if (!forceType && type === 'gunner' && this.enemies.filter(e => e.type === 'gunner').length >= GUNNER_MAX_ALIVE) return;
 
       // Stepped time-based baseline, plus a build-aware top-up: enemy HP
       // tracks how much dps the player has stacked (damage x attack speed)
