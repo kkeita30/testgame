@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.80';
+  const GAME_VERSION = '1.36.81';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -893,6 +893,17 @@
   // since it never participates in either (see Game.rollSpawnPattern).
   const NON_BOSS_ENEMY_TYPES = Object.keys(ENEMY_TYPES).filter(t => t !== 'boss');
 
+  // Category classification (v1.36.81): every non-boss type is either
+  // "射撃系"/ranged (holds position and shoots from range - currently just
+  // gunner) or "通常系"/normal (approaches and deals contact damage -
+  // everything else). Derived once from each type's own `ranged` flag
+  // rather than a second hardcoded list, so a future new ranged type only
+  // needs `ranged: true` on its ENEMY_TYPES entry to automatically
+  // participate in both RANGED_MAX_ALIVE (below) and rollSpawnPattern's
+  // no-pure-ranged-pattern guarantee, without touching either of those.
+  const RANGED_ENEMY_TYPES = NON_BOSS_ENEMY_TYPES.filter(t => ENEMY_TYPES[t].ranged);
+  const NORMAL_ENEMY_TYPES = NON_BOSS_ENEMY_TYPES.filter(t => !ENEMY_TYPES[t].ranged);
+
   // Bosses don't roll into the normal per-spawn type dice - they arrive on
   // their own clock once difficulty is high enough, as a rare, singular
   // event rather than blending into the regular swarm composition.
@@ -1629,15 +1640,18 @@
   const GUNNER_PROJ_SPEED = 260;
   const GUNNER_PROJ_RADIUS = 6;
   const ENEMY_PROJ_LIFE = 4; // seconds before an unfired-into-anything shot just despawns
-  // Per-type alive cap (v1.36.80): a spawn pattern that happens to be
-  // gunner-heavy (or a single-type "all gunner" wave, see rollSpawnPattern)
+  // Combined alive cap for the whole "射撃系"/ranged category (v1.36.80,
+  // generalized from a gunner-only cap in v1.36.81 - see
+  // RANGED_ENEMY_TYPES): a spawn pattern that happens to be ranged-heavy
   // could let dozens pile up simultaneously, each independently shooting
   // from range - a swarm of ranged attackers spikes difficulty far harder
   // than the same headcount of any melee type, since there's no single
-  // position that dodges all of their fire at once. Capped independently
-  // of (and well under) MAX_ALIVE_ENEMIES, which still applies on top for
-  // every type combined.
-  const GUNNER_MAX_ALIVE = 10;
+  // position that dodges all of their fire at once. Applies to the total
+  // count across every ranged type combined (currently just gunner, but a
+  // future second ranged type would share this same pool rather than each
+  // getting its own separate 10). Capped independently of (and well under)
+  // MAX_ALIVE_ENEMIES, which still applies on top for every type combined.
+  const RANGED_MAX_ALIVE = 10;
 
   // Blitz (v1.36.60): approaches to BLITZ_STOP_DIST_FRAC of the engagement
   // radius (closer than the gunner's hold distance - it wants to actually
@@ -2274,13 +2288,27 @@
     // track) - a run might see the same size or type set again next wave
     // purely by chance, which is fine given the ask was for random
     // variety, not a strict round-robin sequence.
+    //
+    // No pure-ranged pattern (v1.36.81): a pattern made up entirely of
+    // 射撃系/ranged types (see RANGED_ENEMY_TYPES) would let the ranged
+    // category's own RANGED_MAX_ALIVE cap fill up on its own, over and
+    // over, every single spawn - the exact all-barrage scenario the cap
+    // exists to prevent in the first place. Guaranteed by drawing one
+    // 通常系/normal type first (whenever one is unlocked - grunt's
+    // minDifficulty=1 means one always is, from the very first wave
+    // onward) before filling the rest of the pattern from everything else
+    // unlocked, ranged included.
     rollSpawnPattern() {
       const unlocked = NON_BOSS_ENEMY_TYPES.filter(t => this.difficulty >= ENEMY_TYPES[t].minDifficulty);
       const sizeOptions = [1, 2, 3, unlocked.length];
       const size = Math.min(sizeOptions[randInt(0, sizeOptions.length - 1)], unlocked.length);
-      const pool = unlocked.slice();
+      const normalUnlocked = unlocked.filter(t => NORMAL_ENEMY_TYPES.includes(t));
       const pattern = [];
-      for (let i = 0; i < size; i++) {
+      if (normalUnlocked.length > 0) {
+        pattern.push(normalUnlocked[randInt(0, normalUnlocked.length - 1)]);
+      }
+      const pool = unlocked.filter(t => t !== pattern[0]);
+      while (pattern.length < size && pool.length) {
         pattern.push(pool.splice(randInt(0, pool.length - 1), 1)[0]);
       }
       this.currentSpawnPattern = pattern;
@@ -2517,16 +2545,18 @@
       // individually spawns more often).
       let type = forceType || this.currentSpawnPattern[randInt(0, this.currentSpawnPattern.length - 1)];
 
-      // Gunner cap (v1.36.80, see GUNNER_MAX_ALIVE): this spawn attempt
-      // simply produces nothing if the roll landed on gunner and the cap's
-      // already reached - the spawn timer that called this still ticks
-      // normally either way (spawnEnemy() doesn't own that pacing), so
-      // this only ever suppresses gunners specifically, never slows down
-      // spawning overall. Exempt forced spawns (forceType) for the same
-      // reason MAX_ALIVE_ENEMIES exempts them below - not currently
-      // reachable for gunner in practice, but kept consistent with that
-      // existing exemption's own reasoning.
-      if (!forceType && type === 'gunner' && this.enemies.filter(e => e.type === 'gunner').length >= GUNNER_MAX_ALIVE) return;
+      // Ranged category cap (v1.36.80, generalized v1.36.81 - see
+      // RANGED_MAX_ALIVE/RANGED_ENEMY_TYPES): this spawn attempt simply
+      // produces nothing if the roll landed on a ranged type and the
+      // combined ranged headcount's already at the cap - the spawn timer
+      // that called this still ticks normally either way (spawnEnemy()
+      // doesn't own that pacing), so this only ever suppresses ranged
+      // spawns specifically, never slows down spawning overall. Exempt
+      // forced spawns (forceType) for the same reason MAX_ALIVE_ENEMIES
+      // exempts them below - not currently reachable for a ranged type in
+      // practice, but kept consistent with that existing exemption's own
+      // reasoning.
+      if (!forceType && ENEMY_TYPES[type].ranged && this.enemies.filter(e => e.ranged).length >= RANGED_MAX_ALIVE) return;
 
       // Stepped time-based baseline, plus a build-aware top-up: enemy HP
       // tracks how much dps the player has stacked (damage x attack speed)
