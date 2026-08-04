@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.85';
+  const GAME_VERSION = '1.36.86';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -2223,7 +2223,7 @@
       color: ATTACK_DRONE_ZAP_COLOR,
       getLevel: p => p.attackDroneCount,
       levelUp: p => { p.attackDroneCount++; },
-      introDesc: '自機のごく至近距離に入った敵に自動で攻撃を行うアタックドローンを1台獲得する(威力は自機の最大HP・攻撃力に応じて上昇する)',
+      introDesc: '自機のごく至近距離に入った敵に自動で攻撃を行うアタックドローンを1台獲得する(威力は自機の最大HP・攻撃力に応じて上昇する)。「爆発」を取得済みなら、その効果がアタックドローンの攻撃にも発生するようになる',
       upgradeDesc: count => `アタックドローンをもう1台獲得する(同時に攻撃できる敵の数が増加する)`,
     },
   ];
@@ -3804,6 +3804,29 @@
               this.damageEnemy(e, dmg);
               e.hitFlash = 0.12;
               this.chainZaps.push(new ChainZap(p.x, p.y, e.x, e.y, ATTACK_DRONE_ZAP_COLOR));
+              // Explosion synergy (v1.36.86): the only bullet effect the
+              // attack drone ever triggers, added specifically so the
+              // drone has a real answer to high-difficulty HP bloat beyond
+              // its own flat per-hit damage - deliberately not extended to
+              // any other bullet effect (chain/poison/etc.), matching the
+              // request's intent ("simple firepower helper" out of the box,
+              // "genuinely offensive tool" once explosion is invested in).
+              // Uses the exact same trigger chance/splash-damage-percent/
+              // radius/particle look as a real projectile's explosion
+              // (resolveProjectileHit above), just rolled here directly
+              // since the drone's hit never goes through that method (it
+              // deliberately skips every other bullet effect).
+              if (p.explosionLevel > 0 && Math.random() < EXPLOSION_TRIGGER_CHANCE) {
+                const explosionRadius = explosionRadiusForLevel(p.explosionLevel);
+                for (const other of this.enemies) {
+                  if (other === e) continue;
+                  if (dist(other.x, other.y, e.x, e.y) <= explosionRadius) {
+                    this.damageEnemy(other, dmg * EXPLOSION_DAMAGE_PCT);
+                    other.hitFlash = 0.12;
+                    for (let i = 0; i < 8; i++) this.particles.push(new Particle(e.x, e.y, '#ff4500', 2.5));
+                  }
+                }
+              }
             }
           }
         }
