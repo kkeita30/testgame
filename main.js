@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.97';
+  const GAME_VERSION = '1.36.98';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -1236,12 +1236,15 @@
       // friendly-fire check in update()) - purely that, no damage
       // multiplier of any kind attached anymore.
       this.frenzyTimer = 0;
-      // Rampage (暴走, v1.36.95): only meaningful while frenzyTimer > 0 and
-      // the player owns rampageLevel - see the movement override in
-      // update(). rampageLegRemaining<=0 means "needs a fresh heading";
-      // rampageInitialized distinguishes a genuinely fresh start (fully
-      // random initial heading) from every leg after the first (which just
-      // turns ~90deg off the current heading instead).
+      // Rampage (暴走, v1.36.95, reworked v1.36.98): rampaging is now its
+      // own flag independent of frenzyTimer - true only while this enemy
+      // is one of the (at most RAMPAGE_MAX_CONCURRENT) currently-rampaging
+      // enemies, set in applyOnHitStatuses() and cleared once frenzyTimer
+      // runs out (see update()). rampageLegRemaining<=0 means "needs a
+      // fresh heading"; rampageInitialized distinguishes a genuinely fresh
+      // start (fully random initial heading) from every leg after the
+      // first (which just turns ~90deg off the current heading instead).
+      this.rampaging = false;
       this.rampageDirAngle = 0;
       this.rampageLegRemaining = 0;
       this.rampageInitialized = false;
@@ -1943,31 +1946,46 @@
   const FRENZY_DURATION_BASE = 5;
   const FRENZY_DURATION_PER_LEVEL = 2;
   function frenzyDurationForLevel(level) { return FRENZY_DURATION_BASE + FRENZY_DURATION_PER_LEVEL * (level - 1); }
-  // Concurrent-frenzy cap (v1.36.97): frenzy+rampage together turned out to
-  // be too strong when the whole screen could be frenzied at once (every
-  // frenzied enemy both fights its neighbors AND, with rampage, stops
-  // threatening the player directly) - capping how many enemies can be
-  // frenzied at the same time keeps the chaos contained to a manageable
-  // subset instead of neutralizing an entire swarm in one go. Only blocks
-  // a brand-new activation (an unfrenzied enemy hit while the cap is
-  // already full simply doesn't become frenzied); refreshing an
-  // ALREADY-frenzied enemy's timer is exempt from the cap since it doesn't
-  // raise the concurrent count. See the frenzy branch in
-  // applyOnHitStatuses().
-  const FRENZY_MAX_CONCURRENT = 5;
+  // Frenzy itself is uncapped (v1.36.98, reverting the v1.36.97
+  // FRENZY_MAX_CONCURRENT experiment) - any number of enemies can be
+  // frenzied at once. The concurrent cap moved to rampage specifically
+  // (RAMPAGE_MAX_CONCURRENT below), since rampage - not frenzy's plain
+  // friendly-fire - was the half of the combination that read as too
+  // strong when applied screen-wide.
 
   // Rampage (暴走, v1.36.95): gated behind 狂乱 fully ranked up (see the
   // BULLET_EFFECTS entry below), same "mastery tier" pattern as bombify's
-  // own 爆発Lv.5 gate. While an enemy is both frenzied (frenzyTimer > 0)
-  // and the player owns this, its movement AI is overridden entirely (see
-  // the dispatch in update(), which checks this before the ranged/charger/
-  // plain-enemy branches) - instead of chasing the player, it walks a
-  // fixed distance in a heading, turns roughly 90 degrees (+/- some
-  // variance) off that heading, and repeats, so it visibly wanders instead
-  // of running in a slow circle. Ranged (gunner) enemies keep firing on
-  // their normal cadence during this but aim at a random angle instead of
-  // the player. Single-rank (maxLevel:1) - there's no magnitude to scale,
-  // just an on/off behavior swap.
+  // own 爆発Lv.5 gate. Rampage is now its own per-enemy flag
+  // (Enemy.rampaging) rather than a blanket "frenzied + player owns
+  // rampage" check (v1.36.98) - only up to RAMPAGE_MAX_CONCURRENT enemies
+  // can be rampaging at once, a strict subset of however many are
+  // frenzied (which itself has no cap, see above). A rampaging enemy's
+  // movement AI is overridden entirely (see updateRampageMovement and the
+  // dispatch in update(), which checks e.rampaging before the ranged/
+  // charger/plain-enemy branches) - instead of chasing the player, it
+  // walks a fixed distance in a heading, turns roughly 90 degrees (+/-
+  // some variance) off that heading, and repeats, so it visibly wanders
+  // instead of running in a slow circle. Ranged (gunner) enemies keep
+  // firing on their normal cadence during this but aim at a random angle
+  // instead of the player. Single-rank (maxLevel:1) - there's no
+  // magnitude to scale, just an on/off behavior swap.
+  //
+  // Compensation buffs (v1.36.98): since only a handful of enemies are
+  // ever rampaging at once now (rather than potentially the whole
+  // screen), each one is buffed individually to stay a real threat worth
+  // noticing - RAMPAGE_DMG_MULT doubles dealt damage (both contact damage
+  // to the player and frenzy's own friendly-fire against other enemies),
+  // RAMPAGE_SPEED_MULT raises movement speed 1.5x, and the enemy's body
+  // is tinted RAMPAGE_COLOR (overriding its normal ENEMY_TYPES color) so
+  // a rampaging enemy reads as a distinct, high-priority threat at a
+  // glance - a full-body tint rather than just a status dot, since at
+  // most 5 of these exist at once (unlike the common stacking statuses
+  // dots exist for, tinting the whole body doesn't create an ambiguous-
+  // multiple-statuses problem here).
+  const RAMPAGE_MAX_CONCURRENT = 5;
+  const RAMPAGE_DMG_MULT = 2;
+  const RAMPAGE_SPEED_MULT = 1.5;
+  const RAMPAGE_COLOR = '#ff2626';
   const RAMPAGE_LEG_DISTANCE = 120;
   const RAMPAGE_TURN_BASE = Math.PI / 2;
   const RAMPAGE_TURN_VARIANCE = Math.PI / 6;
@@ -2279,7 +2297,7 @@
       // Gated behind 狂乱 being fully ranked up - same "mastery tier"
       // pattern as bombify's 爆発Lv.5 gate.
       available: p => p.frenzyLevel >= 5,
-      introDesc: '狂乱状態の敵が自機を狙わなくなり、ランダムな方向へ徘徊するようになる(射撃系の敵も攻撃方向がランダムになる)',
+      introDesc: '狂乱状態の敵のうち最大5体まで、自機を狙わずランダムな方向へ徘徊する「暴走」状態になる(射撃系の敵も攻撃方向がランダムになる)。暴走中の敵は体が赤く染まり、攻撃力2倍・移動速度1.5倍になる',
     },
     {
       // Single-rank now (v1.36.91, was maxLevel:5): the per-rank damage
@@ -3462,13 +3480,22 @@
         else target.poisonStacks = Math.min(poisonMaxStacksForLevel(p.poisonLevel), target.poisonStacks + 1);
       }
       if (proj.frenzies) {
-        // Concurrent-frenzy cap (v1.36.97): refreshing an already-frenzied
-        // enemy is always allowed (doesn't raise the concurrent count), but
-        // a brand-new activation is blocked once FRENZY_MAX_CONCURRENT
-        // enemies are already frenzied - the hit still lands normally,
-        // this status just doesn't take.
-        if (target.frenzyTimer > 0 || this.enemies.filter(e => e.frenzyTimer > 0).length < FRENZY_MAX_CONCURRENT) {
-          target.frenzyTimer = frenzyDurationForLevel(p.frenzyLevel); // no stacking (v1.36.87) - just (re)starts at the current rank's full duration
+        // No cap on frenzy itself (v1.36.98) - always (re)starts at the
+        // current rank's full duration, no stacking (v1.36.87).
+        target.frenzyTimer = frenzyDurationForLevel(p.frenzyLevel);
+        // Rampage's own concurrent cap (v1.36.98): a hit that frenzies (or
+        // re-frenzies) a target additionally tries to claim a rampage slot
+        // for it, if it doesn't already have one - only up to
+        // RAMPAGE_MAX_CONCURRENT enemies can be rampaging (Enemy.rampaging)
+        // at once, regardless of how many are merely frenzied. An enemy
+        // that misses out here (cap already full) stays plain-frenzied
+        // (still fights its neighbors via the friendly-fire loop in
+        // update(), just without rampage's movement override/stat buffs/
+        // red tint) until a slot opens up and a later frenzy-triggering hit
+        // claims it.
+        if (p.rampageLevel > 0 && !target.rampaging) {
+          const rampagingCount = this.enemies.filter(e => e.rampaging).length;
+          if (rampagingCount < RAMPAGE_MAX_CONCURRENT) target.rampaging = true;
         }
       }
       if (proj.bombifies && Math.random() < BOMBIFY_TRIGGER_CHANCE) target.bombifyTimer = BOMBIFY_DURATION; // no stacking - just (re)starts at full duration; chance roll added v1.36.94
@@ -3976,21 +4003,25 @@
       }
     }
 
-    // Rampage (暴走, v1.36.95): overrides movement entirely for any enemy
-    // that's both frenzied and facing a player who owns this - takes
-    // priority over the gunner/blitz/plain-enemy dispatch in update()
-    // (called instead of any of those, not alongside), so a frenzied
-    // gunner/blitz drops its usual state machine for the duration and just
-    // wanders like everything else. Once frenzyTimer runs out, whichever
-    // state that enemy's own movement AI was in (blitz's approach/pause/
-    // charging, gunner's rangedHolding) simply resumes untouched - none of
-    // it advanced while this override was active.
+    // Rampage (暴走, v1.36.95, reworked v1.36.98): overrides movement
+    // entirely for any enemy currently holding a rampage slot (e.rampaging,
+    // a strict subset of frenzied enemies capped at RAMPAGE_MAX_CONCURRENT
+    // - see applyOnHitStatuses()). Takes priority over the gunner/blitz/
+    // plain-enemy dispatch in update() (called instead of any of those,
+    // not alongside), so a rampaging gunner/blitz drops its usual state
+    // machine for the duration and just wanders like everything else. Once
+    // rampaging clears (frenzyTimer running out), whichever state that
+    // enemy's own movement AI was in (blitz's approach/pause/charging,
+    // gunner's rangedHolding) simply resumes untouched - none of it
+    // advanced while this override was active.
     //
     // Walks RAMPAGE_LEG_DISTANCE in a straight line, then turns roughly
     // RAMPAGE_TURN_BASE (90deg) off that heading (+/- RAMPAGE_TURN_VARIANCE,
     // and randomly left or right) and repeats - a deliberate "drunken walk"
     // of straight legs and turns rather than a continuously-curving path,
-    // which would just look like slowly circling in place.
+    // which would just look like slowly circling in place. Speed is
+    // boosted RAMPAGE_SPEED_MULT (v1.36.98) - a compensation buff for how
+    // few enemies can rampage at once now.
     updateRampageMovement(e, p, dt, effSpeed) {
       if (e.rampageLegRemaining <= 0) {
         if (!e.rampageInitialized) {
@@ -4003,7 +4034,7 @@
         }
         e.rampageLegRemaining = RAMPAGE_LEG_DISTANCE;
       }
-      const step = effSpeed * dt;
+      const step = effSpeed * RAMPAGE_SPEED_MULT * dt;
       e.x += Math.cos(e.rampageDirAngle) * step;
       e.y += Math.sin(e.rampageDirAngle) * step;
       e.rampageLegRemaining -= step;
@@ -4011,7 +4042,9 @@
       // Ranged enemies keep firing on their normal cadence, just aimed at a
       // random angle instead of the player - reuses rangedCooldown/
       // GUNNER_ATK_INTERVAL/GUNNER_PROJ_SPEED unchanged so behavior picks
-      // back up seamlessly once rampage/frenzy ends.
+      // back up seamlessly once rampage/frenzy ends. Shot damage also gets
+      // RAMPAGE_DMG_MULT (v1.36.98), same compensation buff as contact
+      // damage/friendly-fire elsewhere.
       if (e.ranged) {
         e.rangedCooldown -= dt;
         if (e.rangedCooldown <= 0) {
@@ -4019,7 +4052,7 @@
           const ang = Math.random() * Math.PI * 2;
           this.enemyProjectiles.push(new EnemyProjectile(
             e.x, e.y, Math.cos(ang) * GUNNER_PROJ_SPEED, Math.sin(ang) * GUNNER_PROJ_SPEED,
-            e.rangedAtkDamage, GUNNER_PROJ_RADIUS
+            e.rangedAtkDamage * RAMPAGE_DMG_MULT, GUNNER_PROJ_RADIUS
           ));
         }
       }
@@ -4346,9 +4379,11 @@
         // below. Either way, resolveWallCollision and all the per-frame
         // status-effect ticking/contact-damage logic further down apply
         // uniformly regardless of which branch moved this enemy. Rampage
-        // (v1.36.95) takes priority over all three when active (frenzied +
-        // player owns it) - see updateRampageMovement.
-        if (e.frenzyTimer > 0 && p.rampageLevel > 0) {
+        // (v1.36.95) takes priority over all three when active - gated on
+        // e.rampaging specifically (v1.36.98), not just being frenzied, so
+        // only the (at most RAMPAGE_MAX_CONCURRENT) enemies that actually
+        // hold a rampage slot get this override - see updateRampageMovement.
+        if (e.rampaging) {
           this.updateRampageMovement(e, p, dt, effSpeed);
         } else if (e.ranged) {
           this.updateGunnerMovement(e, p, d, dt, effSpeed);
@@ -4387,7 +4422,13 @@
           e.poisonTimer -= dt;
           if (e.poisonTimer <= 0) e.poisonStacks = 0;
         }
-        if (e.frenzyTimer > 0) e.frenzyTimer -= dt;
+        if (e.frenzyTimer > 0) {
+          e.frenzyTimer -= dt;
+          // Rampage's slot is tied to frenzy's own duration (v1.36.98) -
+          // once frenzy runs out, rampaging clears too (freeing the slot
+          // for a later frenzy-triggering hit elsewhere to claim).
+          if (e.frenzyTimer <= 0) e.rampaging = false;
+        }
         if (e.bombifyTimer > 0) e.bombifyTimer -= dt; // no effect while alive - see the detonation-resolution block below
         if (e.weakenTimer > 0) e.weakenTimer -= dt;
         if (e.vulnerableTimer > 0) e.vulnerableTimer -= dt;
@@ -4395,11 +4436,13 @@
         // Weakened enemies hit softer (frenzy no longer touches dealt
         // damage at all as of v1.36.87 - it's purely the friendly-fire
         // behavior below now). Slow itself doesn't touch damage either
-        // (that's weaken's job, split apart in v1.36.8). Computed once
+        // (that's weaken's job, split apart in v1.36.8). Rampaging enemies
+        // hit harder instead (RAMPAGE_DMG_MULT, v1.36.98) - computed once
         // here so both the contact-damage check and the threat-vignette
         // check below agree on the same effective damage value.
         const weakenDmgMult = e.weakenTimer > 0 ? weakenDmgMultForLevel(p.weakenLevel) : 1;
-        const effDmg = e.dmg * weakenDmgMult * buffDamageTakenMult;
+        const rampageDmgMult = e.rampaging ? RAMPAGE_DMG_MULT : 1;
+        const effDmg = e.dmg * weakenDmgMult * rampageDmgMult * buffDamageTakenMult;
 
         if (d < THREAT_RADIUS && effDmg >= p.hp) threatNearby = true;
 
@@ -4431,11 +4474,12 @@
       for (const e of this.enemies) {
         if (e.frenzyTimer <= 0 || e.contactCd > 0) continue;
         const weakenDmgMult = e.weakenTimer > 0 ? weakenDmgMultForLevel(p.weakenLevel) : 1;
+        const rampageDmgMult = e.rampaging ? RAMPAGE_DMG_MULT : 1;
         for (const other of this.enemies) {
           if (other === e) continue;
           const rr = e.radius + other.radius;
           if (dist2(e.x, e.y, other.x, other.y) < rr * rr) {
-            this.damageEnemy(other, e.dmg * weakenDmgMult);
+            this.damageEnemy(other, e.dmg * weakenDmgMult * rampageDmgMult);
             other.hitFlash = 0.12;
             e.contactCd = 0.5;
             break;
@@ -4908,7 +4952,7 @@
       // enemies
       for (const e of this.enemies) {
         ctx.beginPath();
-        ctx.fillStyle = e.hitFlash > 0 ? '#ffffff' : e.color;
+        ctx.fillStyle = e.hitFlash > 0 ? '#ffffff' : (e.rampaging ? RAMPAGE_COLOR : e.color);
         ctx.arc(e.x, e.y, e.radius, 0, TAU);
         ctx.fill();
 
