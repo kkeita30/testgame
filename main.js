@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.95';
+  const GAME_VERSION = '1.36.96';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -807,10 +807,19 @@
       this.poisonburstLevel = 0; // 猛毒解放, gated on poisonLevel>=5
       // Impact effects (v1.36.35): persistent zones left at a hit's impact
       // point, own ranks independent of the bullet effects above (see the
-      // ImpactEffect constants block for details).
+      // ImpactEffect constants block for details). No longer player-facing
+      // upgrades as of v1.36.96 (removed from BULLET_EFFECTS - neither
+      // contributed much to the actual play experience), but these two
+      // fields - and the mechanics that read them - are deliberately kept
+      // alive rather than deleted: killzone is earmarked as a possible
+      // future weapon's innate effect, magnetstorm as a possible future
+      // character's double-tap special. Nothing currently sets either
+      // above 0, so both are effectively dormant until something does.
+      // poisoncloud had no such earmarked reuse and was removed entirely
+      // instead (see the removed-code note near POISONCLOUD_DURATION used
+      // to be, same treatment as 狂乱の泉/frenzy fountain in v1.36.92).
       this.magnetstormLevel = 0;
       this.killzoneLevel = 0;
-      this.poisoncloudLevel = 0;
 
       // Double-tap special ability, defined per character (§ CHARACTERS).
       // null until a character with one is applied below.
@@ -1110,7 +1119,13 @@
     const crowdBase = base * (1 + p.chainLevel * 0.15);
     // Killzone/magnetstorm (v1.36.72) are area-effect zones that damage or
     // corral multiple enemies at once, the same "handle a crowd, not just
-    // one target" role as pierce/chain.
+    // one target" role as pierce/chain. Both terms are dormant no-ops as of
+    // v1.36.96 (killzoneLevel/magnetstormLevel are always 0 now that
+    // neither is a player-facing upgrade - see the Player constructor
+    // comment) but are deliberately left wired in here rather than
+    // stripped out, so a future feature that sets either field would have
+    // its difficulty feedback already working correctly, with no further
+    // changes needed to this function.
     const withKillzone = crowdBase * (1 + p.killzoneLevel * 0.15);
     const withMagnetstorm = withKillzone * (1 + p.magnetstormLevel * 0.15);
     // Lightning (v1.36.95): turns chain's single line into a branching
@@ -2055,11 +2070,12 @@
   // resolveProjectileHit (once per primary hit target), never inside
   // applyOnHitStatuses (the method chain hops call instead, see chain's
   // resolution loop) - so a chained hop never leaves its own zone behind.
-  // Each type is its own independently-ranked bullet effect (own Player
-  // level field, own BULLET_EFFECTS entry, same maxLevel=5 pattern as
-  // explosion/chain/etc above), so a build can invest in some without
-  // others.
-  const IMPACT_EFFECT_COLORS = { magnetstorm: '#6a5cff', killzone: '#ff2d55', poisoncloud: '#39d353' };
+  // Each type has its own independent Player rank field (magnetstormLevel/
+  // killzoneLevel), no longer player-facing upgrades as of v1.36.96 (see
+  // the comment on those fields in the Player constructor) but the
+  // mechanics themselves - and the fields driving them - are kept intact
+  // for possible future reuse outside the normal upgrade pool.
+  const IMPACT_EFFECT_COLORS = { magnetstorm: '#6a5cff', killzone: '#ff2d55' };
   // How long before expiry a zone's circle starts fading out (see draw()) -
   // short relative to even the shortest zone (magnetstorm, 3s) so a
   // life/maxLife fade doesn't wash out most of a longer-lived zone's
@@ -2071,13 +2087,10 @@
   // that stays put once set. See Game.spawnImpactEffect.
 
   // How often, in seconds, an enemy that's continuously standing inside a
-  // killzone/poisoncloud zone gets hit again (v1.36.38) -
-  // these share this same periodic-tick model; magnetstorm doesn't
-  // use it at all (its pull is already continuous every frame, not a
-  // discrete "tick"). The first tick lands this many seconds AFTER entry,
-  // not instantly on entry (e.g. 5 poison stacks from a maxed poison cloud
-  // takes 5 * 0.3s = 1.5s of continuous standing, matching the design
-  // spec's own worked example).
+  // killzone zone gets hit again (v1.36.38) - magnetstorm doesn't use it at
+  // all (its pull is already continuous every frame, not a discrete
+  // "tick"). The first tick lands this many seconds AFTER entry, not
+  // instantly on entry.
   const IMPACT_EFFECT_TICK_INTERVAL = 0.3;
 
   class ImpactEffect {
@@ -2088,12 +2101,12 @@
       this.life = life;
       this.maxLife = life;
       this.dmgPerSec = dmgPerSec || 0; // killzone only
-      // killzone/poisoncloud only: Map<Enemy, secondsUntilNextTick>
-      // for every enemy currently inside this specific zone instance - each
-      // tracks its own countdown independently of when other enemies
-      // entered. An enemy that leaves the zone is dropped from this map
-      // entirely, so re-entering later starts a fresh countdown rather than
-      // resuming a stale one (see the per-frame tick in update()).
+      // killzone only: Map<Enemy, secondsUntilNextTick> for every enemy
+      // currently inside this specific zone instance - each tracks its own
+      // countdown independently of when other enemies entered. An enemy
+      // that leaves the zone is dropped from this map entirely, so
+      // re-entering later starts a fresh countdown rather than resuming a
+      // stale one (see the per-frame tick in update()).
       this.tickTimers = new Map();
     }
   }
@@ -2117,33 +2130,29 @@
   // power in at the moment of the hit.
   const KILLZONE_DURATION = 5;
   // Radius now scales with rank too (v1.36.38) - originally fixed while only
-  // damage scaled, but that left killzone as the only one of the four with
-  // just one rank-up axis. Same 90-170 (v1.36.35) -> 45-85 (v1.36.37) ->
-  // 67.5-127.5 (v1.36.38) progression as frenzy fountain/poison cloud below,
-  // since killzone's old fixed value (90) matched their own Lv.1 base.
+  // damage scaled, but that left killzone as the only one of the four
+  // impact effects that then existed with just one rank-up axis. Same
+  // 90-170 (v1.36.35) -> 45-85 (v1.36.37) -> 67.5-127.5 (v1.36.38)
+  // progression as its now-removed siblings (poison cloud, frenzy fountain)
+  // used, since killzone's old fixed value (90) matched their own Lv.1 base.
+  //
+  // No longer a player-facing upgrade as of v1.36.96 (removed from
+  // BULLET_EFFECTS along with magnetstorm/poisoncloud - none of the three
+  // contributed much to the actual play experience) - kept alive
+  // specifically as a possible future weapon's innate effect, see the
+  // Player.killzoneLevel comment.
   function killZoneRadiusForLevel(level) { return 67.5 + 15 * (level - 1); }
   function killZoneDmgPctForLevel(level) { return 0.5 + 0.25 * (level - 1); } // fraction of proj.damage dealt per second
 
-  // ポイズンクラウド/Poison Cloud: applies the existing poison status (same
-  // POISON_DURATION, same duration/stack-cap formulas) to enemies standing
-  // inside, once every IMPACT_EFFECT_TICK_INTERVAL seconds per enemy (see
-  // ImpactEffect.tickTimers and the tick loop in update()) - so lingering
-  // inside behaves like getting re-hit by a normal shot on that same
-  // cadence, stacking poison up to its cap over time rather than only ever
-  // applying once. Deliberately reuses the player's own poisonLevel rank to
-  // determine how strong the applied status is - this zone is a new
-  // delivery method for an existing status, not a second independent
-  // version of it - so it's only offered once poison has at least one rank
-  // (available gate on the BULLET_EFFECTS entry below), and only its own
-  // radius scales with its own rank.
-  //
-  // 狂乱の泉/Frenzy Fountain (the same idea applied to frenzy) was removed
-  // in v1.36.92 - it existed specifically to help low-attack-speed frenzy
-  // builds keep re-stacking frenzy over time, but frenzy stopped stacking
-  // at all once v1.36.87 redesigned it into a flat, non-stacking duration
-  // effect, so the zone's entire reason for existing was gone.
-  const POISONCLOUD_DURATION = 10;
-  function poisonCloudRadiusForLevel(level) { return 67.5 + 15 * (level - 1); }
+  // ポイズンクラウド/Poison Cloud was removed in v1.36.96, alongside
+  // killzone/magnetstorm being pulled from the player-facing upgrade pool
+  // for the same reason (little contribution to the actual play
+  // experience) - unlike those two, poison cloud had no earmarked future
+  // reuse, so its code (POISONCLOUD_DURATION/poisonCloudRadiusForLevel/
+  // Player.poisoncloudLevel/its spawnImpactEffect call site/its tick-loop
+  // branch) was deleted outright rather than kept dormant, the same
+  // treatment as 狂乱の泉/frenzy fountain (also removed outright) in
+  // v1.36.92.
 
   const BULLET_EFFECTS = [
     {
@@ -2307,41 +2316,6 @@
       levelUp: p => { p.vulnerableLevel++; },
       introDesc: '着弾した敵を脆弱状態にし、あらゆる攻撃に対する被ダメージを増加させる。重ね掛けはされず、再度攻撃が当たると持続時間が最大まで更新される',
       upgradeDesc: level => `脆弱による被ダメージ増加率が上昇する`,
-    },
-    {
-      id: 'magnetstorm',
-      name: '磁気嵐',
-      maxLevel: 5,
-      category: 'utility',
-      getLevel: p => p.magnetstormLevel,
-      levelUp: p => { p.magnetstormLevel++; },
-      introDesc: '着弾地点に一定時間残る渦を発生させ、範囲内の敵を中心に引き寄せて留め置くようになる(連鎖では発生しない)',
-      upgradeDesc: level => `磁気嵐の範囲が拡大する`,
-    },
-    {
-      id: 'killzone',
-      name: 'キルゾーン',
-      maxLevel: 5,
-      category: 'crowd',
-      getLevel: p => p.killzoneLevel,
-      levelUp: p => { p.killzoneLevel++; },
-      introDesc: '着弾地点に一定時間残る領域を発生させ、範囲内に留まる敵に継続的にダメージを与え続けるようになる(連鎖では発生しない)',
-      upgradeDesc: level => `キルゾーンの範囲とダメージが増加する`,
-    },
-    {
-      id: 'poisoncloud',
-      name: 'ポイズンクラウド',
-      maxLevel: 5,
-      category: 'crowd',
-      getLevel: p => p.poisoncloudLevel,
-      levelUp: p => { p.poisoncloudLevel++; },
-      // Gated behind 猛毒 having at least 1 rank - this zone applies
-      // whatever poison rank the player already has, so without 猛毒 taken
-      // at all it would just be a zone that does nothing (same reasoning
-      // as killzone's own applied-effect gates elsewhere).
-      available: p => p.poisonLevel > 0,
-      introDesc: '着弾地点に一定時間残る毒雲を発生させ、範囲内に留まる敵に継続的に毒状態を付与し続けるようになる(連鎖では発生しない)。付与される毒のランクは「猛毒」の取得状況がそのまま反映される',
-      upgradeDesc: level => `ポイズンクラウドの範囲が拡大する`,
     },
   ];
 
@@ -3520,7 +3494,6 @@
       const p = this.player;
       if (p.magnetstormLevel > 0) this.spawnImpactEffect('magnetstorm', e.x, e.y, magnetStormRadiusForLevel(p.magnetstormLevel), MAGNETSTORM_DURATION);
       if (p.killzoneLevel > 0) this.spawnImpactEffect('killzone', e.x, e.y, killZoneRadiusForLevel(p.killzoneLevel), KILLZONE_DURATION, proj.damage * killZoneDmgPctForLevel(p.killzoneLevel));
-      if (p.poisoncloudLevel > 0) this.spawnImpactEffect('poisoncloud', e.x, e.y, poisonCloudRadiusForLevel(p.poisoncloudLevel), POISONCLOUD_DURATION);
 
       if (proj.explosionRadius > 0 && Math.random() < EXPLOSION_TRIGGER_CHANCE) {
         for (const other of this.enemies) {
@@ -4639,13 +4612,13 @@
 
       // impact effects: per-type behavior while alive, then drop expired
       // ones. magnetstorm's pull is continuous (every frame, whoever's
-      // currently inside). killzone/poisoncloud instead
-      // share a periodic-tick model: an enemy that stays inside gets
-      // hit again every IMPACT_EFFECT_TICK_INTERVAL seconds, not just once
-      // on entry - fx.tickTimers tracks each affected enemy's own countdown
-      // to its next tick, independently of when other enemies entered.
-      // Leaving the zone drops that enemy's entry entirely, so re-entering
-      // later starts a fresh countdown rather than resuming a stale one.
+      // currently inside). killzone instead uses a periodic-tick model: an
+      // enemy that stays inside gets hit again every
+      // IMPACT_EFFECT_TICK_INTERVAL seconds, not just once on entry -
+      // fx.tickTimers tracks each affected enemy's own countdown to its
+      // next tick, independently of when other enemies entered. Leaving
+      // the zone drops that enemy's entry entirely, so re-entering later
+      // starts a fresh countdown rather than resuming a stale one.
       for (const fx of this.impactEffects) {
         fx.life -= dt;
         if (fx.life <= 0) continue;
@@ -4674,9 +4647,6 @@
               t += IMPACT_EFFECT_TICK_INTERVAL;
               if (fx.type === 'killzone') {
                 this.damageEnemy(e, fx.dmgPerSec * IMPACT_EFFECT_TICK_INTERVAL);
-              } else if (fx.type === 'poisoncloud') {
-                if (e.poisonTimer <= 0) { e.poisonTimer = POISON_DURATION; e.poisonStacks = 1; }
-                else e.poisonStacks = Math.min(poisonMaxStacksForLevel(p.poisonLevel), e.poisonStacks + 1);
               }
             }
             fx.tickTimers.set(e, t);
@@ -5239,7 +5209,6 @@
     if (p.vulnerableLevel > 0) bulletLines.push(`脆弱 ランク${p.vulnerableLevel}`);
     if (p.magnetstormLevel > 0) bulletLines.push(`磁気嵐 ランク${p.magnetstormLevel}`);
     if (p.killzoneLevel > 0) bulletLines.push(`キルゾーン ランク${p.killzoneLevel}`);
-    if (p.poisoncloudLevel > 0) bulletLines.push(`ポイズンクラウド ランク${p.poisoncloudLevel}`);
     const droneLines = DRONES.filter(d => d.getLevel(p) > 0).map(d => `${d.name} x${d.getLevel(p)}`);
     pauseStatsEl.innerHTML = `
       <p>HP: ${Math.ceil(p.hp)} / ${p.maxHp}</p>
