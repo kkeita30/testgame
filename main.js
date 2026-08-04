@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.93';
+  const GAME_VERSION = '1.36.94';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -1927,6 +1927,26 @@
   // enemies once and letting the crowd's natural kill pace trigger it.
   const BOMBIFY_DURATION = 3;
   const BOMBIFY_RADIUS = 180;
+  // Trigger chance (v1.36.94): applying bombify used to be unconditional
+  // on every hit from a bombify-carrying weapon, unlike explosion/chain
+  // which both roll against their own TRIGGER_CHANCE. Combined with the
+  // DPS-based damage formula below (v1.36.91) and no per-detonation cap,
+  // this made a dense bombified crowd's chain-detonation feel too
+  // reliably powerful - added a roll here so landing the status itself
+  // isn't guaranteed, thinning out how many enemies actually end up
+  // primed to chain in the first place.
+  const BOMBIFY_TRIGGER_CHANCE = 0.25;
+  // Per-detonation damage cap (v1.36.94): the splash from one detonation
+  // can no longer exceed BOMBIFY_DMG_CAP_PCT of the DETONATING enemy's own
+  // maxHp, regardless of how high the player's DPS-based bombifyDamage()
+  // climbs. Without this, a heavily invested damage/attack-speed build
+  // could one-shot an entire dense cluster off a single kill; the cap
+  // keeps a single detonation's reach proportional to the enemy that
+  // triggered it, so wiping a large cluster still requires the chain
+  // itself (multiple detonations feeding each other) rather than one hit
+  // alone - the "5+ enemies chain-detonating clears a wide area" feel the
+  // redesign is aiming for, without any single explosion doing that alone.
+  const BOMBIFY_DMG_CAP_PCT = 0.2;
   // Damage source flipped from the detonated enemy's own maxHp to the
   // PLAYER's own offense (v1.36.91, single-rank now - see maxLevel:1 on
   // the BULLET_EFFECTS entry above). The old percent-of-own-maxHp formula
@@ -1940,7 +1960,9 @@
   // strengthens every bombified enemy already waiting to detonate. Doesn't
   // factor in multishot/pierce/etc. - just raw single-target damage over
   // time (damage / atkCooldown), matching the "roughly your own DPS"
-  // framing this was designed around.
+  // framing this was designed around. The caller (see the detonation
+  // resolution loop in update()) additionally caps this against
+  // BOMBIFY_DMG_CAP_PCT of the detonating enemy's own maxHp.
   function bombifyDamage(p) { return p.damage / p.atkCooldown; }
 
   // Weaken (v1.36.8): split out of slow, which used to also halve a
@@ -2150,7 +2172,7 @@
       // maxLevel first pushes it later into a run and onto builds that
       // have already invested in AoE.
       available: p => p.explosionLevel >= 5,
-      introDesc: '着弾した敵を爆弾化する。生存中は特に効果はないが、爆弾化状態のまま倒された敵は周囲の他の敵に爆発ダメージを与える(威力は自機の攻撃力・攻撃間隔から算出した1秒あたりのダメージ量相当)。重ね掛けはされず、再度攻撃が当たると持続時間が最大まで更新される',
+      introDesc: '着弾時、一定確率で敵を爆弾化する。生存中は特に効果はないが、爆弾化状態のまま倒された敵は周囲の他の敵に爆発ダメージを与える(威力は自機の攻撃力・攻撃間隔から算出した1秒あたりのダメージ量相当、ただし爆発した敵自身の最大HPの一定割合が上限)。重ね掛けはされず、再度攻撃が当たると持続時間が最大まで更新される',
     },
     {
       id: 'weaken',
@@ -3332,7 +3354,7 @@
         else target.poisonStacks = Math.min(poisonMaxStacksForLevel(p.poisonLevel), target.poisonStacks + 1);
       }
       if (proj.frenzies) target.frenzyTimer = frenzyDurationForLevel(p.frenzyLevel); // no stacking (v1.36.87) - just (re)starts at the current rank's full duration
-      if (proj.bombifies) target.bombifyTimer = BOMBIFY_DURATION; // no stacking - just (re)starts at full duration
+      if (proj.bombifies && Math.random() < BOMBIFY_TRIGGER_CHANCE) target.bombifyTimer = BOMBIFY_DURATION; // no stacking - just (re)starts at full duration; chance roll added v1.36.94
       if (proj.weakens) target.weakenTimer = WEAKEN_DURATION; // no stacking - just (re)starts at full duration
       if (proj.vulnerable) target.vulnerableTimer = VULNERABLE_DURATION; // no stacking (v1.36.88) - just (re)starts at full duration
     }
@@ -4260,12 +4282,14 @@
       // Bombify detonation: any bombified enemy that ends this frame at
       // hp<=0 (from a projectile, poison, frenzy friendly fire, or an
       // earlier detonation this same frame) explodes for damage (the
-      // player's own DPS - see bombifyDamage) to every other enemy within
-      // BOMBIFY_RADIUS. Resolved in a loop rather than a single pass so a
-      // detonation that drops another bombified enemy to 0 chains into
-      // that enemy's own detonation too, regardless of array order - it
-      // keeps re-scanning until nothing new qualifies. `detonated` guards
-      // against processing the same enemy twice as the outer loop re-scans.
+      // player's own DPS - see bombifyDamage - capped per-detonation at
+      // BOMBIFY_DMG_CAP_PCT of the detonating enemy's own maxHp) to every
+      // other enemy within BOMBIFY_RADIUS. Resolved in a loop rather than a
+      // single pass so a detonation that drops another bombified enemy to
+      // 0 chains into that enemy's own detonation too, regardless of array
+      // order - it keeps re-scanning until nothing new qualifies.
+      // `detonated` guards against processing the same enemy twice as the
+      // outer loop re-scans.
       const detonated = new Set();
       let moreToDetonate = true;
       while (moreToDetonate) {
@@ -4273,7 +4297,7 @@
         for (const e of this.enemies) {
           if (e.hp > 0 || e.bombifyTimer <= 0 || detonated.has(e)) continue;
           detonated.add(e);
-          const bombDmg = bombifyDamage(p);
+          const bombDmg = Math.min(bombifyDamage(p), e.maxHp * BOMBIFY_DMG_CAP_PCT);
           for (const other of this.enemies) {
             if (other === e) continue;
             if (dist2(other.x, other.y, e.x, e.y) <= BOMBIFY_RADIUS * BOMBIFY_RADIUS) {
