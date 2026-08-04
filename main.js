@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.88';
+  const GAME_VERSION = '1.36.89';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -1887,12 +1887,13 @@
   // fire specifically at all, but naturally pairs well with anything that
   // lands repeated hits on the same clustered/afflicted enemies.
   const VULNERABLE_DURATION = 5;
-  // Mirrors weakenDmgMultForLevel's exact 30%->70% curve, just as an
-  // increase instead of a decrease - weaken already reused this same curve
-  // from bombify, so reusing it a second time here keeps all three
-  // "single-flag, rank-scales-the-percentage" statuses on one shared
-  // number line instead of each inventing its own curve.
-  function vulnerableDmgMultForLevel(level) { return 1 + (0.3 + 0.1 * (level - 1)); }
+  // Mirrors weakenDmgMultForLevel's exact curve, just as an increase
+  // instead of a decrease - keeps the two "single-flag, rank-scales-the-
+  // percentage" statuses on one shared number line instead of each
+  // inventing its own curve. Both eased 30%->70%/rank down to 20%->48%/rank
+  // (v1.36.89) after the original curve read as too strong for a flat,
+  // always-on percentage modifier.
+  function vulnerableDmgMultForLevel(level) { return 1 + (0.2 + 0.07 * (level - 1)); }
 
   // Bombify (v1.36.5): unlike poison/frenzy, this status doesn't stack at
   // all and has no effect while the target is alive - a later hit while
@@ -1920,14 +1921,18 @@
   // Weaken (v1.36.8): split out of slow, which used to also halve a
   // slowed enemy's contact damage - that coupling meant taking slow always
   // meant taking a damage debuff too, with no way to get one without the
-  // other. Weaken is now its own gated pick (like bombify, only appears
-  // once slow is maxed) so a player who wants the offense-suppression
-  // effect specifically has to actually invest in it. Same non-stacking,
-  // refresh-on-rehit design as bombify: no stack count, a later hit just
-  // resets weakenTimer to WEAKEN_DURATION. Rank raises the damage
-  // reduction directly, reusing bombify's exact 30%->70% curve.
+  // other. Weaken is its own pick so a player who wants the offense-
+  // suppression effect specifically has to actually invest in it (no
+  // longer gated behind maxed-out slow as of v1.36.88 - always available
+  // like most other bullet effects). Same non-stacking, refresh-on-rehit
+  // design as bombify: no stack count, a later hit just resets weakenTimer
+  // to WEAKEN_DURATION. Rank raises the damage reduction directly -
+  // originally reused bombify's 30%->70% curve verbatim, eased down to
+  // 20%->48%/rank (v1.36.89) after it read as too strong for a flat,
+  // always-on percentage modifier (vulnerable's mirror curve, above, moved
+  // with it to keep the two in lockstep).
   const WEAKEN_DURATION = 5;
-  function weakenDmgMultForLevel(level) { return 1 - (0.3 + 0.1 * (level - 1)); }
+  function weakenDmgMultForLevel(level) { return 1 - (0.2 + 0.07 * (level - 1)); }
 
   // Threat vignette: difficulty-driven enemy stats scale flexibly enough
   // that a player can't eyeball "difficulty N means this much contact
@@ -2233,7 +2238,7 @@
     const level = effect.getLevel(player);
     return {
       id: `bullet-${effect.id}`,
-      title: level === 0 ? `${effect.name}(New)` : `${effect.name} Lv.${level}→${level + 1}`,
+      title: level === 0 ? `${effect.name}(New)` : `${effect.name} ランク${level}→${level + 1}`,
       desc: level === 0 ? effect.introDesc : effect.upgradeDesc(level),
       category: effect.category,
       apply: p => effect.levelUp(p),
@@ -4798,19 +4803,19 @@
     const mm = String(Math.floor(g.time / 60)).padStart(2, '0');
     const ss = String(Math.floor(g.time % 60)).padStart(2, '0');
     const bulletLines = [];
-    if (p.explosionLevel > 0) bulletLines.push(`爆発 Lv.${p.explosionLevel}`);
-    if (p.chainLevel > 0) bulletLines.push(`連鎖 Lv.${p.chainLevel}`);
-    if (p.slowLevel > 0) bulletLines.push(`低速 Lv.${p.slowLevel}`);
-    if (p.pierce > 0) bulletLines.push(`貫通 Lv.${p.pierce}`);
-    if (p.poisonLevel > 0) bulletLines.push(`猛毒 Lv.${p.poisonLevel}`);
-    if (p.frenzyLevel > 0) bulletLines.push(`狂乱 Lv.${p.frenzyLevel}`);
-    if (p.bombifyLevel > 0) bulletLines.push(`爆弾化 Lv.${p.bombifyLevel}`);
-    if (p.weakenLevel > 0) bulletLines.push(`衰弱 Lv.${p.weakenLevel}`);
-    if (p.vulnerableLevel > 0) bulletLines.push(`脆弱 Lv.${p.vulnerableLevel}`);
-    if (p.magnetstormLevel > 0) bulletLines.push(`磁気嵐 Lv.${p.magnetstormLevel}`);
-    if (p.killzoneLevel > 0) bulletLines.push(`キルゾーン Lv.${p.killzoneLevel}`);
-    if (p.frenzyfountainLevel > 0) bulletLines.push(`狂乱の泉 Lv.${p.frenzyfountainLevel}`);
-    if (p.poisoncloudLevel > 0) bulletLines.push(`ポイズンクラウド Lv.${p.poisoncloudLevel}`);
+    if (p.explosionLevel > 0) bulletLines.push(`爆発 ランク${p.explosionLevel}`);
+    if (p.chainLevel > 0) bulletLines.push(`連鎖 ランク${p.chainLevel}`);
+    if (p.slowLevel > 0) bulletLines.push(`低速 ランク${p.slowLevel}`);
+    if (p.pierce > 0) bulletLines.push(`貫通 ランク${p.pierce}`);
+    if (p.poisonLevel > 0) bulletLines.push(`猛毒 ランク${p.poisonLevel}`);
+    if (p.frenzyLevel > 0) bulletLines.push(`狂乱 ランク${p.frenzyLevel}`);
+    if (p.bombifyLevel > 0) bulletLines.push(`爆弾化 ランク${p.bombifyLevel}`);
+    if (p.weakenLevel > 0) bulletLines.push(`衰弱 ランク${p.weakenLevel}`);
+    if (p.vulnerableLevel > 0) bulletLines.push(`脆弱 ランク${p.vulnerableLevel}`);
+    if (p.magnetstormLevel > 0) bulletLines.push(`磁気嵐 ランク${p.magnetstormLevel}`);
+    if (p.killzoneLevel > 0) bulletLines.push(`キルゾーン ランク${p.killzoneLevel}`);
+    if (p.frenzyfountainLevel > 0) bulletLines.push(`狂乱の泉 ランク${p.frenzyfountainLevel}`);
+    if (p.poisoncloudLevel > 0) bulletLines.push(`ポイズンクラウド ランク${p.poisoncloudLevel}`);
     const droneLines = DRONES.filter(d => d.getLevel(p) > 0).map(d => `${d.name} x${d.getLevel(p)}`);
     pauseStatsEl.innerHTML = `
       <p>HP: ${Math.ceil(p.hp)} / ${p.maxHp}</p>
