@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.96';
+  const GAME_VERSION = '1.36.97';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -1943,6 +1943,18 @@
   const FRENZY_DURATION_BASE = 5;
   const FRENZY_DURATION_PER_LEVEL = 2;
   function frenzyDurationForLevel(level) { return FRENZY_DURATION_BASE + FRENZY_DURATION_PER_LEVEL * (level - 1); }
+  // Concurrent-frenzy cap (v1.36.97): frenzy+rampage together turned out to
+  // be too strong when the whole screen could be frenzied at once (every
+  // frenzied enemy both fights its neighbors AND, with rampage, stops
+  // threatening the player directly) - capping how many enemies can be
+  // frenzied at the same time keeps the chaos contained to a manageable
+  // subset instead of neutralizing an entire swarm in one go. Only blocks
+  // a brand-new activation (an unfrenzied enemy hit while the cap is
+  // already full simply doesn't become frenzied); refreshing an
+  // ALREADY-frenzied enemy's timer is exempt from the cap since it doesn't
+  // raise the concurrent count. See the frenzy branch in
+  // applyOnHitStatuses().
+  const FRENZY_MAX_CONCURRENT = 5;
 
   // Rampage (暴走, v1.36.95): gated behind 狂乱 fully ranked up (see the
   // BULLET_EFFECTS entry below), same "mastery tier" pattern as bombify's
@@ -1982,10 +1994,13 @@
   // Mirrors weakenDmgMultForLevel's exact curve, just as an increase
   // instead of a decrease - keeps the two "single-flag, rank-scales-the-
   // percentage" statuses on one shared number line instead of each
-  // inventing its own curve. Both eased 30%->70%/rank down to 20%->48%/rank
-  // (v1.36.89) after the original curve read as too strong for a flat,
-  // always-on percentage modifier.
-  function vulnerableDmgMultForLevel(level) { return 1 + (0.2 + 0.07 * (level - 1)); }
+  // inventing its own curve. Eased 30%->70%/rank down to 20%->48%/rank
+  // (v1.36.89), then further down to 5%->25%/rank (v1.36.97) - still read
+  // as too strong even at the v1.36.89 curve. 5% at rank 1 was picked as
+  // roughly the smallest change that can actually flip a one-shot-kill/
+  // one-shot-died threshold, i.e. the smallest magnitude where the effect
+  // is still felt at all.
+  function vulnerableDmgMultForLevel(level) { return 1 + (0.05 + 0.05 * (level - 1)); }
 
   // Bombify (v1.36.5): unlike poison/frenzy, this status doesn't stack at
   // all and has no effect while the target is alive - a later hit while
@@ -2050,11 +2065,14 @@
   // design as bombify: no stack count, a later hit just resets weakenTimer
   // to WEAKEN_DURATION. Rank raises the damage reduction directly -
   // originally reused bombify's 30%->70% curve verbatim, eased down to
-  // 20%->48%/rank (v1.36.89) after it read as too strong for a flat,
-  // always-on percentage modifier (vulnerable's mirror curve, above, moved
-  // with it to keep the two in lockstep).
+  // 20%->48%/rank (v1.36.89), then further down to 5%->25%/rank (v1.36.97)
+  // after it still read as too strong even at the v1.36.89 curve (vulnerable's
+  // mirror curve, above, moved with it to keep the two in lockstep). 5% at
+  // rank 1 was picked as roughly the smallest change that can actually
+  // flip a one-shot-kill/one-shot-died threshold - the smallest magnitude
+  // where the effect is still felt at all.
   const WEAKEN_DURATION = 5;
-  function weakenDmgMultForLevel(level) { return 1 - (0.2 + 0.07 * (level - 1)); }
+  function weakenDmgMultForLevel(level) { return 1 - (0.05 + 0.05 * (level - 1)); }
 
   // Threat vignette: difficulty-driven enemy stats scale flexibly enough
   // that a player can't eyeball "difficulty N means this much contact
@@ -3443,7 +3461,16 @@
         }
         else target.poisonStacks = Math.min(poisonMaxStacksForLevel(p.poisonLevel), target.poisonStacks + 1);
       }
-      if (proj.frenzies) target.frenzyTimer = frenzyDurationForLevel(p.frenzyLevel); // no stacking (v1.36.87) - just (re)starts at the current rank's full duration
+      if (proj.frenzies) {
+        // Concurrent-frenzy cap (v1.36.97): refreshing an already-frenzied
+        // enemy is always allowed (doesn't raise the concurrent count), but
+        // a brand-new activation is blocked once FRENZY_MAX_CONCURRENT
+        // enemies are already frenzied - the hit still lands normally,
+        // this status just doesn't take.
+        if (target.frenzyTimer > 0 || this.enemies.filter(e => e.frenzyTimer > 0).length < FRENZY_MAX_CONCURRENT) {
+          target.frenzyTimer = frenzyDurationForLevel(p.frenzyLevel); // no stacking (v1.36.87) - just (re)starts at the current rank's full duration
+        }
+      }
       if (proj.bombifies && Math.random() < BOMBIFY_TRIGGER_CHANCE) target.bombifyTimer = BOMBIFY_DURATION; // no stacking - just (re)starts at full duration; chance roll added v1.36.94
       if (proj.weakens) target.weakenTimer = WEAKEN_DURATION; // no stacking - just (re)starts at full duration
       if (proj.vulnerable) target.vulnerableTimer = VULNERABLE_DURATION; // no stacking (v1.36.88) - just (re)starts at full duration
