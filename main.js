@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.94';
+  const GAME_VERSION = '1.36.95';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -799,6 +799,12 @@
       // Vulnerable (脆弱, v1.36.87, split out of frenzy's old damage-taken
       // debuff) - see vulnerableDmgMultForLevel/VULNERABLE_DURATION.
       this.vulnerableLevel = 0;
+      // "Mastery" tier bullet effects (v1.36.95): each gated behind its
+      // prerequisite reaching maxLevel, same available-gate pattern as
+      // bombify's own 爆発Lv.5 gate. All three are single-rank (maxLevel:1).
+      this.rampageLevel = 0; // 暴走, gated on frenzyLevel>=5
+      this.lightningLevel = 0; // 雷撃, gated on chainLevel>=5
+      this.poisonburstLevel = 0; // 猛毒解放, gated on poisonLevel>=5
       // Impact effects (v1.36.35): persistent zones left at a hit's impact
       // point, own ranks independent of the bullet effects above (see the
       // ImpactEffect constants block for details).
@@ -1107,6 +1113,12 @@
     // one target" role as pierce/chain.
     const withKillzone = crowdBase * (1 + p.killzoneLevel * 0.15);
     const withMagnetstorm = withKillzone * (1 + p.magnetstormLevel * 0.15);
+    // Lightning (v1.36.95): turns chain's single line into a branching
+    // tree that reaches far more enemies per proc - explicitly requested to
+    // feed spawn-frequency difficulty feedback (unlike rampage/poison burst,
+    // its two sibling "mastery tier" effects, which don't), same role as
+    // pierce/chain/killzone/magnetstorm above.
+    const withLightning = withMagnetstorm * (1 + p.lightningLevel * 0.15);
     // Range (v1.36.72): more reach means more enemies are simultaneously
     // in engagement range at once (weaponRange/enemyEngagementRadius both
     // scale with it), which is the same "facing more enemies per moment"
@@ -1114,7 +1126,7 @@
     // survivalPowerMult's maxHp term below (only half the overshoot
     // counts).
     const rangeExtra = Math.max(0, p.rangeMult - 1) * 0.5;
-    return withMagnetstorm * (1 + rangeExtra);
+    return withLightning * (1 + rangeExtra);
   }
   // Reassigned (v1.36.72): now covers 最大HPアップ/ハート回復量増加/
   // 鉄壁の構え(all p.maxHp)/低速 - the upgrades whose payoff is "take
@@ -1209,6 +1221,15 @@
       // friendly-fire check in update()) - purely that, no damage
       // multiplier of any kind attached anymore.
       this.frenzyTimer = 0;
+      // Rampage (暴走, v1.36.95): only meaningful while frenzyTimer > 0 and
+      // the player owns rampageLevel - see the movement override in
+      // update(). rampageLegRemaining<=0 means "needs a fresh heading";
+      // rampageInitialized distinguishes a genuinely fresh start (fully
+      // random initial heading) from every leg after the first (which just
+      // turns ~90deg off the current heading instead).
+      this.rampageDirAngle = 0;
+      this.rampageLegRemaining = 0;
+      this.rampageInitialized = false;
       // Bombify (v1.36.5): no stack counter (doesn't stack) - a later hit
       // while already bombified just refreshes bombifyTimer back to
       // BOMBIFY_DURATION, since there's no stack benefit to reward instead.
@@ -1737,6 +1758,20 @@
   // proc) rather than raw single-hit damage, which the guaranteed version
   // didn't care about either way.
   const CHAIN_TRIGGER_CHANCE = 0.5;
+  // Lightning (雷撃, v1.36.95): gated behind 連鎖 fully ranked up, same
+  // "mastery tier" pattern as bombify's own 爆発Lv.5 gate. Once owned,
+  // chain's own resolution (see resolveProjectileHit) switches from a
+  // single linear path (each hop's next target found from the PREVIOUS
+  // hop's position, one target per hop) to a branching tree: each hop
+  // "level" finds up to LIGHTNING_BRANCH_FACTOR nearest un-chained targets
+  // from EVERY node reached at the previous level, not just one. Reach
+  // grows roughly geometrically with hop depth instead of linearly (still
+  // naturally bounded by how many enemies are actually in CHAIN_RADIUS of
+  // each node), matching "forking lightning bolts" hitting far more
+  // targets than the original single strand ever could at the same hop
+  // count. Single-rank (maxLevel:1) - the branch factor itself is a fixed
+  // constant, not something further ranks would scale.
+  const LIGHTNING_BRANCH_FACTOR = 2;
   const SLOW_MULT = 0.5;
   // The attack-power reduction that used to be bundled into slow was split
   // out into its own status, 衰弱/weaken (v1.36.8) - slow now only affects
@@ -1847,6 +1882,15 @@
   // meaningful DoT, but no longer a standalone kill button.
   const POISON_DMG_PCT = 0.01;
   function poisonMaxStacksForLevel(level) { return level; }
+  // Poison burst (猛毒解放, v1.36.95): gated behind 猛毒 fully ranked up
+  // (poisonLevel>=5, same "mastery tier" pattern as bombify's own
+  // 爆発Lv.5 gate), see the BULLET_EFFECTS entry below. Without this,
+  // re-hitting an already-max-stacked poisoned enemy with another
+  // poison-carrying hit is a wasted proc - Math.min caps stacks at the
+  // max, so nothing changes. With it, that same "wasted" hit instead
+  // instantly clears the poison and deals whatever damage the remaining
+  // ticks would have added up to over the rest of poisonTimer - see the
+  // poison branch in applyOnHitStatuses().
 
   // Frenzy (v1.36.4, buff/debuff removed in v1.36.87): a frenzied enemy
   // also deals contact damage to whichever OTHER enemy it touches, not
@@ -1884,6 +1928,22 @@
   const FRENZY_DURATION_BASE = 5;
   const FRENZY_DURATION_PER_LEVEL = 2;
   function frenzyDurationForLevel(level) { return FRENZY_DURATION_BASE + FRENZY_DURATION_PER_LEVEL * (level - 1); }
+
+  // Rampage (暴走, v1.36.95): gated behind 狂乱 fully ranked up (see the
+  // BULLET_EFFECTS entry below), same "mastery tier" pattern as bombify's
+  // own 爆発Lv.5 gate. While an enemy is both frenzied (frenzyTimer > 0)
+  // and the player owns this, its movement AI is overridden entirely (see
+  // the dispatch in update(), which checks this before the ranged/charger/
+  // plain-enemy branches) - instead of chasing the player, it walks a
+  // fixed distance in a heading, turns roughly 90 degrees (+/- some
+  // variance) off that heading, and repeats, so it visibly wanders instead
+  // of running in a slow circle. Ranged (gunner) enemies keep firing on
+  // their normal cadence during this but aim at a random angle instead of
+  // the player. Single-rank (maxLevel:1) - there's no magnitude to scale,
+  // just an on/off behavior swap.
+  const RAMPAGE_LEG_DISTANCE = 120;
+  const RAMPAGE_TURN_BASE = Math.PI / 2;
+  const RAMPAGE_TURN_VARIANCE = Math.PI / 6;
 
   // Vulnerable (脆弱, v1.36.87, reworked v1.36.88 to mirror weaken's shape
   // instead of poison's): split out of frenzy's old damage-taken debuff,
@@ -2107,6 +2167,20 @@
       upgradeDesc: level => `連鎖回数が増加する`,
     },
     {
+      // Single-rank (v1.36.95) - see LIGHTNING_BRANCH_FACTOR above for why
+      // there's no per-rank curve to raise further.
+      id: 'lightning',
+      name: '雷撃',
+      maxLevel: 1,
+      category: 'crowd',
+      getLevel: p => p.lightningLevel,
+      levelUp: p => { p.lightningLevel++; },
+      // Gated behind 連鎖 being fully ranked up - same "mastery tier"
+      // pattern as bombify's 爆発Lv.5 gate.
+      available: p => p.chainLevel >= 5,
+      introDesc: '連鎖が複数方向に分岐するようになり、1回の発動でより多くの敵に伝播する',
+    },
+    {
       id: 'slow',
       name: '低速',
       maxLevel: 5,
@@ -2143,6 +2217,20 @@
       upgradeDesc: level => `毒の重ね掛け上限が増加する`,
     },
     {
+      // Single-rank (v1.36.95) - see the poison burst comment near
+      // POISON_DMG_PCT above for how the payoff itself works.
+      id: 'poisonburst',
+      name: '猛毒解放',
+      maxLevel: 1,
+      category: 'offense',
+      getLevel: p => p.poisonburstLevel,
+      levelUp: p => { p.poisonburstLevel++; },
+      // Gated behind 猛毒 being fully ranked up - same "mastery tier"
+      // pattern as bombify's 爆発Lv.5 gate.
+      available: p => p.poisonLevel >= 5,
+      introDesc: '毒状態が最大スタックに達した敵に(毒を伴う)攻撃が当たると、毒スタックが瞬時に解消され、本来毒によって与えられるはずだった残りのダメージが即座に発生するようになる',
+    },
+    {
       id: 'frenzy',
       name: '狂乱',
       maxLevel: 5,
@@ -2151,6 +2239,20 @@
       levelUp: p => { p.frenzyLevel++; },
       introDesc: '着弾した敵を狂乱状態にし、自機だけでなく他の敵も攻撃するようになる(同士討ち)',
       upgradeDesc: level => `狂乱の持続時間が増加する`,
+    },
+    {
+      // Single-rank (v1.36.95) - see the movement-override comment near
+      // RAMPAGE_LEG_DISTANCE above for how the payoff itself works.
+      id: 'rampage',
+      name: '暴走',
+      maxLevel: 1,
+      category: 'defense',
+      getLevel: p => p.rampageLevel,
+      levelUp: p => { p.rampageLevel++; },
+      // Gated behind 狂乱 being fully ranked up - same "mastery tier"
+      // pattern as bombify's 爆発Lv.5 gate.
+      available: p => p.frenzyLevel >= 5,
+      introDesc: '狂乱状態の敵が自機を狙わなくなり、ランダムな方向へ徘徊するようになる(射撃系の敵も攻撃方向がランダムになる)',
     },
     {
       // Single-rank now (v1.36.91, was maxLevel:5): the per-rank damage
@@ -3351,6 +3453,20 @@
       if (proj.slowDuration > 0) target.slowTimer = Math.max(target.slowTimer, proj.slowDuration);
       if (proj.poisons) {
         if (target.poisonTimer <= 0) { target.poisonTimer = POISON_DURATION; target.poisonStacks = 1; }
+        else if (p.poisonburstLevel > 0 && target.poisonStacks >= poisonMaxStacksForLevel(p.poisonLevel)) {
+          // Poison burst (v1.36.95): instead of the wasted no-op a re-hit at
+          // max stacks would otherwise be, instantly pay out the remaining
+          // ticks (maxHp * POISON_DMG_PCT * stacks per second, for
+          // whatever's left of poisonTimer) as one lump of damage, then
+          // clear the status. Routed through damageEnemy() like every other
+          // damage source, so vulnerable's multiplier still applies.
+          const burstDmg = target.maxHp * POISON_DMG_PCT * target.poisonStacks * target.poisonTimer;
+          target.poisonTimer = 0;
+          target.poisonStacks = 0;
+          this.damageEnemy(target, burstDmg);
+          target.hitFlash = 0.12;
+          for (let i = 0; i < 8; i++) this.particles.push(new Particle(target.x, target.y, STATUS_DOT_COLORS.poison, 2.5));
+        }
         else target.poisonStacks = Math.min(poisonMaxStacksForLevel(p.poisonLevel), target.poisonStacks + 1);
       }
       if (proj.frenzies) target.frenzyTimer = frenzyDurationForLevel(p.frenzyLevel); // no stacking (v1.36.87) - just (re)starts at the current rank's full duration
@@ -3418,40 +3534,80 @@
       }
 
       if (proj.chainHops > 0 && Math.random() < CHAIN_TRIGGER_CHANCE) {
-        const chained = new Set([e]);
-        let fromX = e.x, fromY = e.y;
-        for (let hop = 0; hop < proj.chainHops; hop++) {
-          let nearest = null, nearestD2 = CHAIN_RADIUS * CHAIN_RADIUS;
-          for (const cand of this.enemies) {
-            if (chained.has(cand)) continue;
-            const d2 = dist2(fromX, fromY, cand.x, cand.y);
-            if (d2 <= nearestD2) { nearest = cand; nearestD2 = d2; }
-          }
-          if (!nearest) break;
-          this.damageEnemy(nearest, proj.damage * CHAIN_DAMAGE_PCT);
-          nearest.hitFlash = 0.12;
-          this.applyOnHitStatuses(proj, nearest);
-          this.chainZaps.push(new ChainZap(fromX, fromY, nearest.x, nearest.y));
-
-          // Chain's role is spreading damage/status to more targets, not
-          // diminishing whatever it spreads - so if explosion is also
-          // equipped, each chained hit gets its own independent
-          // EXPLOSION_TRIGGER_CHANCE roll to detonate too, using the
-          // player's full attack power (proj.damage) rather than chain's
-          // own reduced damage.
-          if (proj.explosionRadius > 0 && Math.random() < EXPLOSION_TRIGGER_CHANCE) {
-            for (const other of this.enemies) {
-              if (other === nearest || chained.has(other)) continue;
-              if (dist(other.x, other.y, nearest.x, nearest.y) <= proj.explosionRadius) {
-                this.damageEnemy(other, proj.damage * EXPLOSION_DAMAGE_PCT);
-                other.hitFlash = 0.12;
-                for (let i = 0; i < 8; i++) this.particles.push(new Particle(nearest.x, nearest.y, '#ff4500', 2.5));
+        if (p.lightningLevel > 0) {
+          // Lightning (v1.36.95): each hop "level" branches out from EVERY
+          // node reached at the previous level (up to LIGHTNING_BRANCH_FACTOR
+          // nearest un-chained targets per node), instead of the plain
+          // version's single linear path below. Same per-target payoff
+          // (damage/status/explosion synergy) as the linear path, just
+          // applied at every branch node instead of a single running "from"
+          // point.
+          const chained = new Set([e]);
+          let frontier = [e];
+          for (let hop = 0; hop < proj.chainHops && frontier.length > 0; hop++) {
+            const nextFrontier = [];
+            for (const node of frontier) {
+              const candidates = this.enemies
+                .filter(cand => !chained.has(cand) && dist2(node.x, node.y, cand.x, cand.y) <= CHAIN_RADIUS * CHAIN_RADIUS)
+                .sort((a, b) => dist2(node.x, node.y, a.x, a.y) - dist2(node.x, node.y, b.x, b.y))
+                .slice(0, LIGHTNING_BRANCH_FACTOR);
+              for (const cand of candidates) {
+                chained.add(cand);
+                this.damageEnemy(cand, proj.damage * CHAIN_DAMAGE_PCT);
+                cand.hitFlash = 0.12;
+                this.applyOnHitStatuses(proj, cand);
+                this.chainZaps.push(new ChainZap(node.x, node.y, cand.x, cand.y));
+                if (proj.explosionRadius > 0 && Math.random() < EXPLOSION_TRIGGER_CHANCE) {
+                  for (const other of this.enemies) {
+                    if (other === cand || chained.has(other)) continue;
+                    if (dist(other.x, other.y, cand.x, cand.y) <= proj.explosionRadius) {
+                      this.damageEnemy(other, proj.damage * EXPLOSION_DAMAGE_PCT);
+                      other.hitFlash = 0.12;
+                      for (let i = 0; i < 8; i++) this.particles.push(new Particle(cand.x, cand.y, '#ff4500', 2.5));
+                    }
+                  }
+                }
+                nextFrontier.push(cand);
               }
             }
+            frontier = nextFrontier;
           }
+        } else {
+          const chained = new Set([e]);
+          let fromX = e.x, fromY = e.y;
+          for (let hop = 0; hop < proj.chainHops; hop++) {
+            let nearest = null, nearestD2 = CHAIN_RADIUS * CHAIN_RADIUS;
+            for (const cand of this.enemies) {
+              if (chained.has(cand)) continue;
+              const d2 = dist2(fromX, fromY, cand.x, cand.y);
+              if (d2 <= nearestD2) { nearest = cand; nearestD2 = d2; }
+            }
+            if (!nearest) break;
+            this.damageEnemy(nearest, proj.damage * CHAIN_DAMAGE_PCT);
+            nearest.hitFlash = 0.12;
+            this.applyOnHitStatuses(proj, nearest);
+            this.chainZaps.push(new ChainZap(fromX, fromY, nearest.x, nearest.y));
 
-          chained.add(nearest);
-          fromX = nearest.x; fromY = nearest.y;
+            // Chain's role is spreading damage/status to more targets, not
+            // diminishing whatever it spreads - so if explosion is also
+            // equipped, each chained hit gets its own independent
+            // EXPLOSION_TRIGGER_CHANCE roll to detonate too, using the
+            // player's full attack power (proj.damage) rather than chain's
+            // own reduced damage.
+            if (proj.explosionRadius > 0 && Math.random() < EXPLOSION_TRIGGER_CHANCE) {
+              for (const other of this.enemies) {
+                if (other === nearest || chained.has(other)) continue;
+                if (dist(other.x, other.y, nearest.x, nearest.y) <= proj.explosionRadius) {
+                  this.damageEnemy(other, proj.damage * EXPLOSION_DAMAGE_PCT);
+                  other.hitFlash = 0.12;
+                  for (let i = 0; i < 8; i++) this.particles.push(new Particle(nearest.x, nearest.y, '#ff4500', 2.5));
+                }
+              }
+            }
+
+            chained.add(nearest);
+            fromX = nearest.x; fromY = nearest.y;
+          }
         }
       }
     }
@@ -3820,6 +3976,55 @@
       }
     }
 
+    // Rampage (暴走, v1.36.95): overrides movement entirely for any enemy
+    // that's both frenzied and facing a player who owns this - takes
+    // priority over the gunner/blitz/plain-enemy dispatch in update()
+    // (called instead of any of those, not alongside), so a frenzied
+    // gunner/blitz drops its usual state machine for the duration and just
+    // wanders like everything else. Once frenzyTimer runs out, whichever
+    // state that enemy's own movement AI was in (blitz's approach/pause/
+    // charging, gunner's rangedHolding) simply resumes untouched - none of
+    // it advanced while this override was active.
+    //
+    // Walks RAMPAGE_LEG_DISTANCE in a straight line, then turns roughly
+    // RAMPAGE_TURN_BASE (90deg) off that heading (+/- RAMPAGE_TURN_VARIANCE,
+    // and randomly left or right) and repeats - a deliberate "drunken walk"
+    // of straight legs and turns rather than a continuously-curving path,
+    // which would just look like slowly circling in place.
+    updateRampageMovement(e, p, dt, effSpeed) {
+      if (e.rampageLegRemaining <= 0) {
+        if (!e.rampageInitialized) {
+          e.rampageDirAngle = Math.random() * Math.PI * 2;
+          e.rampageInitialized = true;
+        } else {
+          const turnSign = Math.random() < 0.5 ? 1 : -1;
+          const variance = (Math.random() * 2 - 1) * RAMPAGE_TURN_VARIANCE;
+          e.rampageDirAngle += turnSign * RAMPAGE_TURN_BASE + variance;
+        }
+        e.rampageLegRemaining = RAMPAGE_LEG_DISTANCE;
+      }
+      const step = effSpeed * dt;
+      e.x += Math.cos(e.rampageDirAngle) * step;
+      e.y += Math.sin(e.rampageDirAngle) * step;
+      e.rampageLegRemaining -= step;
+
+      // Ranged enemies keep firing on their normal cadence, just aimed at a
+      // random angle instead of the player - reuses rangedCooldown/
+      // GUNNER_ATK_INTERVAL/GUNNER_PROJ_SPEED unchanged so behavior picks
+      // back up seamlessly once rampage/frenzy ends.
+      if (e.ranged) {
+        e.rangedCooldown -= dt;
+        if (e.rangedCooldown <= 0) {
+          e.rangedCooldown += GUNNER_ATK_INTERVAL;
+          const ang = Math.random() * Math.PI * 2;
+          this.enemyProjectiles.push(new EnemyProjectile(
+            e.x, e.y, Math.cos(ang) * GUNNER_PROJ_SPEED, Math.sin(ang) * GUNNER_PROJ_SPEED,
+            e.rangedAtkDamage, GUNNER_PROJ_RADIUS
+          ));
+        }
+      }
+    }
+
     update(dt) {
       if (this.over || this.levelingUp || paused) return;
       this.time += dt;
@@ -4140,8 +4345,12 @@
         // gets the plain straight-line-or-flow-field-with-wander movement
         // below. Either way, resolveWallCollision and all the per-frame
         // status-effect ticking/contact-damage logic further down apply
-        // uniformly regardless of which branch moved this enemy.
-        if (e.ranged) {
+        // uniformly regardless of which branch moved this enemy. Rampage
+        // (v1.36.95) takes priority over all three when active (frenzied +
+        // player owns it) - see updateRampageMovement.
+        if (e.frenzyTimer > 0 && p.rampageLevel > 0) {
+          this.updateRampageMovement(e, p, dt, effSpeed);
+        } else if (e.ranged) {
           this.updateGunnerMovement(e, p, d, dt, effSpeed);
         } else if (e.charger) {
           this.updateBlitzMovement(e, p, d, dt, effSpeed);
@@ -5018,10 +5227,13 @@
     const bulletLines = [];
     if (p.explosionLevel > 0) bulletLines.push(`爆発 ランク${p.explosionLevel}`);
     if (p.chainLevel > 0) bulletLines.push(`連鎖 ランク${p.chainLevel}`);
+    if (p.lightningLevel > 0) bulletLines.push(`雷撃 ランク${p.lightningLevel}`);
     if (p.slowLevel > 0) bulletLines.push(`低速 ランク${p.slowLevel}`);
     if (p.pierce > 0) bulletLines.push(`貫通 ランク${p.pierce}`);
     if (p.poisonLevel > 0) bulletLines.push(`猛毒 ランク${p.poisonLevel}`);
+    if (p.poisonburstLevel > 0) bulletLines.push(`猛毒解放 ランク${p.poisonburstLevel}`);
     if (p.frenzyLevel > 0) bulletLines.push(`狂乱 ランク${p.frenzyLevel}`);
+    if (p.rampageLevel > 0) bulletLines.push(`暴走 ランク${p.rampageLevel}`);
     if (p.bombifyLevel > 0) bulletLines.push(`爆弾化 ランク${p.bombifyLevel}`);
     if (p.weakenLevel > 0) bulletLines.push(`衰弱 ランク${p.weakenLevel}`);
     if (p.vulnerableLevel > 0) bulletLines.push(`脆弱 ランク${p.vulnerableLevel}`);
