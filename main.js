@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.87';
+  const GAME_VERSION = '1.36.88';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -788,7 +788,7 @@
       this.bombifyLevel = 0;
       this.weakenLevel = 0;
       // Vulnerable (脆弱, v1.36.87, split out of frenzy's old damage-taken
-      // debuff) - see vulnerableDmgMultForStacks/VULNERABLE_DURATION.
+      // debuff) - see vulnerableDmgMultForLevel/VULNERABLE_DURATION.
       this.vulnerableLevel = 0;
       // Impact effects (v1.36.35): persistent zones left at a hit's impact
       // point, own ranks independent of the bullet effects above (see the
@@ -1213,14 +1213,12 @@
       // active - see weakenDmgMultForLevel and its uses in update().
       this.weakenTimer = 0;
       // Vulnerable (脆弱, v1.36.87, split out of frenzy's old damage-taken
-      // debuff): same duration-doesn't-reset/rank-gates-stack-cap rules as
-      // poison - vulnerableTimer counts down from VULNERABLE_DURATION and
-      // is never refreshed by later hits, only vulnerableStacks goes up
-      // (capped at vulnerableMaxStacksForLevel(p.vulnerableLevel)), raising
-      // how much extra damage this enemy takes from every source (see
-      // vulnerableDmgMultForStacks and damageEnemy()).
+      // debuff; reworked v1.36.88 to pair with weaken above instead of
+      // poison): no stack counter, same refresh-on-rehit rule as weaken -
+      // a later hit just resets vulnerableTimer to VULNERABLE_DURATION.
+      // Raises how much extra damage this enemy takes from every source
+      // while active - see vulnerableDmgMultForLevel and damageEnemy().
       this.vulnerableTimer = 0;
-      this.vulnerableStacks = 0;
       // Set by the emergency-bomb special so its mass-kill burst is exempt
       // from GEM_CAP below - the whole point of that ability is stockpiling
       // gems for one big level-up burst, which the cap would otherwise gut.
@@ -1870,21 +1868,31 @@
   const FRENZY_DURATION_PER_LEVEL = 2;
   function frenzyDurationForLevel(level) { return FRENZY_DURATION_BASE + FRENZY_DURATION_PER_LEVEL * (level - 1); }
 
-  // Vulnerable (脆弱, v1.36.87): split out of frenzy's old damage-taken
-  // debuff, unchanged in formula (+20%/stack, uncapped multiplier growth
-  // but capped stack count) but now its own independent bullet effect a
-  // player has to pick on its own. Same duration/stacking shape as poison:
-  // VULNERABLE_DURATION doesn't reset on a later hit, only
-  // vulnerableStacks (capped by vulnerableMaxStacksForLevel) goes up.
+  // Vulnerable (脆弱, v1.36.87, reworked v1.36.88 to mirror weaken's shape
+  // instead of poison's): split out of frenzy's old damage-taken debuff,
+  // now its own independent bullet effect a player has to pick on its own.
+  // Originally a poison-style stacking status (+20%/stack, capped stack
+  // count) - changed to pair conceptually with 衰弱/weaken (its exact
+  // opposite: weaken reduces a dealt-damage multiplier by rank, vulnerable
+  // increases a taken-damage multiplier by rank) rather than with poison,
+  // since both weaken and vulnerable are single-flag "is this debuff
+  // active or not" statuses with no real use for a magnitude-via-repeated-
+  // hits mechanic. No stacking at all now - VULNERABLE_DURATION doesn't
+  // extend, a later hit just refreshes vulnerableTimer back to full (same
+  // non-stacking, refresh-on-rehit design as weaken/bombify). Rank now
+  // raises the damage-taken multiplier directly instead of a stack cap.
   // Applies uniformly to EVERY damage source via damageEnemy() (player
   // hits, explosion, chain, poison, killzone, bombify splash, frenzy's own
   // friendly fire, Tank's reflect) - it isn't wired to frenzy or friendly
   // fire specifically at all, but naturally pairs well with anything that
   // lands repeated hits on the same clustered/afflicted enemies.
   const VULNERABLE_DURATION = 5;
-  const VULNERABLE_DMG_MULT_PER_STACK = 0.2;
-  function vulnerableMaxStacksForLevel(level) { return level; }
-  function vulnerableDmgMultForStacks(stacks) { return 1 + stacks * VULNERABLE_DMG_MULT_PER_STACK; }
+  // Mirrors weakenDmgMultForLevel's exact 30%->70% curve, just as an
+  // increase instead of a decrease - weaken already reused this same curve
+  // from bombify, so reusing it a second time here keeps all three
+  // "single-flag, rank-scales-the-percentage" statuses on one shared
+  // number line instead of each inventing its own curve.
+  function vulnerableDmgMultForLevel(level) { return 1 + (0.3 + 0.1 * (level - 1)); }
 
   // Bombify (v1.36.5): unlike poison/frenzy, this status doesn't stack at
   // all and has no effect while the target is alive - a later hit while
@@ -2115,26 +2123,30 @@
       category: 'defense',
       getLevel: p => p.weakenLevel,
       levelUp: p => { p.weakenLevel++; },
-      // Gated behind 低速 being fully ranked up, same idea as bombify/爆発.
-      available: p => p.slowLevel >= 5,
+      // Gate removed (v1.36.88) - previously required 低速 fully ranked up
+      // first, same idea as bombify/爆発. Dropped to put weaken and its new
+      // pair vulnerable (below) on equal footing: neither is gated behind
+      // another bullet effect anymore.
       introDesc: '着弾した敵を衰弱状態にし、攻撃力を低下させる。重ね掛けはされず、再度攻撃が当たると持続時間が最大まで更新される',
       upgradeDesc: level => `衰弱による攻撃力低下率が増加する`,
     },
     {
-      // Split out of frenzy's old damage-taken debuff (v1.36.87, see
-      // VULNERABLE_DMG_MULT_PER_STACK/vulnerableDmgMultForStacks) - same
-      // formula, now its own independent investment instead of a side
-      // effect every frenzy pick came bundled with. Applies to every
-      // damage source uniformly (damageEnemy()), not just friendly fire -
-      // deliberately doesn't reference frenzy at all here.
+      // Split out of frenzy's old damage-taken debuff (v1.36.87), reworked
+      // (v1.36.88) from a poison-style stacking status into weaken's exact
+      // mirror instead: no stacking, fixed duration, rank raises the
+      // damage-taken multiplier directly (vulnerableDmgMultForLevel) - the
+      // same shape as weakenDmgMultForLevel just as an increase rather
+      // than a decrease. Applies to every damage source uniformly
+      // (damageEnemy()), not just friendly fire - deliberately doesn't
+      // reference frenzy at all here.
       id: 'vulnerable',
       name: '脆弱',
       maxLevel: 5,
       category: 'offense',
       getLevel: p => p.vulnerableLevel,
       levelUp: p => { p.vulnerableLevel++; },
-      introDesc: '着弾した敵を脆弱状態にし、あらゆる攻撃に対する被ダメージを増加させるようになる。脆弱状態中に再度攻撃が当たると重ね掛けされ、被ダメージ増加率が上昇する(持続時間は延長されない)',
-      upgradeDesc: level => `脆弱の重ね掛け上限が増加する`,
+      introDesc: '着弾した敵を脆弱状態にし、あらゆる攻撃に対する被ダメージを増加させる。重ね掛けはされず、再度攻撃が当たると持続時間が最大まで更新される',
+      upgradeDesc: level => `脆弱による被ダメージ増加率が上昇する`,
     },
     {
       id: 'magnetstorm',
@@ -3131,10 +3143,7 @@
       if (proj.frenzies) target.frenzyTimer = frenzyDurationForLevel(p.frenzyLevel); // no stacking (v1.36.87) - just (re)starts at the current rank's full duration
       if (proj.bombifies) target.bombifyTimer = BOMBIFY_DURATION; // no stacking - just (re)starts at full duration
       if (proj.weakens) target.weakenTimer = WEAKEN_DURATION; // no stacking - just (re)starts at full duration
-      if (proj.vulnerable) {
-        if (target.vulnerableTimer <= 0) { target.vulnerableTimer = VULNERABLE_DURATION; target.vulnerableStacks = 1; }
-        else target.vulnerableStacks = Math.min(vulnerableMaxStacksForLevel(p.vulnerableLevel), target.vulnerableStacks + 1);
-      }
+      if (proj.vulnerable) target.vulnerableTimer = VULNERABLE_DURATION; // no stacking (v1.36.88) - just (re)starts at full duration
     }
 
     // Adds an impact-effect zone. At most one of a given type can exist at
@@ -3150,12 +3159,17 @@
     // Single choke point for every source of damage dealt TO an enemy
     // (direct hits, explosion splash, chain, poison DoT, killzone ticks,
     // bombify detonation splash, frenzy friendly-fire, Tank's reflect
-    // passive) so vulnerable's stack-based multiplier (v1.36.87, split out
-    // of frenzy - see vulnerableDmgMultForStacks) applies uniformly
-    // regardless of what's dealing the damage, rather than needing a copy
-    // of the multiplier at every call site.
+    // passive) so vulnerable's rank-based multiplier (v1.36.87, split out
+    // of frenzy; reworked to a flat rank lookup in v1.36.88 - see
+    // vulnerableDmgMultForLevel) applies uniformly regardless of what's
+    // dealing the damage, rather than needing a copy of the multiplier at
+    // every call site. Reads the player's CURRENT vulnerableLevel at the
+    // moment of the hit (same as weakenDmgMultForLevel does for weaken,
+    // below) rather than a level baked in when the status was first
+    // applied - a mid-fight rank-up immediately strengthens the multiplier
+    // on every already-vulnerable enemy, not just future hits.
     damageEnemy(enemy, amount) {
-      const mult = enemy.vulnerableTimer > 0 ? vulnerableDmgMultForStacks(enemy.vulnerableStacks) : 1;
+      const mult = enemy.vulnerableTimer > 0 ? vulnerableDmgMultForLevel(this.player.vulnerableLevel) : 1;
       enemy.hp -= amount * mult;
     }
 
@@ -3949,10 +3963,7 @@
         if (e.frenzyTimer > 0) e.frenzyTimer -= dt;
         if (e.bombifyTimer > 0) e.bombifyTimer -= dt; // no effect while alive - see the detonation-resolution block below
         if (e.weakenTimer > 0) e.weakenTimer -= dt;
-        if (e.vulnerableTimer > 0) {
-          e.vulnerableTimer -= dt;
-          if (e.vulnerableTimer <= 0) e.vulnerableStacks = 0;
-        }
+        if (e.vulnerableTimer > 0) e.vulnerableTimer -= dt;
 
         // Weakened enemies hit softer (frenzy no longer touches dealt
         // damage at all as of v1.36.87 - it's purely the friendly-fire
@@ -4482,15 +4493,16 @@
         // at first, but the list naturally grows as more statuses are added.
         const activeStatusDots = [];
         if (e.slowTimer > 0) activeStatusDots.push(STATUS_DOT_COLORS.slow);
-        // Poison/vulnerable stacks: one dot per stack, so the stack count
-        // reads at a glance rather than needing a number readout.
+        // Poison stacks: one dot per stack, so the stack count reads at a
+        // glance rather than needing a number readout.
         for (let i = 0; i < e.poisonStacks; i++) activeStatusDots.push(STATUS_DOT_COLORS.poison);
-        for (let i = 0; i < e.vulnerableStacks; i++) activeStatusDots.push(STATUS_DOT_COLORS.vulnerable);
-        // Frenzy no longer stacks (v1.36.87) - just a single dot like
-        // bombify/weaken below.
+        // Frenzy no longer stacks (v1.36.87), and vulnerable never did
+        // (v1.36.88 reworked it to mirror weaken) - just a single dot each,
+        // like bombify/weaken below.
         if (e.frenzyTimer > 0) activeStatusDots.push(STATUS_DOT_COLORS.frenzy);
         if (e.bombifyTimer > 0) activeStatusDots.push(STATUS_DOT_COLORS.bombify);
         if (e.weakenTimer > 0) activeStatusDots.push(STATUS_DOT_COLORS.weaken);
+        if (e.vulnerableTimer > 0) activeStatusDots.push(STATUS_DOT_COLORS.vulnerable);
         if (activeStatusDots.length > 0) {
           const dotRadius = 3;
           const dotSpacing = 9;
