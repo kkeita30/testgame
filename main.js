@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.82';
+  const GAME_VERSION = '1.36.83';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -455,49 +455,47 @@
   // Charge beam (v1.36.18): the only weapon that isn't driven by
   // atkTimer/atkCooldown as a per-shot cooldown at all. Holding the
   // move-input (the same press/hold gesture that drives movement, so
-  // charging never costs mobility) builds up charge in discrete stages
-  // (v1.36.22); releasing fires an instant, infinite-pierce beam, then
-  // resets chargeTime to 0 regardless of whether anything was hit -
-  // releasing with no target in range wastes the charge, which is the
-  // real cost of committing to a release at the wrong moment. The
-  // atkspeed upgrade still lowers atkCooldown as normal; here that
-  // translates to a faster charge rate (ATK_COOLDOWN_BASE / atkCooldown)
-  // rather than a shorter cooldown, so it's never a dead pick.
+  // charging never costs mobility) builds up charge; releasing fires an
+  // instant, infinite-pierce beam per target, then resets chargeTime to 0
+  // regardless of whether anything was hit - releasing with no target in
+  // range wastes the charge, which is the real cost of committing to a
+  // release at the wrong moment. The atkspeed upgrade still lowers
+  // atkCooldown as normal; here that translates to a faster charge rate
+  // (ATK_COOLDOWN_BASE / atkCooldown) rather than a shorter cooldown, so
+  // it's never a dead pick.
   //
-  // Stages (v1.36.22): rank no longer widens the beam directly (that used
-  // to stack multiplicatively with the charge-time width bonus below,
-  // ballooning into an excessive max width at high rank + full charge).
-  // Instead rank raises Player.chargeMaxStages (see WEAPONS' innate
-  // effect) - width now grows in fixed per-stage steps up to whatever
-  // stage cap the player's rank allows, unifying rank and charge-time into
-  // one progression instead of two multiplying axes. CHARGE_TIME_PER_STAGE
-  // is constant regardless of rank, so a higher stage cap directly means a
-  // longer total hold to reach this weapon's (now higher) max width - the
-  // width ceiling itself is what rank buys, not a speed-up.
-  const CHARGE_TIME_PER_STAGE = 0.5;
-  function chargeMaxStagesForRank(rank) { return rank; }
-  const CHARGE_BASE_HALF_WIDTH = 8;
-  const CHARGE_WIDTH_PER_STAGE = 8;
-  function chargeHalfWidthForStage(stage) { return CHARGE_BASE_HALF_WIDTH + CHARGE_WIDTH_PER_STAGE * (stage - 1); }
-  // Damage used to be a flat multiplier regardless of charge stage
-  // (v1.36.20) - only the beam's width scaled with how long you held it.
-  // Re-added stage-scaling damage on top of that (v1.36.49): CHARGE_DAMAGE_MULT
-  // is now just the stage-1 value, and each additional completed stage adds
-  // CHARGE_DAMAGE_MULT_PER_STAGE on top (see chargeDamageMultForStage below),
-  // so a longer hold now buys both a wider beam AND a harder hit, not width
-  // alone.
+  // Multi-beam rework (v1.36.83): previously rank raised Player.chargeMaxStages,
+  // a cap on how many discrete charge "stages" a longer hold could reach,
+  // with each stage widening AND strengthening the single beam
+  // (chargeHalfWidthForStage/chargeDamageMultForStage, both removed). That
+  // made this weapon a single-target, single-direction hit no matter how
+  // far it was invested in - a poor fit for a game about surviving a
+  // swarm from every side. Replaced with the same multishot model the
+  // standard weapon already uses (WEAPONS' innate effect below sets
+  // Player.chargeBeamCount = rank, mirroring projCount = rank): a single
+  // fixed charge threshold (CHARGE_TIME_TO_FIRE) gates whether a release
+  // fires at all, and once it does, chargeBeamCount independent beams fire
+  // simultaneously, each at the same fixed width/damage
+  // (CHARGE_HALF_WIDTH/CHARGE_DAMAGE_MULT - both left at their old stage-1
+  // values, so a fresh rank-1 charge beam is unchanged from before) and
+  // each aimed at its own distinct nearest target (fireChargeBeam below),
+  // instead of one beam that only ever gets wider/stronger with a longer
+  // hold. Holding past CHARGE_TIME_TO_FIRE no longer does anything further
+  // - full charge is full charge, there's no more "how much extra" to wait
+  // for.
+  const CHARGE_TIME_TO_FIRE = 0.5;
+  const CHARGE_HALF_WIDTH = 8;
   const CHARGE_DAMAGE_MULT = 3.0;
-  const CHARGE_DAMAGE_MULT_PER_STAGE = 0.75;
-  function chargeDamageMultForStage(stage) { return CHARGE_DAMAGE_MULT + CHARGE_DAMAGE_MULT_PER_STAGE * (stage - 1); }
 
-  // Target lock interval (v1.36.78, see Game.updateChargeBeam): replaces
-  // the v1.36.77 forward-strip targeting experiment, which was reverted
-  // after not actually feeling better in practice. Targeting itself is
-  // back to the original "nearest enemy anywhere in range" rule - this
-  // constant instead rate-limits how often that search is allowed to
-  // change which enemy is locked on, so a multi-second hold doesn't keep
-  // re-chasing whatever's nearest frame to frame and flip to a totally
-  // different enemy right before release.
+  // Target lock interval (v1.36.78, generalized to a target SET in
+  // v1.36.83, see Game.updateChargeBeam): targeting is "nearest N enemies
+  // anywhere in range" (N = Player.chargeBeamCount), but that search is
+  // only allowed to re-run (and thus change which enemies are locked on)
+  // once every CHARGE_TARGET_LOCK_INTERVAL seconds, or immediately if any
+  // currently-locked target has died/left play in the meantime - same
+  // reasoning as the original single-target version: a multi-second hold
+  // shouldn't keep re-chasing whatever's nearest frame to frame and flip
+  // to totally different enemies right before release.
   const CHARGE_TARGET_LOCK_INTERVAL = 1.0;
 
   // Rapid Fire (v1.36.45, rebalanced v1.36.46): fires shots along the
@@ -571,12 +569,12 @@
     {
       id: 'charge',
       name: 'チャージビーム',
-      desc: '画面を押し続けている間チャージが進み(移動操作と同じ操作なので、チャージ自体は移動を妨げない)、指を離すと無限貫通のビームを発射する。ごく短い即離しでは発射されない。連射は不可能だが、威力は常に高め。チャージ段階が進むほどビームの幅と威力の両方が上がる。ランクアップで最大チャージ段階数が増える(1段階あたりの時間は変わらないため、最大までの時間も伸びる)。',
+      desc: '画面を押し続けている間チャージが進み(移動操作と同じ操作なので、チャージ自体は移動を妨げない)、指を離すと無限貫通のビームを発射する。ごく短い即離しでは発射されない。1本ごとの威力・幅は常に一定だが、レベルアップに応じて同時に発射できるビーム数が増え、それぞれが別々の敵を自動で狙う。',
       apply: (p) => {},
       innateEffect: {
-        name: '最大チャージ数アップ',
-        desc: 'レベルアップに応じて自動でランクが上昇し、最大チャージ段階数が増えていく',
-        applyRank(p, rank) { p.chargeMaxStages = chargeMaxStagesForRank(rank); },
+        name: 'マルチビーム',
+        desc: 'レベルアップに応じて自動でランクが上昇し、同時発射できるビーム数が増えていく',
+        applyRank(p, rank) { p.chargeBeamCount = rank; },
       },
     },
     {
@@ -668,12 +666,13 @@
       // Charge beam weapon only (see WEAPONS/updateChargeBeam) - unused by
       // any other weapon, harmless default otherwise.
       this.chargeTime = 0;
-      this.chargeMaxStages = 1;
+      this.chargeBeamCount = 1;
       this.chargeWasHeld = false;
-      // Target lock (v1.36.78, see updateChargeBeam/CHARGE_TARGET_LOCK_INTERVAL)
-      // - the enemy currently locked onto during a hold, and how much
-      // longer that lock has left before it's allowed to switch.
-      this.chargeTarget = null;
+      // Target lock (v1.36.78, generalized to an array in v1.36.83, see
+      // updateChargeBeam/CHARGE_TARGET_LOCK_INTERVAL) - the (up to
+      // chargeBeamCount) enemies currently locked onto during a hold, and
+      // how much longer that lock has left before it's allowed to change.
+      this.chargeTargets = [];
       this.chargeTargetLockTimer = 0;
       // Rapid Fire weapon only (see WEAPONS/fireRapidFire) - unused by any
       // other weapon, harmless default otherwise.
@@ -2821,98 +2820,90 @@
     // Charge beam's per-frame tick (see WEAPONS): accumulates p.chargeTime
     // while the move-input is actively held (isMoveInputHeld - the same
     // gesture that drives movement, so charging never costs mobility),
-    // capped at this player's current max (chargeMaxStages *
-    // CHARGE_TIME_PER_STAGE - see WEAPONS' innate effect for how rank
-    // raises chargeMaxStages). atkCooldown (lowered by the atkspeed
-    // upgrade like any other weapon) is read as a charge-rate multiplier
-    // against ATK_COOLDOWN_BASE rather than as a per-shot cooldown, so
-    // investing in attack speed still pays off for this weapon. Firing
-    // happens on the falling edge of "held" (release), not on a timer - but
-    // only once stage 1 (CHARGE_TIME_PER_STAGE) has actually been reached;
-    // a release below that threshold just resets chargeTime with no shot
-    // at all, the same as any other release, closing the "rapid-tap = free
-    // rapid-fire" loophole a zero-minimum would otherwise leave open.
+    // capped at the single fixed CHARGE_TIME_TO_FIRE threshold (v1.36.83 -
+    // previously this cap scaled with rank via chargeMaxStages; now rank
+    // instead raises chargeBeamCount, see WEAPONS' innate effect, so
+    // holding past CHARGE_TIME_TO_FIRE has nothing further to buy).
+    // atkCooldown (lowered by the atkspeed upgrade like any other weapon)
+    // is read as a charge-rate multiplier against ATK_COOLDOWN_BASE rather
+    // than as a per-shot cooldown, so investing in attack speed still pays
+    // off for this weapon. Firing happens on the falling edge of "held"
+    // (release), not on a timer - but only once CHARGE_TIME_TO_FIRE has
+    // actually been reached; a release below that threshold just resets
+    // chargeTime with no shot at all, the same as any other release,
+    // closing the "rapid-tap = free rapid-fire" loophole a zero-minimum
+    // would otherwise leave open.
     updateChargeBeam(dt) {
       const p = this.player;
       const holding = isMoveInputHeld();
       if (holding) {
-        // Target lock (v1.36.78): replaces the v1.36.77 forward-strip
-        // experiment (reverted - it didn't actually feel better in
-        // practice), while still fixing the original complaint a
-        // different way. Targeting itself is back to plain "nearest enemy
-        // anywhere in range" (exactly as it was before v1.36.77) - what's
-        // new is that this search only actually re-runs (and is only
-        // allowed to switch to a different enemy) once every
-        // CHARGE_TARGET_LOCK_INTERVAL seconds, or immediately if the
+        // Target lock (v1.36.78, generalized to a target SET in v1.36.83):
+        // targeting is the nearest p.chargeBeamCount enemies anywhere in
+        // range - what's rate-limited is how often that search is allowed
+        // to re-run (and thus change who's locked on): only once every
+        // CHARGE_TARGET_LOCK_INTERVAL seconds, or immediately if ANY
         // currently-locked target died/left play in the meantime. A
         // multi-second hold no longer re-aims at whatever's nearest every
-        // single frame, so it can't flip to a completely different enemy
+        // single frame, so it can't flip to completely different enemies
         // the instant before release just because something briefly got
         // closer.
         p.chargeTargetLockTimer -= dt;
-        const stillAlive = p.chargeTarget && this.enemies.includes(p.chargeTarget);
-        if (!stillAlive || p.chargeTargetLockTimer <= 0) {
+        const allStillAlive = p.chargeTargets.length > 0 && p.chargeTargets.every(t => this.enemies.includes(t));
+        if (!allStillAlive || p.chargeTargetLockTimer <= 0) {
           const range2 = weaponRange(p) ** 2;
-          let nearest = null, nearestD2 = range2;
-          for (const e of this.enemies) {
-            const d2 = dist2(e.x, e.y, p.x, p.y);
-            if (d2 <= nearestD2) { nearest = e; nearestD2 = d2; }
-          }
-          p.chargeTarget = nearest;
+          const nearest = this.enemies
+            .map(e => ({ e, d: dist2(e.x, e.y, p.x, p.y) }))
+            .filter(o => o.d <= range2)
+            .sort((a, b) => a.d - b.d)
+            .slice(0, Math.max(1, p.chargeBeamCount))
+            .map(o => o.e);
+          p.chargeTargets = nearest;
           // Only start the lock once something was actually found - with
           // nothing in range yet, retry every frame instead of sitting out
           // a full second "locked onto nothing" once an enemy does wander
           // into range.
-          if (nearest) p.chargeTargetLockTimer = CHARGE_TARGET_LOCK_INTERVAL;
+          if (nearest.length > 0) p.chargeTargetLockTimer = CHARGE_TARGET_LOCK_INTERVAL;
         }
 
         const chargeRate = ATK_COOLDOWN_BASE / p.atkCooldown;
-        const chargeTimeMax = p.chargeMaxStages * CHARGE_TIME_PER_STAGE;
-        p.chargeTime = Math.min(chargeTimeMax, p.chargeTime + dt * chargeRate);
+        p.chargeTime = Math.min(CHARGE_TIME_TO_FIRE, p.chargeTime + dt * chargeRate);
       }
       if (p.chargeWasHeld && !holding) {
-        if (p.chargeTime >= CHARGE_TIME_PER_STAGE) this.fireChargeBeam();
+        if (p.chargeTime >= CHARGE_TIME_TO_FIRE) this.fireChargeBeam();
         else p.chargeTime = 0;
         // Fresh lock the next time a hold begins, regardless of whether
         // this release actually fired.
-        p.chargeTarget = null;
+        p.chargeTargets = [];
         p.chargeTargetLockTimer = 0;
       }
       p.chargeWasHeld = holding;
     }
 
-    // Fires the charge beam on release: an instant, infinite-pierce hit
-    // along a straight line toward whatever updateChargeBeam() last locked
-    // onto (Player.chargeTarget, see its target-lock comment above) - not
-    // re-searched here, so this always fires at exactly what the lock (and
-    // the aim preview showing it) said it would. Uses the same
-    // rotated-local-frame box test as the wide weapon's sweep
-    // (fireWideSweep) but reaching out to the normal long weaponRange()
-    // instead of a short melee range, and in one direction only. Both the
-    // beam's width (chargeHalfWidthForStage) and its damage
-    // (chargeDamageMultForStage) scale together with whatever stage was
-    // reached at release, so a longer hold buys wider coverage AND a
-    // harder hit rather than just one or the other. chargeTime always
-    // resets to 0 on release, even if no target was in range to actually
-    // hit - committing to a release at the wrong moment genuinely wastes
-    // the charge.
+    // Fires the charge beam on release: one instant, infinite-pierce beam
+    // per locked target (Player.chargeTargets, see updateChargeBeam's
+    // target-lock comment above) - not re-searched here, so this always
+    // fires at exactly what the lock (and the aim preview showing it) said
+    // it would. Each beam uses the same rotated-local-frame box test as
+    // the wide weapon's sweep (fireWideSweep) but reaching out to the
+    // normal long weaponRange() instead of a short melee range, in its own
+    // target's direction. Width/damage are fixed (CHARGE_HALF_WIDTH/
+    // CHARGE_DAMAGE_MULT, v1.36.83 - previously both scaled with charge
+    // stage) - what a longer hold and higher rank buy is more simultaneous
+    // beams (chargeBeamCount), not a wider/harder single one. chargeTime
+    // always resets to 0 on release, even if no target was in range to
+    // actually hit - committing to a release at the wrong moment genuinely
+    // wastes the charge.
     fireChargeBeam() {
       const p = this.player;
-      const stage = Math.min(p.chargeMaxStages, Math.floor(p.chargeTime / CHARGE_TIME_PER_STAGE));
       p.chargeTime = 0;
-
-      const target = p.chargeTarget;
-      if (!target) return;
+      const targets = p.chargeTargets;
+      if (targets.length === 0) return;
 
       const range = weaponRange(p);
-      const aimAngle = Math.atan2(target.y - p.y, target.x - p.x);
-      const halfWidth = chargeHalfWidthForStage(stage);
-      const cosA = Math.cos(-aimAngle), sinA = Math.sin(-aimAngle);
-
       const buffDamageMult = p.specialBuffTimer > 0 && p.special && p.special.buffDamageMult != null
         ? p.special.buffDamageMult : 1;
       const virtualProj = {
-        damage: p.damage * buffDamageMult * chargeDamageMultForStage(stage),
+        damage: p.damage * buffDamageMult * CHARGE_DAMAGE_MULT,
         explosionRadius: p.explosionLevel > 0 ? explosionRadiusForLevel(p.explosionLevel) : 0,
         chainHops: p.chainLevel,
         slowDuration: p.slowLevel > 0 ? slowDurationForLevel(p.slowLevel) : 0,
@@ -2923,24 +2914,30 @@
       };
 
       let hitAny = false;
-      for (const e of this.enemies) {
-        const dx = e.x - p.x, dy = e.y - p.y;
-        const localX = dx * cosA - dy * sinA;
-        const localY = dx * sinA + dy * cosA;
-        if (localX < -e.radius || localX > range + e.radius) continue;
-        if (Math.abs(localY) > halfWidth + e.radius) continue;
-        // No segmentHitsWall check here, deliberately - this is the one
-        // "infinite pierce" weapon walls don't stop (see Wall/segmentHitsWall
-        // above); every other attack (traveling projectiles, the wide sweep)
-        // does check.
-        hitAny = true;
-        this.resolveProjectileHit(virtualProj, e);
+      for (const target of targets) {
+        const aimAngle = Math.atan2(target.y - p.y, target.x - p.x);
+        const cosA = Math.cos(-aimAngle), sinA = Math.sin(-aimAngle);
+        let beamHitAny = false;
+        for (const e of this.enemies) {
+          const dx = e.x - p.x, dy = e.y - p.y;
+          const localX = dx * cosA - dy * sinA;
+          const localY = dx * sinA + dy * cosA;
+          if (localX < -e.radius || localX > range + e.radius) continue;
+          if (Math.abs(localY) > CHARGE_HALF_WIDTH + e.radius) continue;
+          // No segmentHitsWall check here, deliberately - this is the one
+          // "infinite pierce" weapon walls don't stop (see Wall/segmentHitsWall
+          // above); every other attack (traveling projectiles, the wide sweep)
+          // does check.
+          beamHitAny = true;
+          this.resolveProjectileHit(virtualProj, e);
+        }
+        if (beamHitAny) {
+          hitAny = true;
+          this.beamEffects.push(new BeamEffect(p.x, p.y, aimAngle, range, CHARGE_HALF_WIDTH, 1));
+        }
       }
       if (!hitAny) return;
-
-      const stageFrac = stage / p.chargeMaxStages;
-      this.beamEffects.push(new BeamEffect(p.x, p.y, aimAngle, range, halfWidth, stageFrac));
-      this.shakeTime = Math.max(this.shakeTime, 0.1 + stageFrac * 0.2);
+      this.shakeTime = Math.max(this.shakeTime, 0.1 + Math.min(1, targets.length / p.chargeBeamCount) * 0.2);
     }
 
     // Applies every status effect a projectile carries (slow/poison/
@@ -4429,16 +4426,12 @@
       // charge beam charging indicator - a ring around the player that
       // grows and brightens with p.chargeTime, so the player has live
       // feedback on how much they'd lose by releasing right now. Dim gray
-      // below stage 1 (CHARGE_TIME_PER_STAGE - releasing now would fire
-      // nothing), switching to the normal cyan progression once a release
-      // would actually land a shot. The ring itself still grows smoothly
-      // (continuous chargeFrac) as ambient "how close to the next stage"
-      // feedback, even though the beam's actual width only changes in the
-      // discrete per-stage steps the aim preview below shows.
+      // below CHARGE_TIME_TO_FIRE (releasing now would fire nothing),
+      // switching to the normal cyan progression once a release would
+      // actually land a shot.
       if (p.weapon && p.weapon.id === 'charge' && p.chargeTime > 0) {
-        const chargeTimeMax = p.chargeMaxStages * CHARGE_TIME_PER_STAGE;
-        const chargeFrac = clamp(p.chargeTime / chargeTimeMax, 0, 1);
-        const canFire = p.chargeTime >= CHARGE_TIME_PER_STAGE;
+        const chargeFrac = clamp(p.chargeTime / CHARGE_TIME_TO_FIRE, 0, 1);
+        const canFire = p.chargeTime >= CHARGE_TIME_TO_FIRE;
         ctx.save();
         ctx.globalAlpha = canFire ? 0.5 + chargeFrac * 0.5 : 0.35;
         ctx.strokeStyle = !canFire ? '#888888' : chargeFrac > 0.9 ? '#eaffff' : '#8ef0ff';
@@ -4448,23 +4441,20 @@
         ctx.stroke();
         ctx.restore();
 
-        // Aim preview: whichever enemy is currently locked on
-        // (Player.chargeTarget, see updateChargeBeam's target-lock
-        // comment) and the exact hitbox (direction + current stage's
-        // width) that a release would produce right now. Reads the same
-        // locked reference fireChargeBeam itself fires at, so the preview
-        // is never out of sync with where a real release would go - and,
-        // since the lock only actually changes once every
+        // Aim preview: one dashed rectangle per currently locked target
+        // (Player.chargeTargets, see updateChargeBeam's target-lock
+        // comment), each the exact fixed hitbox (direction + CHARGE_HALF_WIDTH)
+        // that a release would produce right now for that beam. Reads the
+        // same locked references fireChargeBeam itself fires at, so the
+        // preview is never out of sync with where a real release would go
+        // - and, since the lock only actually changes once every
         // CHARGE_TARGET_LOCK_INTERVAL seconds, the preview stays stable
         // through most of a hold instead of jumping every frame. Solves
-        // "which direction will it fire" being otherwise invisible until
+        // "which directions will it fire" being otherwise invisible until
         // the shot has already committed.
         const range = weaponRange(p);
-        const previewTarget = p.chargeTarget;
-        if (previewTarget) {
-          const aimAngle = Math.atan2(previewTarget.y - p.y, previewTarget.x - p.x);
-          const stage = Math.min(p.chargeMaxStages, Math.floor(p.chargeTime / CHARGE_TIME_PER_STAGE));
-          const halfWidth = chargeHalfWidthForStage(Math.max(1, stage));
+        for (const target of p.chargeTargets) {
+          const aimAngle = Math.atan2(target.y - p.y, target.x - p.x);
           ctx.save();
           ctx.translate(p.x, p.y);
           ctx.rotate(aimAngle);
@@ -4473,10 +4463,10 @@
           ctx.lineWidth = 1.5;
           ctx.setLineDash([6, 6]);
           ctx.beginPath();
-          ctx.moveTo(0, -halfWidth);
-          ctx.lineTo(range, -halfWidth);
-          ctx.lineTo(range, halfWidth);
-          ctx.lineTo(0, halfWidth);
+          ctx.moveTo(0, -CHARGE_HALF_WIDTH);
+          ctx.lineTo(range, -CHARGE_HALF_WIDTH);
+          ctx.lineTo(range, CHARGE_HALF_WIDTH);
+          ctx.lineTo(0, CHARGE_HALF_WIDTH);
           ctx.closePath();
           ctx.stroke();
           ctx.setLineDash([]);
