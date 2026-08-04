@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.89';
+  const GAME_VERSION = '1.36.90';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -1828,7 +1828,13 @@
   // as before: an unbounded count would let DPS runaway on any fast-firing
   // build, and since stacks are shown as one dot each (see draw()), would
   // clutter the screen with dots well past the point of being readable.
-  const POISON_DMG_PCT = 0.04;
+  // Eased 4%->1% per stack/sec (v1.36.90) - at max rank (5 stacks * 5s
+  // duration), the old rate summed to 100% of the poisoned enemy's own
+  // maxHp, meaning poison alone could kill any enemy regardless of the
+  // player's actual damage output once 5 stacks landed. 1% caps the same
+  // full-duration, max-stack burn at 25% of maxHp instead - still a
+  // meaningful DoT, but no longer a standalone kill button.
+  const POISON_DMG_PCT = 0.01;
   function poisonMaxStacksForLevel(level) { return level; }
 
   // Frenzy (v1.36.4, buff/debuff removed in v1.36.87): a frenzied enemy
