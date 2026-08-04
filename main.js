@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.92';
+  const GAME_VERSION = '1.36.93';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -198,6 +198,8 @@
   const levelupScreen = document.getElementById('levelup-screen');
   const gameoverScreen = document.getElementById('gameover-screen');
   const upgradeChoicesEl = document.getElementById('upgrade-choices');
+  const upgradePicksEl = document.getElementById('upgrade-picks');
+  const rejectHintEl = document.getElementById('reject-hint');
   const finalStatsEl = document.getElementById('final-stats');
   const startBtn = document.getElementById('start-btn');
   const restartBtn = document.getElementById('restart-btn');
@@ -713,6 +715,16 @@
       // odds upward over time, so wanting a specific upgrade out of a large
       // pool doesn't mean indefinite bad luck can just never surface it.
       this.upgradeMissStreak = {};
+      // Reject (v1.36.93): permanently excludes an upgrade id from this
+      // run's pool once long-pressed away, so a build can deliberately
+      // prune the pool instead of only ever adding to it. rejectedUpgradeIds
+      // holds final card ids (e.g. 'pierce', 'bullet-poison', 'drone-jamming')
+      // - the same ids buildUpgradePool()'s entries already carry - so a
+      // single filter there covers every pool source uniformly. Uses are
+      // capped per run (REJECT_USES_BASE) rather than unlimited, so pruning
+      // the pool down to a narrow, guaranteed-good draw isn't free.
+      this.rejectedUpgradeIds = new Set();
+      this.rejectUsesRemaining = REJECT_USES_BASE;
 
       // weapon stats
       this.damage = 10;
@@ -2369,6 +2381,23 @@
   const CATEGORY_NAMES = { offense: 'オフェンス', crowd: 'クラウド', defense: 'ディフェンス', utility: 'ユーティリティ' };
   const REROLL_OFFER_CHANCE = 0.5;
 
+  // Reject (v1.36.93): long-press a level-up card to permanently exclude
+  // that upgrade from this run's pool (see Player.rejectedUpgradeIds).
+  // Applies to any of the 3 drawn cards (bullet effect/drone/stat upgrade/
+  // tradeoff alike, no exceptions) - not to the always-present 4th slot
+  // (skip or category reroll), since neither of those is actually drawn
+  // from the pool in the same sense.
+  const REJECT_USES_BASE = 3;
+  // Long enough that an ordinary tap/click (pick) never accidentally
+  // triggers it, short enough that a deliberate hold doesn't feel like a
+  // stuck button.
+  const REJECT_LONG_PRESS_MS = 600;
+  // Moving the pointer/finger further than this while held cancels the
+  // long-press entirely (neither pick nor reject fires on release) -
+  // distinguishes a deliberate hold from a drag/scroll gesture that
+  // happens to start on a card.
+  const REJECT_LONG_PRESS_MOVE_CANCEL_PX = 20;
+
   // ---------- Game controller ----------
   class Game {
     constructor(character, weapon) {
@@ -2392,6 +2421,11 @@
       this.spawnInterval = 1.1;
       this.over = false;
       this.levelingUp = false;
+      // The 3 real upgrade cards currently on screen (v1.36.93) - tracked
+      // here rather than only as a local variable so rejectUpgrade() can
+      // find and replace one slot from outside onLevelUp()'s own call
+      // frame. Empty until the first level-up actually renders cards.
+      this.currentPicks = [];
       this.shakeTime = 0;
 
       // Kill-rate rubber-band: difficulty is no longer a pure function of
@@ -2535,19 +2569,29 @@
       const notMaxedDrones = totalDroneCount(this.player) < droneSlotCap(this.player.droneSlotRank)
         ? DRONES.filter(d => d.getLevel(this.player) < d.maxLevel && (!d.available || d.available(this.player)))
         : [];
+      // Reject filter (v1.36.93) applied once at the end, keyed off each
+      // entry's own final `id` - the same string rejectUpgrade() records,
+      // so this single filter covers every pool source (stat upgrades,
+      // tradeoffs, bullet effects, drones) without needing its own gate on
+      // each one individually.
       return [
         ...UPGRADE_POOL.filter(up => !up.available || up.available(this.player)),
         ...TRADEOFF_POOL.filter(up => !up.available || up.available(this.player)),
         ...notMaxedEffects.map(eff => bulletEffectUpgrade(eff, this.player)),
         ...notMaxedDrones.map(d => droneUpgrade(d, this.player)),
-      ];
+      ].filter(up => !this.player.rejectedUpgradeIds.has(up.id));
     }
 
     onLevelUp() {
       this.levelingUp = true;
       const picks = [];
+      // Rejected ids filtered here too (in addition to buildUpgradePool()'s
+      // own filter) since this method computes its own separate
+      // notMaxedEffects/notMaxedDrones for the priority slot below, rather
+      // than reusing buildUpgradePool()'s internal copies.
       const notMaxedEffects = BULLET_EFFECTS.filter(eff =>
         eff.getLevel(this.player) < eff.maxLevel && (!eff.available || eff.available(this.player))
+          && !this.player.rejectedUpgradeIds.has(`bullet-${eff.id}`)
       );
       const pool = this.buildUpgradePool();
 
@@ -2567,7 +2611,8 @@
       // missing out on).
       const ownedEffects = notMaxedEffects.filter(eff => eff.getLevel(this.player) > (eff.baseLevel || 0));
       const notMaxedDrones = totalDroneCount(this.player) < droneSlotCap(this.player.droneSlotRank)
-        ? DRONES.filter(d => d.getLevel(this.player) < d.maxLevel && (!d.available || d.available(this.player)))
+        ? DRONES.filter(d => d.getLevel(this.player) < d.maxLevel && (!d.available || d.available(this.player))
+          && !this.player.rejectedUpgradeIds.has(`drone-${d.id}`))
         : [];
       const ownedDrones = notMaxedDrones.filter(d => d.getLevel(this.player) > 0);
       const missStreak = this.player.upgradeMissStreak;
@@ -2614,21 +2659,13 @@
     // 選択肢はスキップになる").
     renderUpgradeCards(picks, allowRerollOffer) {
       upgradeChoicesEl.innerHTML = '';
-      for (const up of picks) {
-        const card = document.createElement('div');
-        // Category color-coding (v1.36.76): a `cat-<category>` class per
-        // card (offense/crowd/defense/utility, see UPGRADE_CATEGORIES)
-        // drives a left border accent + matching title color in CSS, so
-        // a card's category reads at a glance without opening §4-5-2's
-        // documentation. Drone cards (id prefixed `drone-`) additionally
-        // get a small "ドローン" badge in the title, since those upgrades
-        // otherwise look identical to a bullet effect card.
-        card.className = `upgrade-card cat-${up.category}`;
-        const auxBadge = up.id.startsWith('drone-') ? '<span class="aux-badge">ドローン</span>' : '';
-        card.innerHTML = `<div class="u-title">${auxBadge}${up.title}</div><div class="u-desc">${up.desc}</div>`;
-        card.addEventListener('click', () => this.pickUpgrade(up));
-        upgradeChoicesEl.appendChild(card);
-      }
+      upgradeChoicesEl.appendChild(upgradePicksEl);
+      // The 3 real picks live in their own tracked array + sub-container
+      // (v1.36.93) rather than being rendered inline here, so rejectUpgrade()
+      // can later swap just one of them and redraw only #upgrade-picks
+      // without disturbing the 4th slot built below.
+      this.currentPicks = picks;
+      this.renderPickCards();
 
       const fourthCard = document.createElement('div');
       fourthCard.className = 'upgrade-card skip-card';
@@ -2654,6 +2691,137 @@
       }
       upgradeChoicesEl.appendChild(fourthCard);
       levelupScreen.classList.remove('hidden');
+    }
+
+    // Rebuilds #upgrade-picks from this.currentPicks (v1.36.93). Split out
+    // of renderUpgradeCards so rejectUpgrade() can redraw just the 3 real
+    // cards after swapping one out, without touching the 4th slot (skip/
+    // reroll) or re-rolling whether a reroll is even offered this time.
+    renderPickCards() {
+      upgradePicksEl.innerHTML = '';
+      for (const up of this.currentPicks) {
+        const card = document.createElement('div');
+        // Category color-coding (v1.36.76): a `cat-<category>` class per
+        // card (offense/crowd/defense/utility, see UPGRADE_CATEGORIES)
+        // drives a left border accent + matching title color in CSS, so
+        // a card's category reads at a glance without opening §4-5-2's
+        // documentation. Drone cards (id prefixed `drone-`) additionally
+        // get a small "ドローン" badge in the title, since those upgrades
+        // otherwise look identical to a bullet effect card.
+        card.className = `upgrade-card cat-${up.category}`;
+        const auxBadge = up.id.startsWith('drone-') ? '<span class="aux-badge">ドローン</span>' : '';
+        card.innerHTML = `<div class="u-title">${auxBadge}${up.title}</div><div class="u-desc">${up.desc}</div>`;
+        this.attachCardPressHandlers(card, up);
+        upgradePicksEl.appendChild(card);
+      }
+      this.updateRejectHint();
+    }
+
+    updateRejectHint() {
+      const remaining = this.player.rejectUsesRemaining;
+      rejectHintEl.textContent = `長押しでリジェクト　使用回数:残り${remaining}回`;
+      rejectHintEl.classList.toggle('depleted', remaining <= 0);
+    }
+
+    // Reject (v1.36.93): a short tap/click on a card picks it as always; a
+    // hold past REJECT_LONG_PRESS_MS instead rejects it (see
+    // Player.rejectedUpgradeIds). Handles both mouse and touch, matching
+    // the rest of this game's input handling (dragSurface above) rather
+    // than the Pointer Events API.
+    //
+    // The pick/reject decision only actually fires on release (endPress),
+    // never inside the hold timer itself - the timer just arms a flag and
+    // adds visual feedback. This matters because rejectUpgrade() rebuilds
+    // #upgrade-picks (replacing every card's DOM node); doing that mid-hold
+    // (before the input gesture's own up/end event has fired) would let a
+    // stray mouseup/touchend land on a brand-new element built for a
+    // different upgrade at the same screen position, silently picking it.
+    // Deferring the actual mutation to the release handler guarantees the
+    // DOM is only ever touched after this gesture's event has already been
+    // dispatched to a still-live element.
+    attachCardPressHandlers(card, up) {
+      let pressTimer = null;
+      let longPressFired = false;
+      let startX = 0, startY = 0;
+
+      const clearPressTimer = () => {
+        if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
+      };
+      const startPress = (x, y) => {
+        startX = x; startY = y;
+        longPressFired = false;
+        clearPressTimer();
+        card.classList.remove('reject-armed');
+        if (this.player.rejectUsesRemaining <= 0) return; // no uses left - a hold just behaves like a normal tap on release
+        pressTimer = setTimeout(() => {
+          longPressFired = true;
+          pressTimer = null;
+          card.classList.add('reject-armed');
+        }, REJECT_LONG_PRESS_MS);
+      };
+      const movePress = (x, y) => {
+        if (pressTimer && Math.hypot(x - startX, y - startY) > REJECT_LONG_PRESS_MOVE_CANCEL_PX) clearPressTimer();
+      };
+      const endPress = () => {
+        clearPressTimer();
+        if (longPressFired) this.rejectUpgrade(up);
+        else this.pickUpgrade(up);
+      };
+      const cancelPress = () => {
+        clearPressTimer();
+        longPressFired = false;
+        card.classList.remove('reject-armed');
+      };
+
+      card.addEventListener('mousedown', (e) => startPress(e.clientX, e.clientY));
+      card.addEventListener('mousemove', (e) => movePress(e.clientX, e.clientY));
+      card.addEventListener('mouseup', endPress);
+      card.addEventListener('mouseleave', cancelPress);
+      card.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        const t = e.touches[0];
+        startPress(t.clientX, t.clientY);
+      }, { passive: false });
+      card.addEventListener('touchmove', (e) => {
+        e.preventDefault();
+        const t = e.touches[0];
+        if (t) movePress(t.clientX, t.clientY);
+      }, { passive: false });
+      card.addEventListener('touchend', (e) => {
+        e.preventDefault();
+        endPress();
+      });
+      card.addEventListener('touchcancel', cancelPress);
+    }
+
+    // Permanently excludes `up.id` from this run's pool (v1.36.93), then
+    // replaces just this one slot with a fresh draw from the now-updated
+    // pool (excluding whatever's still shown in the other 2 slots, so no
+    // duplicate appears). The 4th slot (skip/reroll) is untouched. If the
+    // pool has nothing left to offer (an extreme late-run edge case), the
+    // slot is simply dropped rather than leaving the rejected card on
+    // screen.
+    rejectUpgrade(up) {
+      if (this.player.rejectUsesRemaining <= 0) return;
+      this.player.rejectedUpgradeIds.add(up.id);
+      this.player.rejectUsesRemaining--;
+      const idx = this.currentPicks.indexOf(up);
+      if (idx === -1) { this.updateRejectHint(); return; }
+      const shownIds = new Set(this.currentPicks.map(p => p.id));
+      const pool = this.buildUpgradePool().filter(cand => !shownIds.has(cand.id));
+      if (pool.length > 0) {
+        const missStreak = this.player.upgradeMissStreak;
+        const replacement = pool[pickWeightedIndex(pool, missStreak)];
+        this.currentPicks[idx] = replacement;
+        // Just shown this round, same bookkeeping onLevelUp()'s own pity
+        // update applies to its picks - without this the replacement would
+        // incorrectly still carry whatever miss streak it had before being
+        // drawn here.
+        missStreak[replacement.id] = 0;
+      } else {
+        this.currentPicks.splice(idx, 1);
+      }
+      this.renderPickCards();
     }
 
     // Category-targeted reroll (v1.36.70): draws 3 fresh cards restricted to

@@ -261,6 +261,28 @@ html, body {
   width: min(360px, 88vw);
 }
 
+/* Reject (v1.36.93): the 3 drawn cards live in their own flex column
+   nested inside #upgrade-choices, so rejectUpgrade() can rebuild just this
+   sub-list (swap one card for a fresh draw) without touching the 4th slot
+   (skip/reroll) sitting alongside it. Same layout as the parent so nesting
+   it is visually invisible. */
+#upgrade-picks {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+#reject-hint {
+  font-size: 12px;
+  color: #888;
+  text-align: center;
+  margin: -6px 0 2px;
+}
+
+#reject-hint.depleted {
+  opacity: 0.5;
+}
+
 #select-groups {
   display: flex;
   flex-direction: column;
@@ -289,6 +311,15 @@ html, body {
 
 .upgrade-card:active {
   background: #33333f;
+}
+
+/* Reject long-press feedback (v1.36.93): applied once REJECT_LONG_PRESS_MS
+   has elapsed while still held, so releasing now commits the reject - a
+   visual cue that keeps holding past the threshold from feeling like
+   nothing happened. */
+.upgrade-card.reject-armed {
+  border-color: #ff3b3b;
+  box-shadow: inset 0 0 0 2px rgba(255, 59, 59, 0.6);
 }
 
 .upgrade-card.skip-card {
