@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.90';
+  const GAME_VERSION = '1.36.91';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -376,14 +376,11 @@
   // exactly droneTargetCount's N (how many nearby enemies that type can
   // affect at once, nearest-first). What actually happens to each affected
   // enemy differs per drone type (see the dispatch in update()).
-  // DRONE_RANGE_BASE/JAMMING_BASE_DURATION predate this generalization
-  // (jamming, née intercept, was the only drone, and the sole bullet effect
-  // this aura ever applied) - kept as a neutral base name since
-  // WIDE_ATTACK_RANGE (the unrelated Pulse Wave weapon's range, below) also
-  // piggybacks on it.
+  // DRONE_RANGE_BASE predates this generalization (jamming, née intercept,
+  // was the only drone, and the sole bullet effect this aura ever applied)
+  // - kept as a neutral base name since WIDE_ATTACK_RANGE (the unrelated
+  // Pulse Wave weapon's range, below) also piggybacks on it.
   const DRONE_RANGE_BASE = 60;
-  const JAMMING_BASE_DURATION = 0.4;
-  function jammingDuration(p) { return p.slowLevel > 0 ? slowDurationForLevel(p.slowLevel) : JAMMING_BASE_DURATION; }
   function droneTargetCount(count) { return count; }
   // Attack interval (v1.36.64, shortened v1.36.67, quadrupled v1.36.84): a
   // drone originally applied its effect every single frame to anything in
@@ -1599,14 +1596,17 @@
     // above) rather than in DRONES itself. No difficulty-feedback
     // contribution, same as every existing drone-related upgrade
     // (§6-2) - none of the three power-mult functions reference these
-    // rank fields.
+    // rank fields. Additionally gated on owning at least one drone of any
+    // type (v1.36.91, `totalDroneCount(p) > 0`) - offering "sharpen your
+    // drones" upgrades before the player has ever taken a single drone
+    // just cluttered the pool with cards that do nothing yet.
     {
       id: 'droneslots',
       title: 'ドローン保有上限増加',
       desc: 'ドローンの同時保有数上限(全種合計)が増加する',
       category: 'utility',
       apply: p => p.droneSlotRank = Math.min(DRONE_SLOT_UPGRADE_MAX_RANK, p.droneSlotRank + 1),
-      available: p => p.droneSlotRank < DRONE_SLOT_UPGRADE_MAX_RANK,
+      available: p => totalDroneCount(p) > 0 && p.droneSlotRank < DRONE_SLOT_UPGRADE_MAX_RANK,
     },
     {
       id: 'dronerange',
@@ -1614,7 +1614,7 @@
       desc: 'ドローンの索敵範囲が拡大する(全種共通)',
       category: 'utility',
       apply: p => p.droneRangeRank = Math.min(DRONE_RANGE_UPGRADE_MAX_RANK, p.droneRangeRank + 1),
-      available: p => p.droneRangeRank < DRONE_RANGE_UPGRADE_MAX_RANK,
+      available: p => totalDroneCount(p) > 0 && p.droneRangeRank < DRONE_RANGE_UPGRADE_MAX_RANK,
     },
     {
       id: 'droneatkspeed',
@@ -1622,7 +1622,7 @@
       desc: 'ドローンの攻撃間隔が短縮する(全種共通)',
       category: 'utility',
       apply: p => p.droneAtkSpeedRank = Math.min(DRONE_ATK_SPEED_UPGRADE_MAX_RANK, p.droneAtkSpeedRank + 1),
-      available: p => p.droneAtkSpeedRank < DRONE_ATK_SPEED_UPGRADE_MAX_RANK,
+      available: p => totalDroneCount(p) > 0 && p.droneAtkSpeedRank < DRONE_ATK_SPEED_UPGRADE_MAX_RANK,
     },
   ];
 
@@ -1905,10 +1905,8 @@
   // all and has no effect while the target is alive - a later hit while
   // already bombified just refreshes bombifyTimer back to full rather than
   // adding a stack. Its entire payoff is conditional: if the target dies
-  // while bombifyTimer > 0, it detonates for a percent of ITS OWN maxHp
-  // (like poison, so it scales naturally with difficulty/enemy type) to
-  // every other enemy within BOMBIFY_RADIUS. Rank raises that percent
-  // directly (there's no stack count to raise instead). Detonating a
+  // while bombifyTimer > 0, it detonates for damage (see bombifyDamage
+  // below) to every other enemy within BOMBIFY_RADIUS. Detonating a
   // bombified enemy can itself kill neighboring bombified enemies, chaining
   // into further detonations - see the resolution loop in update().
   // Duration cut 5s -> 3s (v1.36.7): re-hitting the same enemy still
@@ -1918,11 +1916,21 @@
   // enemies once and letting the crowd's natural kill pace trigger it.
   const BOMBIFY_DURATION = 3;
   const BOMBIFY_RADIUS = 180;
-  // Halved 30%->15% base / +10%->+5% per level (v1.36.34): detonation
-  // damage was landing too strong relative to other AoE tools for how
-  // little setup it requires (just land a hit, then let the crowd's normal
-  // kill pace trigger it).
-  function bombifyDmgPctForLevel(level) { return 0.15 + 0.05 * (level - 1); }
+  // Damage source flipped from the detonated enemy's own maxHp to the
+  // PLAYER's own offense (v1.36.91, single-rank now - see maxLevel:1 on
+  // the BULLET_EFFECTS entry above). The old percent-of-own-maxHp formula
+  // put bombify in the same "scales with the target, not the attacker"
+  // niche as poison, but bombify's prerequisite (爆発 fully ranked) already
+  // pushes it onto damage/attack-speed-heavy builds specifically, so tying
+  // its payoff to the player's own DPS instead rewards exactly that
+  // investment rather than duplicating poison's identity. Read live at
+  // detonation time (like weakenDmgMultForLevel/vulnerableDmgMultForLevel
+  // elsewhere), so a mid-run damage/attack-speed upgrade immediately
+  // strengthens every bombified enemy already waiting to detonate. Doesn't
+  // factor in multishot/pierce/etc. - just raw single-target damage over
+  // time (damage / atkCooldown), matching the "roughly your own DPS"
+  // framing this was designed around.
+  function bombifyDamage(p) { return p.damage / p.atkCooldown; }
 
   // Weaken (v1.36.8): split out of slow, which used to also halve a
   // slowed enemy's contact damage - that coupling meant taking slow always
@@ -2112,9 +2120,16 @@
       upgradeDesc: level => `狂乱の持続時間が増加する`,
     },
     {
+      // Single-rank now (v1.36.91, was maxLevel:5): the per-rank damage
+      // curve (bombifyDmgPctForLevel) is gone along with the enemy-maxHp-
+      // based formula itself (see bombifyDamage below) - there's no longer
+      // a rank axis to spend further picks on, so this is a one-time
+      // unlock like any other single-pick effect. upgradeDesc is
+      // unreachable as a result (notMaxedEffects excludes it once
+      // getLevel===maxLevel===1) and intentionally omitted.
       id: 'bombify',
       name: '爆弾化',
-      maxLevel: 5,
+      maxLevel: 1,
       category: 'offense',
       getLevel: p => p.bombifyLevel,
       levelUp: p => { p.bombifyLevel++; },
@@ -2124,8 +2139,7 @@
       // maxLevel first pushes it later into a run and onto builds that
       // have already invested in AoE.
       available: p => p.explosionLevel >= 5,
-      introDesc: '着弾した敵を爆弾化する。生存中は特に効果はないが、爆弾化状態のまま倒された敵は周囲の他の敵に爆発ダメージを与える。重ね掛けはされず、再度攻撃が当たると持続時間が最大まで更新される',
-      upgradeDesc: level => `爆弾化ダメージが増加する`,
+      introDesc: '着弾した敵を爆弾化する。生存中は特に効果はないが、爆弾化状態のまま倒された敵は周囲の他の敵に爆発ダメージを与える(威力は自機の攻撃力・攻撃間隔から算出した1秒あたりのダメージ量相当)。重ね掛けはされず、再度攻撃が当たると持続時間が最大まで更新される',
     },
     {
       id: 'weaken',
@@ -2261,6 +2275,16 @@
   // simpler than the old auxWeaponUpgrade it replaces).
   const DRONES = [
     {
+      // Multi-status pivot (v1.36.91): originally applied a flat slow
+      // regardless of the player's own build (falling back to
+      // JAMMING_BASE_DURATION if slow wasn't even taken), which made it a
+      // weak pick on its own - slow alone barely functions as defense. Now
+      // it instead re-applies whichever debuff(s) the player has actually
+      // invested in (slow/vulnerable/weaken) to anything that wanders into
+      // range, so its value scales with - and rewards - a debuff-focused
+      // build rather than being a flat, low-impact freebie. Gated on
+      // owning at least one of the three (see `available`) since with none
+      // owned it would have nothing to apply at all.
       id: 'jamming',
       name: 'ジャミングドローン',
       maxLevel: 5,
@@ -2268,8 +2292,9 @@
       color: JAMMING_DRONE_ZAP_COLOR,
       getLevel: p => p.jammingDroneCount,
       levelUp: p => { p.jammingDroneCount++; },
-      introDesc: '自機のごく至近距離に入った敵を自動で低速化するジャミングドローンを1台獲得する(低速を取得済みならその減速時間がそのまま適用される)',
-      upgradeDesc: count => `ジャミングドローンをもう1台獲得する(同時に低速化できる敵の数が増加する)`,
+      available: p => p.slowLevel >= 1 || p.vulnerableLevel >= 1 || p.weakenLevel >= 1,
+      introDesc: '自機のごく至近距離に入った敵に、自機が取得済みのデバフ状態異常(低速・脆弱・衰弱のうち保有しているもの全て)を自動で付与するジャミングドローンを1台獲得する',
+      upgradeDesc: count => `ジャミングドローンをもう1台獲得する(同時にデバフを付与できる敵の数が増加する)`,
     },
     {
       id: 'impact',
@@ -2521,7 +2546,7 @@
       // - these draw at the normal weight like UPGRADE_POOL/TRADEOFF_POOL
       // entries.
       const notMaxedDrones = totalDroneCount(this.player) < droneSlotCap(this.player.droneSlotRank)
-        ? DRONES.filter(d => d.getLevel(this.player) < d.maxLevel)
+        ? DRONES.filter(d => d.getLevel(this.player) < d.maxLevel && (!d.available || d.available(this.player)))
         : [];
       return [
         ...UPGRADE_POOL.filter(up => !up.available || up.available(this.player)),
@@ -2555,7 +2580,7 @@
       // missing out on).
       const ownedEffects = notMaxedEffects.filter(eff => eff.getLevel(this.player) > (eff.baseLevel || 0));
       const notMaxedDrones = totalDroneCount(this.player) < droneSlotCap(this.player.droneSlotRank)
-        ? DRONES.filter(d => d.getLevel(this.player) < d.maxLevel)
+        ? DRONES.filter(d => d.getLevel(this.player) < d.maxLevel && (!d.available || d.available(this.player)))
         : [];
       const ownedDrones = notMaxedDrones.filter(d => d.getLevel(this.player) > 0);
       const missStreak = this.player.upgradeMissStreak;
@@ -3827,14 +3852,20 @@
           const targets = nearby.slice(0, droneTargetCount(p.jammingDroneCount));
           if (targets.length > 0) {
             p.jammingDroneCooldown += droneAtkInterval;
-            const duration = jammingDuration(p);
             for (const e of targets) {
               // Now a genuinely periodic "shot" (once per
               // DRONE_ATK_INTERVAL) rather than a per-frame refresh, so it
               // flashes every time it actually fires on a target instead of
               // only on the first newly-caught transition.
               this.chainZaps.push(new ChainZap(p.x, p.y, e.x, e.y, JAMMING_DRONE_ZAP_COLOR));
-              e.slowTimer = Math.max(e.slowTimer, duration);
+              // Multi-status pivot (v1.36.91): applies every debuff the
+              // player currently owns, not just slow - guaranteed to be at
+              // least one since the drone itself is gated on owning
+              // slow/vulnerable/weaken (see `available` on the DRONES
+              // entry above).
+              if (p.slowLevel > 0) e.slowTimer = Math.max(e.slowTimer, slowDurationForLevel(p.slowLevel));
+              if (p.weakenLevel > 0) e.weakenTimer = WEAKEN_DURATION;
+              if (p.vulnerableLevel > 0) e.vulnerableTimer = VULNERABLE_DURATION;
             }
           }
         }
@@ -4074,13 +4105,13 @@
 
       // Bombify detonation: any bombified enemy that ends this frame at
       // hp<=0 (from a projectile, poison, frenzy friendly fire, or an
-      // earlier detonation this same frame) explodes for a percent of its
-      // OWN maxHp to every other enemy within BOMBIFY_RADIUS. Resolved in a
-      // loop rather than a single pass so a detonation that drops another
-      // bombified enemy to 0 chains into that enemy's own detonation too,
-      // regardless of array order - it keeps re-scanning until nothing new
-      // qualifies. `detonated` guards against processing the same enemy
-      // twice as the outer loop re-scans.
+      // earlier detonation this same frame) explodes for damage (the
+      // player's own DPS - see bombifyDamage) to every other enemy within
+      // BOMBIFY_RADIUS. Resolved in a loop rather than a single pass so a
+      // detonation that drops another bombified enemy to 0 chains into
+      // that enemy's own detonation too, regardless of array order - it
+      // keeps re-scanning until nothing new qualifies. `detonated` guards
+      // against processing the same enemy twice as the outer loop re-scans.
       const detonated = new Set();
       let moreToDetonate = true;
       while (moreToDetonate) {
@@ -4088,7 +4119,7 @@
         for (const e of this.enemies) {
           if (e.hp > 0 || e.bombifyTimer <= 0 || detonated.has(e)) continue;
           detonated.add(e);
-          const bombDmg = e.maxHp * bombifyDmgPctForLevel(p.bombifyLevel);
+          const bombDmg = bombifyDamage(p);
           for (const other of this.enemies) {
             if (other === e) continue;
             if (dist2(other.x, other.y, e.x, e.y) <= BOMBIFY_RADIUS * BOMBIFY_RADIUS) {
