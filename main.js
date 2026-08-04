@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.81';
+  const GAME_VERSION = '1.36.82';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -368,77 +368,81 @@
     return Math.min(WEAPON_INNATE_MAX_RANK, Math.floor((level - 1) / WEAPON_INNATE_LEVELS_PER_RANK) + 1);
   }
 
-  // Auxiliary weapon (補助武器, v1.36.63): a passive aura around the player,
-  // independent of any bullet hit, that acts on whatever enemies get too
-  // close. Unlike bullet effects, only one can ever be held at a time -
-  // picking a different one replaces whichever was active, carrying its
-  // numeric rank over unchanged (see auxWeaponUpgrade below) rather than
-  // resetting to 1. auxWeaponTargetCount (how many nearby enemies it can
-  // affect at once, nearest-first) is the one dimension every aux weapon
-  // shares and scales by rank identically - what actually happens to each
-  // affected enemy differs per weapon (see the dispatch in update()).
-  // INTERCEPT_RADIUS/INTERCEPT_BASE_DURATION predate this generalization
-  // (intercept was the only one, and the sole bullet effect this aura ever
-  // applied) - kept under their original names since intercept itself is
-  // unchanged, just reclassified into this new category.
-  const INTERCEPT_RADIUS = 60;
-  const INTERCEPT_BASE_DURATION = 0.4;
-  function interceptDuration(p) { return p.slowLevel > 0 ? slowDurationForLevel(p.slowLevel) : INTERCEPT_BASE_DURATION; }
-  function auxWeaponTargetCount(level) { return level; }
-  // Attack interval (v1.36.64, shortened v1.36.67): the aura originally
+  // Drones (v1.36.63, reframed from a single-slot "aux weapon" into
+  // independently-owned drones in v1.36.82): passive auras around the
+  // player, independent of any bullet hit, that act on whatever enemies get
+  // too close. Any number of drone types can be owned at once - owning N of
+  // a given type means N drones of that type are active, which is also
+  // exactly droneTargetCount's N (how many nearby enemies that type can
+  // affect at once, nearest-first). What actually happens to each affected
+  // enemy differs per drone type (see the dispatch in update()).
+  // DRONE_RANGE_BASE/JAMMING_BASE_DURATION predate this generalization
+  // (jamming, née intercept, was the only drone, and the sole bullet effect
+  // this aura ever applied) - kept as a neutral base name since
+  // WIDE_ATTACK_RANGE (the unrelated Pulse Wave weapon's range, below) also
+  // piggybacks on it.
+  const DRONE_RANGE_BASE = 60;
+  const JAMMING_BASE_DURATION = 0.4;
+  function jammingDuration(p) { return p.slowLevel > 0 ? slowDurationForLevel(p.slowLevel) : JAMMING_BASE_DURATION; }
+  function droneTargetCount(count) { return count; }
+  // Attack interval (v1.36.64, shortened v1.36.67): a drone originally
   // applied its effect every single frame to anything in range - far
-  // stronger than intended (both aux weapons effectively never let go once
-  // something wandered in). Gated to once every AUX_WEAPON_ATK_INTERVAL
-  // seconds instead, like a real weapon's cooldown, rather than a
-  // continuous field. 1.0s (paired with the v1.36.66 wasted-cooldown fix)
-  // ended up feeling considerably weaker than the old always-on version, so
-  // shortened to 0.5s here, alongside widening the aura itself (see
-  // AUX_WEAPON_RADIUS) to compensate from the other direction too.
-  const AUX_WEAPON_ATK_INTERVAL = 0.5;
-  // Aura radius (v1.36.67): widened to 1.5x the original INTERCEPT_RADIUS.
-  // Kept as its own constant rather than just multiplying INTERCEPT_RADIUS
+  // stronger than intended (it effectively never let go once something
+  // wandered in). Gated to once every DRONE_ATK_INTERVAL seconds instead,
+  // like a real weapon's cooldown, rather than a continuous field. 1.0s
+  // (paired with the v1.36.66 wasted-cooldown fix) ended up feeling
+  // considerably weaker than the old always-on version, so shortened to
+  // 0.5s here, alongside widening the aura itself (see DRONE_RADIUS) to
+  // compensate from the other direction too.
+  const DRONE_ATK_INTERVAL = 0.5;
+  // Aura radius (v1.36.67): widened to 1.5x the original DRONE_RANGE_BASE.
+  // Kept as its own constant rather than just multiplying DRONE_RANGE_BASE
   // itself, since WIDE_ATTACK_RANGE (the Pulse Wave weapon's range, below)
-  // piggybacks on INTERCEPT_RADIUS's original value - widening that
+  // piggybacks on DRONE_RANGE_BASE's original value - widening that
   // constant directly would have silently also buffed Pulse Wave's range,
   // which nobody asked for.
-  const AUX_WEAPON_RADIUS = INTERCEPT_RADIUS * 1.5;
-  // Shockwave (衝撃, v1.36.63): the second aux weapon - pushes whatever's
-  // caught in the same aura directly away from the player instead of
-  // slowing it, once per AUX_WEAPON_ATK_INTERVAL (a discrete knockback per
-  // "shot", not a continuous force - see v1.36.64 above). Fixed push
-  // distance regardless of rank - rank only raises how many enemies it can
-  // hit at once, exactly like intercept's own rank only raises its target
-  // count rather than the slow's own strength.
-  const SHOCKWAVE_PUSH_DISTANCE = 50;
-  // Shockwave's own activation flash color (v1.36.67) - same ChainZap line
-  // effect intercept already uses, just a different color so the two aux
-  // weapons read as visually distinct when either fires (orange for
-  // shockwave's knockback vs intercept's cyan slow).
-  const SHOCKWAVE_ZAP_COLOR = '#ffa53d';
-  // Strike (打撃, v1.36.79): the third aux weapon - a direct damage hit
-  // instead of a status effect/knockback, once per AUX_WEAPON_ATK_INTERVAL
+  const DRONE_RADIUS = DRONE_RANGE_BASE * 1.5;
+  // Jamming drone's own activation flash/status-dot color - cyan, same as
+  // the original intercept aux weapon's default ChainZap color, made
+  // explicit here now that every drone type needs one for both its zap
+  // effect and the above-player drone-dot UI (v1.36.82).
+  const JAMMING_DRONE_ZAP_COLOR = '#7ec8ff';
+  // Impact drone (インパクトドローン, née shockwave, v1.36.63): pushes
+  // whatever's caught in the same aura directly away from the player
+  // instead of slowing it, once per DRONE_ATK_INTERVAL (a discrete
+  // knockback per "shot", not a continuous force - see v1.36.64 above).
+  // Fixed push distance regardless of owned count - count only raises how
+  // many enemies it can hit at once, exactly like jamming's own count only
+  // raises its target count rather than the slow's own strength.
+  const IMPACT_DRONE_PUSH_DISTANCE = 50;
+  // Impact drone's own activation flash color (v1.36.67) - same ChainZap
+  // line effect the jamming drone already uses, just a different color so
+  // the two read as visually distinct when either fires (orange for
+  // impact's knockback vs jamming's cyan slow).
+  const IMPACT_DRONE_ZAP_COLOR = '#ffa53d';
+  // Attack drone (アタックドローン, née strike, v1.36.79): a direct damage
+  // hit instead of a status effect/knockback, once per DRONE_ATK_INTERVAL
   // like the other two. Damage formula is the old tank passive's reflect
   // math verbatim (REFLECT_DMG_PCT_OF_ATTACK/OF_MAXHP) - see the dispatch
   // in update(). Zap color matches the "offense" category's red (same red
   // used for offense-category upgrade cards, §4-5-3) rather than reusing
-  // intercept/shockwave's cyan/orange, both already spoken for.
-  const STRIKE_ZAP_COLOR = '#ff5a5a';
+  // jamming/impact's cyan/orange, both already spoken for.
+  const ATTACK_DRONE_ZAP_COLOR = '#ff5a5a';
 
   // Wide weapon (v1.36.15): a short-range melee-style sweep that hits every
   // enemy inside a cone in front of the player in one go, instead of firing
-  // a traveling Projectile. WIDE_ATTACK_RANGE piggybacks on AUX_WEAPON_RADIUS
-  // (v1.36.68, previously INTERCEPT_RADIUS - see AUX_WEAPON_RADIUS above),
-  // just a bit longer, so this weapon's reach stays deliberately ahead of
-  // the aux weapon aura's own range rather than merely equal to it - the
-  // tradeoff for guaranteed multi-target coverage and above-average damage
-  // is that the player has to get in close to use it at all. Its innate
-  // effect (see WEAPONS below) widens the cone with rank instead of adding
-  // more shots, so this weapon never gets multishot's raw shot-count
-  // scaling. Declared here (ahead of its usual position among the other
-  // bullet-effect constants) because WEAPONS' desc strings below reference
-  // it directly at module-load time, not just from inside a later-called
-  // function.
-  const WIDE_ATTACK_RANGE = AUX_WEAPON_RADIUS + 30;
+  // a traveling Projectile. WIDE_ATTACK_RANGE piggybacks on DRONE_RADIUS
+  // (v1.36.68, previously DRONE_RANGE_BASE - see DRONE_RADIUS above), just
+  // a bit longer, so this weapon's reach stays deliberately ahead of the
+  // drone auras' own range rather than merely equal to it - the tradeoff
+  // for guaranteed multi-target coverage and above-average damage is that
+  // the player has to get in close to use it at all. Its innate effect (see
+  // WEAPONS below) widens the cone with rank instead of adding more shots,
+  // so this weapon never gets multishot's raw shot-count scaling. Declared
+  // here (ahead of its usual position among the other bullet-effect
+  // constants) because WEAPONS' desc strings below reference it directly at
+  // module-load time, not just from inside a later-called function.
+  const WIDE_ATTACK_RANGE = DRONE_RADIUS + 30;
   const WIDE_DAMAGE_MULT = 2.0;
   function wideHalfWidthForRank(rank) { return 16 + 10 * (rank - 1); }
 
@@ -695,16 +699,17 @@
       this.explosionLevel = 0;
       this.chainLevel = 0;
       this.slowLevel = 0;
-      // Auxiliary weapon (v1.36.63, see AUX_WEAPONS) - unlike the bullet
-      // effect levels above, only one can be held at a time, so this is
-      // "which one" (or null) plus a single shared rank, not a per-type
-      // level field each.
-      this.auxWeaponId = null;
-      this.auxWeaponLevel = 0;
-      // Attack-interval cooldown (v1.36.64) - starts at 0 so a freshly
-      // acquired aux weapon can fire the very frame it's picked up rather
-      // than waiting out a full interval first.
-      this.auxWeaponCooldown = 0;
+      // Drones (v1.36.63, see DRONES; independently-owned per type since
+      // v1.36.82) - each type gets its own owned count (how many of that
+      // drone are out) plus its own attack-interval cooldown, all starting
+      // at 0 so a freshly acquired drone can fire the very frame it's
+      // picked up rather than waiting out a full interval first.
+      this.jammingDroneCount = 0;
+      this.jammingDroneCooldown = 0;
+      this.impactDroneCount = 0;
+      this.impactDroneCooldown = 0;
+      this.attackDroneCount = 0;
+      this.attackDroneCooldown = 0;
       this.poisonLevel = 0;
       this.frenzyLevel = 0;
       // Named bombifyLevel (not "bomb") to avoid confusion with the
@@ -1373,9 +1378,8 @@
   // than just being invisible bonus damage.
   class ChainZap {
     // color (v1.36.67): optional, defaults to the original cyan (used by
-    // both chain lightning and intercept) - shockwave passes its own
-    // orange (SHOCKWAVE_ZAP_COLOR) so the two aux weapons' activation
-    // flashes read as visually distinct.
+    // chain lightning) - each drone type passes its own color (see DRONES)
+    // so their activation flashes read as visually distinct.
     constructor(x1, y1, x2, y2, color) {
       this.x1 = x1; this.y1 = y1; this.x2 = x2; this.y2 = y2;
       this.color = color || '#7ec8ff';
@@ -2070,73 +2074,64 @@
     };
   }
 
-  // Auxiliary weapons (補助武器, v1.36.63): unlike BULLET_EFFECTS, only one
-  // of these can ever be held at once (Player.auxWeaponId), so there's no
-  // per-type level field to read via getLevel() the way bulletEffectUpgrade
-  // does - each entry only needs a name/maxLevel/introDesc/upgradeDesc, and
-  // auxWeaponUpgrade below handles both "deepen the one already held" and
-  // "switch to a different one" (inheriting its rank unchanged) itself.
-  const AUX_WEAPONS = [
+  // Drones (v1.36.63 as "aux weapons", reframed v1.36.82): each entry is
+  // structurally identical to a BULLET_EFFECTS entry (getLevel/levelUp/
+  // maxLevel/category/introDesc/upgradeDesc, read the owned count directly
+  // off the player) rather than the old single-shared-slot model - any
+  // number of drone types can now be owned independently at once, so
+  // there's no more "deepen the one already held vs switch to a different
+  // one" distinction to handle (droneUpgrade below is accordingly much
+  // simpler than the old auxWeaponUpgrade it replaces).
+  const DRONES = [
     {
-      id: 'intercept',
-      name: '迎撃',
+      id: 'jamming',
+      name: 'ジャミングドローン',
       maxLevel: 5,
       category: 'defense',
-      introDesc: '自機のごく至近距離に入った敵を自動で低速化するようになる(低速を取得済みならその減速時間がそのまま適用される)',
-      upgradeDesc: level => `迎撃で同時に低速化できる敵の数が増加する`,
+      color: JAMMING_DRONE_ZAP_COLOR,
+      getLevel: p => p.jammingDroneCount,
+      levelUp: p => { p.jammingDroneCount++; },
+      introDesc: '自機のごく至近距離に入った敵を自動で低速化するジャミングドローンを1台獲得する(低速を取得済みならその減速時間がそのまま適用される)',
+      upgradeDesc: count => `ジャミングドローンをもう1台獲得する(同時に低速化できる敵の数が増加する)`,
     },
     {
-      id: 'shockwave',
-      name: '衝撃',
+      id: 'impact',
+      name: 'インパクトドローン',
       maxLevel: 5,
       category: 'defense',
-      introDesc: '自機のごく至近距離に入った敵を自動で自機から遠ざかる方向へ押し出すようになる',
-      upgradeDesc: level => `衝撃で同時に押し出せる敵の数が増加する`,
+      color: IMPACT_DRONE_ZAP_COLOR,
+      getLevel: p => p.impactDroneCount,
+      levelUp: p => { p.impactDroneCount++; },
+      introDesc: '自機のごく至近距離に入った敵を自動で自機から遠ざかる方向へ押し出すインパクトドローンを1台獲得する',
+      upgradeDesc: count => `インパクトドローンをもう1台獲得する(同時に押し出せる敵の数が増加する)`,
     },
     {
       // Damage formula reuses REFLECT_DMG_PCT_OF_ATTACK/OF_MAXHP verbatim -
       // the same numbers the old tank passive (REFLECT_PASSIVE, now dead
       // code kept around for exactly this kind of reuse - see its own
-      // comment) used for its reflected counter-hit. This aux weapon fires
-      // it proactively on the shared aux-weapon interval instead of
-      // reactively on taking damage, but the "how hard does it hit" math
-      // is identical.
-      id: 'strike',
-      name: '打撃',
+      // comment) used for its reflected counter-hit. This drone fires it
+      // proactively on the shared DRONE_ATK_INTERVAL instead of reactively
+      // on taking damage, but the "how hard does it hit" math is identical.
+      id: 'attack',
+      name: 'アタックドローン',
       maxLevel: 5,
       category: 'offense',
-      introDesc: '自機のごく至近距離に入った敵に自動で攻撃を行うようになる(威力は自機の最大HP・攻撃力に応じて上昇する)',
-      upgradeDesc: level => `打撃で同時に攻撃できる敵の数が増加する`,
+      color: ATTACK_DRONE_ZAP_COLOR,
+      getLevel: p => p.attackDroneCount,
+      levelUp: p => { p.attackDroneCount++; },
+      introDesc: '自機のごく至近距離に入った敵に自動で攻撃を行うアタックドローンを1台獲得する(威力は自機の最大HP・攻撃力に応じて上昇する)',
+      upgradeDesc: count => `アタックドローンをもう1台獲得する(同時に攻撃できる敵の数が増加する)`,
     },
   ];
 
-  function auxWeaponUpgrade(aux, player) {
-    if (player.auxWeaponId === aux.id) {
-      const level = player.auxWeaponLevel;
-      return {
-        id: `aux-${aux.id}`,
-        title: `${aux.name} Lv.${level}→${level + 1}`,
-        desc: aux.upgradeDesc(level),
-        category: aux.category,
-        apply: p => { p.auxWeaponLevel = Math.min(aux.maxLevel, p.auxWeaponLevel + 1); },
-      };
-    }
-    // Switching: the new weapon inherits whatever rank was already held
-    // (clamped to its own maxLevel), never resetting to 1 - only true
-    // "never held any aux weapon before" starts fresh at 1. See the
-    // worked examples in the level-up card's own desc text (not shown
-    // here - the abstract-text policy keeps this card's copy free of the
-    // mechanic's exact numbers, same as every other upgrade card).
-    const replacing = player.auxWeaponId != null;
+  function droneUpgrade(drone, player) {
+    const count = drone.getLevel(player);
     return {
-      id: `aux-${aux.id}`,
-      title: `${aux.name}(New)`,
-      desc: replacing ? `${aux.introDesc}(保有中の補助武器と入れ替わる形で獲得し、ランクはそのまま引き継がれる)` : aux.introDesc,
-      category: aux.category,
-      apply: p => {
-        p.auxWeaponLevel = Math.min(aux.maxLevel, Math.max(1, p.auxWeaponLevel));
-        p.auxWeaponId = aux.id;
-      },
+      id: `drone-${drone.id}`,
+      title: count === 0 ? `${drone.name}(New)` : `${drone.name} ${count}→${count + 1}台`,
+      desc: count === 0 ? drone.introDesc : drone.upgradeDesc(count),
+      category: drone.category,
+      apply: p => drone.levelUp(p),
     };
   }
 
@@ -2333,24 +2328,23 @@
       // than every entry needing to declare one - only atkspeed/trade-atkspeed
       // currently gate on it, since STAT_LIMITS.minAtkCooldown is a floor on
       // their own upside rather than a downside that's fine to saturate.
-      // Auxiliary weapon candidates (v1.36.63): the currently-held one (if
-      // any) offers its own rank-up card only while under maxLevel, same
-      // as a bullet effect; every OTHER aux weapon is always offered
-      // regardless of the held one's level, since switching to it doesn't
-      // depend on that weapon's own maxLevel at all (it inherits the held
-      // one's rank outright - see auxWeaponUpgrade). Not part of the
-      // bullet-effect priority slot below (that's specifically for
-      // BULLET_EFFECTS) or the bullet-effect pity-weight discount
-      // (pickWeightedIndex only discounts ids prefixed `bullet-`) - these
-      // draw at the normal weight like UPGRADE_POOL/TRADEOFF_POOL entries.
-      const auxCandidates = AUX_WEAPONS
-        .filter(aux => this.player.auxWeaponId === aux.id ? this.player.auxWeaponLevel < aux.maxLevel : true)
-        .map(aux => auxWeaponUpgrade(aux, this.player));
+      // Drone candidates (v1.36.63 as aux weapons): each not-yet-maxed
+      // drone type offers its own "own one more" card independently, same
+      // gating as notMaxedEffects above (v1.36.82 - previously only the
+      // single currently-held aux weapon could offer a card this way, with
+      // every other one offered unconditionally as a "switch" card
+      // instead; that whole distinction is gone now that drone types
+      // coexist). Not part of the bullet-effect priority slot below (that's
+      // specifically for BULLET_EFFECTS) or the bullet-effect pity-weight
+      // discount (pickWeightedIndex only discounts ids prefixed `bullet-`)
+      // - these draw at the normal weight like UPGRADE_POOL/TRADEOFF_POOL
+      // entries.
+      const notMaxedDrones = DRONES.filter(d => d.getLevel(this.player) < d.maxLevel);
       return [
         ...UPGRADE_POOL.filter(up => !up.available || up.available(this.player)),
         ...TRADEOFF_POOL.filter(up => !up.available || up.available(this.player)),
         ...notMaxedEffects.map(eff => bulletEffectUpgrade(eff, this.player)),
-        ...auxCandidates,
+        ...notMaxedDrones.map(d => droneUpgrade(d, this.player)),
       ];
     }
 
@@ -2364,31 +2358,28 @@
 
       // Slot 1 is an "already invested" priority slot: if the player
       // already has at least one level in some not-yet-maxed bullet effect,
-      // or already holds a not-yet-maxed aux weapon (v1.36.68 - previously
-      // aux weapons were excluded from this slot entirely), that slot is
-      // reserved for deepening one of those instead of a plain random draw,
-      // so committing to something keeps paying off instead of getting
-      // diluted by the rest of the pool. With nothing owned yet (or
-      // everything owned already maxed), it just behaves like a normal slot
-      // (and so gets the same pity-weighted draw as slots 2-3 - pity's
-      // whole point is helping a wanted upgrade actually get OFFERED, which
-      // this fallback case is; the owned branch above it is a deliberately
-      // narrow, already-favorable choice on its own and isn't what players
-      // are missing out on). Only the currently-held aux weapon's own
-      // rank-up card qualifies here, not the "switch to a different aux
-      // weapon" cards for whatever isn't currently held - those aren't
-      // "deepening" anything already owned, same reasoning as why a
-      // not-yet-acquired bullet effect doesn't qualify either.
+      // or already owns at least one not-yet-maxed drone (v1.36.68 for the
+      // original single-aux-weapon version; generalized to any number of
+      // owned drone types in v1.36.82), that slot is reserved for deepening
+      // one of those instead of a plain random draw, so committing to
+      // something keeps paying off instead of getting diluted by the rest
+      // of the pool. With nothing owned yet (or everything owned already
+      // maxed), it just behaves like a normal slot (and so gets the same
+      // pity-weighted draw as slots 2-3 - pity's whole point is helping a
+      // wanted upgrade actually get OFFERED, which this fallback case is;
+      // the owned branch above it is a deliberately narrow,
+      // already-favorable choice on its own and isn't what players are
+      // missing out on).
       const ownedEffects = notMaxedEffects.filter(eff => eff.getLevel(this.player) > (eff.baseLevel || 0));
-      const heldAux = AUX_WEAPONS.find(aux => aux.id === this.player.auxWeaponId);
-      const ownedAuxUpgrade = (heldAux && this.player.auxWeaponLevel < heldAux.maxLevel)
-        ? auxWeaponUpgrade(heldAux, this.player)
-        : null;
+      const notMaxedDrones = DRONES.filter(d => d.getLevel(this.player) < d.maxLevel);
+      const ownedDrones = notMaxedDrones.filter(d => d.getLevel(this.player) > 0);
       const missStreak = this.player.upgradeMissStreak;
       let firstPick;
-      if (ownedEffects.length > 0 || ownedAuxUpgrade) {
-        const firstSlotPool = ownedEffects.map(eff => bulletEffectUpgrade(eff, this.player));
-        if (ownedAuxUpgrade) firstSlotPool.push(ownedAuxUpgrade);
+      if (ownedEffects.length > 0 || ownedDrones.length > 0) {
+        const firstSlotPool = [
+          ...ownedEffects.map(eff => bulletEffectUpgrade(eff, this.player)),
+          ...ownedDrones.map(d => droneUpgrade(d, this.player)),
+        ];
         firstPick = firstSlotPool[randInt(0, firstSlotPool.length - 1)];
       } else {
         const idx = pickWeightedIndex(pool, missStreak);
@@ -2432,11 +2423,11 @@
         // card (offense/crowd/defense/utility, see UPGRADE_CATEGORIES)
         // drives a left border accent + matching title color in CSS, so
         // a card's category reads at a glance without opening §4-5-2's
-        // documentation. Aux weapon cards (id prefixed `aux-`) additionally
-        // get a small "補助武器" badge in the title, since those upgrades
+        // documentation. Drone cards (id prefixed `drone-`) additionally
+        // get a small "ドローン" badge in the title, since those upgrades
         // otherwise look identical to a bullet effect card.
         card.className = `upgrade-card cat-${up.category}`;
-        const auxBadge = up.id.startsWith('aux-') ? '<span class="aux-badge">補助武器</span>' : '';
+        const auxBadge = up.id.startsWith('drone-') ? '<span class="aux-badge">ドローン</span>' : '';
         card.innerHTML = `<div class="u-title">${auxBadge}${up.title}</div><div class="u-desc">${up.desc}</div>`;
         card.addEventListener('click', () => this.pickUpgrade(up));
         upgradeChoicesEl.appendChild(card);
@@ -3594,79 +3585,100 @@
 
       this.fireWeapon(dt);
 
-      // Auxiliary weapon (v1.36.63, throttled to a real attack interval in
-      // v1.36.64): acts on whatever wanders inside the tiny aura radius,
-      // regardless of whether any shot has actually hit it. Capped to the
-      // nearest N enemies (N = auxWeaponTargetCount(rank)) so a full swarm
-      // doesn't get affected for free - only the immediate threats
-      // pressing right up against the player do. Which effect actually
-      // happens to those N enemies depends on which aux weapon is
-      // currently held; only one can be held at a time (Player.auxWeaponId).
-      if (p.auxWeaponId) {
-        p.auxWeaponCooldown -= dt;
-      }
+      // Drones (v1.36.63 as a single "aux weapon", independently-owned per
+      // type since v1.36.82): each type acts on whatever wanders inside the
+      // tiny aura radius, regardless of whether any shot has actually hit
+      // it, capped to the nearest N enemies (N = droneTargetCount(owned
+      // count)) so a full swarm doesn't get affected for free - only the
+      // immediate threats pressing right up against the player do. Unlike
+      // the old single-slot aux weapon, all three types can be owned and
+      // firing at once, each on its own independent cooldown - three
+      // near-identical blocks rather than one shared block dispatching on
+      // "which one is held", since there's no longer a single "which one"
+      // to dispatch on.
+      //
       // Originally applied every single frame (effectively an unbreakable
       // field, far stronger than intended) - now gated behind
-      // AUX_WEAPON_ATK_INTERVAL like a normal weapon's cooldown, so this
+      // DRONE_ATK_INTERVAL like a normal weapon's cooldown, so each type
       // only actually fires roughly once a second.
       //
-      // The cooldown is only consumed once a real target is found
+      // Each type's cooldown is only consumed once a real target is found
       // (v1.36.66) - mirroring fireWeapon()'s own guard (p.atkTimer is left
       // untouched whenever `sorted.length === 0`, so a weapon with nothing
       // to shoot never burns its own cooldown). Without this, a ready-but-
       // empty aura (e.g. the main weapon kills the one enemy that had just
-      // wandered into range, the instant before the aux weapon's own
-      // cooldown expires) would still consume the whole interval on a
-      // no-op, pushing the next real proc a further AUX_WEAPON_ATK_INTERVAL
-      // out - exactly why the aura could feel noticeably slower than the
-      // intended ~1/sec in practice.
-      if (p.auxWeaponId && p.auxWeaponCooldown <= 0) {
-        const nearby = this.enemies
-          .filter(e => dist2(e.x, e.y, p.x, p.y) <= AUX_WEAPON_RADIUS * AUX_WEAPON_RADIUS)
-          .sort((a, b) => dist2(a.x, a.y, p.x, p.y) - dist2(b.x, b.y, p.x, p.y));
-        const maxTargets = auxWeaponTargetCount(p.auxWeaponLevel);
-        const targets = nearby.slice(0, maxTargets);
-        if (targets.length > 0) {
-          p.auxWeaponCooldown += AUX_WEAPON_ATK_INTERVAL;
-          if (p.auxWeaponId === 'intercept') {
-            const duration = interceptDuration(p);
+      // wandered into range, the instant before a drone's own cooldown
+      // expires) would still consume the whole interval on a no-op, pushing
+      // the next real proc a further DRONE_ATK_INTERVAL out - exactly why
+      // the aura could feel noticeably slower than the intended ~1/sec in
+      // practice.
+      if (p.jammingDroneCount > 0) {
+        p.jammingDroneCooldown -= dt;
+        if (p.jammingDroneCooldown <= 0) {
+          const nearby = this.enemies
+            .filter(e => dist2(e.x, e.y, p.x, p.y) <= DRONE_RADIUS * DRONE_RADIUS)
+            .sort((a, b) => dist2(a.x, a.y, p.x, p.y) - dist2(b.x, b.y, p.x, p.y));
+          const targets = nearby.slice(0, droneTargetCount(p.jammingDroneCount));
+          if (targets.length > 0) {
+            p.jammingDroneCooldown += DRONE_ATK_INTERVAL;
+            const duration = jammingDuration(p);
             for (const e of targets) {
               // Now a genuinely periodic "shot" (once per
-              // AUX_WEAPON_ATK_INTERVAL) rather than a per-frame refresh, so
-              // it flashes every time it actually fires on a target instead
-              // of only on the first newly-caught transition.
-              this.chainZaps.push(new ChainZap(p.x, p.y, e.x, e.y));
+              // DRONE_ATK_INTERVAL) rather than a per-frame refresh, so it
+              // flashes every time it actually fires on a target instead of
+              // only on the first newly-caught transition.
+              this.chainZaps.push(new ChainZap(p.x, p.y, e.x, e.y, JAMMING_DRONE_ZAP_COLOR));
               e.slowTimer = Math.max(e.slowTimer, duration);
             }
-          } else if (p.auxWeaponId === 'shockwave') {
-            // A discrete knockback per shot now, not a continuous force -
-            // see AUX_WEAPON_ATK_INTERVAL/SHOCKWAVE_PUSH_DISTANCE above.
+          }
+        }
+      }
+      if (p.impactDroneCount > 0) {
+        p.impactDroneCooldown -= dt;
+        if (p.impactDroneCooldown <= 0) {
+          const nearby = this.enemies
+            .filter(e => dist2(e.x, e.y, p.x, p.y) <= DRONE_RADIUS * DRONE_RADIUS)
+            .sort((a, b) => dist2(a.x, a.y, p.x, p.y) - dist2(b.x, b.y, p.x, p.y));
+          const targets = nearby.slice(0, droneTargetCount(p.impactDroneCount));
+          if (targets.length > 0) {
+            p.impactDroneCooldown += DRONE_ATK_INTERVAL;
+            // A discrete knockback per shot, not a continuous force - see
+            // DRONE_ATK_INTERVAL/IMPACT_DRONE_PUSH_DISTANCE above.
             for (const e of targets) {
               const d = dist(e.x, e.y, p.x, p.y) || 1;
-              e.x += (e.x - p.x) / d * SHOCKWAVE_PUSH_DISTANCE;
-              e.y += (e.y - p.y) / d * SHOCKWAVE_PUSH_DISTANCE;
-              // Without this, shockwave could push an enemy straight into
-              // (or through) a wall - see the same fix already applied to
-              // magnetstorm's pull (v1.36.53) for the identical reasoning.
+              e.x += (e.x - p.x) / d * IMPACT_DRONE_PUSH_DISTANCE;
+              e.y += (e.y - p.y) / d * IMPACT_DRONE_PUSH_DISTANCE;
+              // Without this, the impact drone could push an enemy straight
+              // into (or through) a wall - see the same fix already
+              // applied to magnetstorm's pull (v1.36.53) for the identical
+              // reasoning.
               this.resolveWallCollision(e);
-              // Activation flash (v1.36.67) - same line effect intercept
-              // already gets, in shockwave's own color so it's clear which
-              // aux weapon just fired.
-              this.chainZaps.push(new ChainZap(p.x, p.y, e.x, e.y, SHOCKWAVE_ZAP_COLOR));
+              this.chainZaps.push(new ChainZap(p.x, p.y, e.x, e.y, IMPACT_DRONE_ZAP_COLOR));
             }
-          } else if (p.auxWeaponId === 'strike') {
+          }
+        }
+      }
+      if (p.attackDroneCount > 0) {
+        p.attackDroneCooldown -= dt;
+        if (p.attackDroneCooldown <= 0) {
+          const nearby = this.enemies
+            .filter(e => dist2(e.x, e.y, p.x, p.y) <= DRONE_RADIUS * DRONE_RADIUS)
+            .sort((a, b) => dist2(a.x, a.y, p.x, p.y) - dist2(b.x, b.y, p.x, p.y));
+          const targets = nearby.slice(0, droneTargetCount(p.attackDroneCount));
+          if (targets.length > 0) {
+            p.attackDroneCooldown += DRONE_ATK_INTERVAL;
             // Direct damage instead of a status effect/knockback - same
             // formula as the old tank passive's reflect hit
             // (REFLECT_DMG_PCT_OF_ATTACK/OF_MAXHP), just fired proactively
-            // on the shared aux-weapon interval instead of reactively on
-            // taking damage. Routed through damageEnemy() like every other
-            // damage source (§6-2's difficulty-scaling multiplier, etc.)
-            // rather than decrementing hp directly.
+            // on this drone's own interval instead of reactively on taking
+            // damage. Routed through damageEnemy() like every other damage
+            // source (§6-2's difficulty-scaling multiplier, etc.) rather
+            // than decrementing hp directly.
             const dmg = Math.round(p.damage * REFLECT_DMG_PCT_OF_ATTACK + p.maxHp * REFLECT_DMG_PCT_OF_MAXHP);
             for (const e of targets) {
               this.damageEnemy(e, dmg);
               e.hitFlash = 0.12;
-              this.chainZaps.push(new ChainZap(p.x, p.y, e.x, e.y, STRIKE_ZAP_COLOR));
+              this.chainZaps.push(new ChainZap(p.x, p.y, e.x, e.y, ATTACK_DRONE_ZAP_COLOR));
             }
           }
         }
@@ -4391,6 +4403,29 @@
       ctx.fill();
       ctx.restore();
 
+      // Drone dots (v1.36.82): one dot per owned drone in a row above the
+      // player, color-coded per type (DRONES' own `color`, the same one
+      // used for that drone's ChainZap flash) - same "one dot per stack"
+      // convention as the enemy status-effect dots above (STATUS_DOT_COLORS),
+      // so owned drones read at a glance without opening the pause screen.
+      const droneDots = [];
+      for (const drone of DRONES) {
+        const count = drone.getLevel(p);
+        for (let i = 0; i < count; i++) droneDots.push(drone.color);
+      }
+      if (droneDots.length > 0) {
+        const dotRadius = 3;
+        const dotSpacing = 9;
+        const dotY = p.y - p.radius - 8;
+        const rowStartX = p.x - (droneDots.length - 1) * dotSpacing / 2;
+        for (let i = 0; i < droneDots.length; i++) {
+          ctx.beginPath();
+          ctx.fillStyle = droneDots[i];
+          ctx.arc(rowStartX + i * dotSpacing, dotY, dotRadius, 0, TAU);
+          ctx.fill();
+        }
+      }
+
       // charge beam charging indicator - a ring around the player that
       // grows and brightens with p.chargeTime, so the player has live
       // feedback on how much they'd lose by releasing right now. Dim gray
@@ -4548,9 +4583,7 @@
     if (p.killzoneLevel > 0) bulletLines.push(`キルゾーン Lv.${p.killzoneLevel}`);
     if (p.frenzyfountainLevel > 0) bulletLines.push(`狂乱の泉 Lv.${p.frenzyfountainLevel}`);
     if (p.poisoncloudLevel > 0) bulletLines.push(`ポイズンクラウド Lv.${p.poisoncloudLevel}`);
-    const auxWeaponLine = p.auxWeaponId
-      ? `${AUX_WEAPONS.find(aux => aux.id === p.auxWeaponId).name} Lv.${p.auxWeaponLevel}`
-      : null;
+    const droneLines = DRONES.filter(d => d.getLevel(p) > 0).map(d => `${d.name} x${d.getLevel(p)}`);
     pauseStatsEl.innerHTML = `
       <p>HP: ${Math.ceil(p.hp)} / ${p.maxHp}</p>
       <p>レベル: ${p.level}</p>
@@ -4558,7 +4591,7 @@
       <p>同時発射数: ${p.projCount} / 射程: ${Math.round(p.rangeMult * 100)}%</p>
       <p>移動速度: ${Math.round(p.speed)}</p>
       <p>HP自然回復: ${p.regen}/秒 / 回収範囲: ${Math.round(p.pickupRadius)}</p>
-      ${auxWeaponLine ? `<p>補助武器: ${auxWeaponLine}</p>` : ''}
+      ${droneLines.length ? `<p>ドローン: ${droneLines.join(' / ')}</p>` : ''}
       ${bulletLines.length ? `<p>弾丸効果: ${bulletLines.join(' / ')}</p>` : ''}
       <p>生存時間: ${mm}:${ss} / 撃破数: ${g.kills} / 難易度: ${g.difficulty}</p>
     `;

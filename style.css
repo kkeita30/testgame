@@ -328,9 +328,10 @@ html, body {
 .upgrade-card.cat-utility { border-left: 4px solid #60a5fa; }
 .upgrade-card.cat-utility .u-title { color: #60a5fa; }
 
-/* Aux weapon badge (v1.36.76): small pill marking a card as one of the two
-   mutually-exclusive aux weapons (迎撃/衝撃, §4-3-3), distinguishing it
-   from an otherwise near-identical-looking bullet effect card. */
+/* Drone badge (v1.36.76, text updated v1.36.82): small pill marking a card
+   as one of the independently-ownable drones (ジャミング/インパクト/アタック,
+   §4-3-3), distinguishing it from an otherwise near-identical-looking
+   bullet effect card. */
 .aux-badge {
   display: inline-block;
   font-size: 10px;
