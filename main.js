@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.91';
+  const GAME_VERSION = '1.36.92';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -792,7 +792,6 @@
       // ImpactEffect constants block for details).
       this.magnetstormLevel = 0;
       this.killzoneLevel = 0;
-      this.frenzyfountainLevel = 0;
       this.poisoncloudLevel = 0;
 
       // Double-tap special ability, defined per character (§ CHARACTERS).
@@ -1966,7 +1965,7 @@
   // level field, own BULLET_EFFECTS entry, same maxLevel=5 pattern as
   // explosion/chain/etc above), so a build can invest in some without
   // others.
-  const IMPACT_EFFECT_COLORS = { magnetstorm: '#6a5cff', killzone: '#ff2d55', frenzyfountain: '#ff8c1a', poisoncloud: '#39d353' };
+  const IMPACT_EFFECT_COLORS = { magnetstorm: '#6a5cff', killzone: '#ff2d55', poisoncloud: '#39d353' };
   // How long before expiry a zone's circle starts fading out (see draw()) -
   // short relative to even the shortest zone (magnetstorm, 3s) so a
   // life/maxLife fade doesn't wash out most of a longer-lived zone's
@@ -1978,8 +1977,8 @@
   // that stays put once set. See Game.spawnImpactEffect.
 
   // How often, in seconds, an enemy that's continuously standing inside a
-  // killzone/frenzyfountain/poisoncloud zone gets hit again (v1.36.38) -
-  // these three share this same periodic-tick model; magnetstorm doesn't
+  // killzone/poisoncloud zone gets hit again (v1.36.38) -
+  // these share this same periodic-tick model; magnetstorm doesn't
   // use it at all (its pull is already continuous every frame, not a
   // discrete "tick"). The first tick lands this many seconds AFTER entry,
   // not instantly on entry (e.g. 5 poison stacks from a maxed poison cloud
@@ -1995,7 +1994,7 @@
       this.life = life;
       this.maxLife = life;
       this.dmgPerSec = dmgPerSec || 0; // killzone only
-      // killzone/frenzyfountain/poisoncloud only: Map<Enemy, secondsUntilNextTick>
+      // killzone/poisoncloud only: Map<Enemy, secondsUntilNextTick>
       // for every enemy currently inside this specific zone instance - each
       // tracks its own countdown independently of when other enemies
       // entered. An enemy that leaves the zone is dropped from this map
@@ -2031,24 +2030,24 @@
   function killZoneRadiusForLevel(level) { return 67.5 + 15 * (level - 1); }
   function killZoneDmgPctForLevel(level) { return 0.5 + 0.25 * (level - 1); } // fraction of proj.damage dealt per second
 
-  // 狂乱の泉/Frenzy Fountain and ポイズンクラウド/Poison Cloud: apply the
-  // existing frenzy/poison status (same frenzyDurationForLevel/
+  // ポイズンクラウド/Poison Cloud: applies the existing poison status (same
   // POISON_DURATION, same duration/stack-cap formulas) to enemies standing
   // inside, once every IMPACT_EFFECT_TICK_INTERVAL seconds per enemy (see
   // ImpactEffect.tickTimers and the tick loop in update()) - so lingering
   // inside behaves like getting re-hit by a normal shot on that same
-  // cadence, refreshing frenzy's duration / stacking poison up to its cap
-  // over time rather than only ever applying once. Deliberately reuse the
-  // player's own frenzyLevel/poisonLevel rank to determine how strong that
-  // applied status is - these zones are a new delivery method for an
-  // existing status, not a second independent version of it - so
-  // each is only offered once the corresponding base effect has at least
-  // one rank (available gate on the BULLET_EFFECTS entry below), and only
-  // its own radius scales with its own rank.
-  const FRENZYFOUNTAIN_DURATION = 10;
-  // Same 90-170 (v1.36.35) -> 45-85 (v1.36.37) -> 67.5-127.5 (v1.36.38, the
-  // midpoint of the two) progression as killzone above.
-  function frenzyFountainRadiusForLevel(level) { return 67.5 + 15 * (level - 1); }
+  // cadence, stacking poison up to its cap over time rather than only ever
+  // applying once. Deliberately reuses the player's own poisonLevel rank to
+  // determine how strong the applied status is - this zone is a new
+  // delivery method for an existing status, not a second independent
+  // version of it - so it's only offered once poison has at least one rank
+  // (available gate on the BULLET_EFFECTS entry below), and only its own
+  // radius scales with its own rank.
+  //
+  // 狂乱の泉/Frenzy Fountain (the same idea applied to frenzy) was removed
+  // in v1.36.92 - it existed specifically to help low-attack-speed frenzy
+  // builds keep re-stacking frenzy over time, but frenzy stopped stacking
+  // at all once v1.36.87 redesigned it into a flat, non-stacking duration
+  // effect, so the zone's entire reason for existing was gone.
   const POISONCLOUD_DURATION = 10;
   function poisonCloudRadiusForLevel(level) { return 67.5 + 15 * (level - 1); }
 
@@ -2194,28 +2193,16 @@
       upgradeDesc: level => `キルゾーンの範囲とダメージが増加する`,
     },
     {
-      id: 'frenzyfountain',
-      name: '狂乱の泉',
-      maxLevel: 5,
-      category: 'crowd',
-      getLevel: p => p.frenzyfountainLevel,
-      levelUp: p => { p.frenzyfountainLevel++; },
-      // Gated behind 狂乱 having at least 1 rank - this zone applies
-      // whatever frenzy rank the player already has (frenzyDurationForLevel
-      // reads p.frenzyLevel directly, see update()), so without 狂乱 taken
-      // at all it would just be a zone that does nothing.
-      available: p => p.frenzyLevel > 0,
-      introDesc: '着弾地点に一定時間残る領域を発生させ、範囲内に留まる敵に継続的に狂乱状態を付与し続けるようになる(連鎖では発生しない)。付与される狂乱の持続時間は「狂乱」の取得状況がそのまま反映される',
-      upgradeDesc: level => `狂乱の泉の範囲が拡大する`,
-    },
-    {
       id: 'poisoncloud',
       name: 'ポイズンクラウド',
       maxLevel: 5,
       category: 'crowd',
       getLevel: p => p.poisoncloudLevel,
       levelUp: p => { p.poisoncloudLevel++; },
-      // Same reasoning as 狂乱の泉's gate, mirrored for 猛毒/poison.
+      // Gated behind 猛毒 having at least 1 rank - this zone applies
+      // whatever poison rank the player already has, so without 猛毒 taken
+      // at all it would just be a zone that does nothing (same reasoning
+      // as killzone's own applied-effect gates elsewhere).
       available: p => p.poisonLevel > 0,
       introDesc: '着弾地点に一定時間残る毒雲を発生させ、範囲内に留まる敵に継続的に毒状態を付与し続けるようになる(連鎖では発生しない)。付与される毒のランクは「猛毒」の取得状況がそのまま反映される',
       upgradeDesc: level => `ポイズンクラウドの範囲が拡大する`,
@@ -3227,7 +3214,6 @@
       const p = this.player;
       if (p.magnetstormLevel > 0) this.spawnImpactEffect('magnetstorm', e.x, e.y, magnetStormRadiusForLevel(p.magnetstormLevel), MAGNETSTORM_DURATION);
       if (p.killzoneLevel > 0) this.spawnImpactEffect('killzone', e.x, e.y, killZoneRadiusForLevel(p.killzoneLevel), KILLZONE_DURATION, proj.damage * killZoneDmgPctForLevel(p.killzoneLevel));
-      if (p.frenzyfountainLevel > 0) this.spawnImpactEffect('frenzyfountain', e.x, e.y, frenzyFountainRadiusForLevel(p.frenzyfountainLevel), FRENZYFOUNTAIN_DURATION);
       if (p.poisoncloudLevel > 0) this.spawnImpactEffect('poisoncloud', e.x, e.y, poisonCloudRadiusForLevel(p.poisoncloudLevel), POISONCLOUD_DURATION);
 
       if (proj.explosionRadius > 0 && Math.random() < EXPLOSION_TRIGGER_CHANCE) {
@@ -4252,7 +4238,7 @@
 
       // impact effects: per-type behavior while alive, then drop expired
       // ones. magnetstorm's pull is continuous (every frame, whoever's
-      // currently inside). killzone/frenzyfountain/poisoncloud instead
+      // currently inside). killzone/poisoncloud instead
       // share a periodic-tick model: an enemy that stays inside gets
       // hit again every IMPACT_EFFECT_TICK_INTERVAL seconds, not just once
       // on entry - fx.tickTimers tracks each affected enemy's own countdown
@@ -4287,8 +4273,6 @@
               t += IMPACT_EFFECT_TICK_INTERVAL;
               if (fx.type === 'killzone') {
                 this.damageEnemy(e, fx.dmgPerSec * IMPACT_EFFECT_TICK_INTERVAL);
-              } else if (fx.type === 'frenzyfountain') {
-                e.frenzyTimer = frenzyDurationForLevel(p.frenzyLevel); // no stacking (v1.36.87) - just (re)starts at the current rank's full duration
               } else if (fx.type === 'poisoncloud') {
                 if (e.poisonTimer <= 0) { e.poisonTimer = POISON_DURATION; e.poisonStacks = 1; }
                 else e.poisonStacks = Math.min(poisonMaxStacksForLevel(p.poisonLevel), e.poisonStacks + 1);
@@ -4851,7 +4835,6 @@
     if (p.vulnerableLevel > 0) bulletLines.push(`脆弱 ランク${p.vulnerableLevel}`);
     if (p.magnetstormLevel > 0) bulletLines.push(`磁気嵐 ランク${p.magnetstormLevel}`);
     if (p.killzoneLevel > 0) bulletLines.push(`キルゾーン ランク${p.killzoneLevel}`);
-    if (p.frenzyfountainLevel > 0) bulletLines.push(`狂乱の泉 ランク${p.frenzyfountainLevel}`);
     if (p.poisoncloudLevel > 0) bulletLines.push(`ポイズンクラウド ランク${p.poisoncloudLevel}`);
     const droneLines = DRONES.filter(d => d.getLevel(p) > 0).map(d => `${d.name} x${d.getLevel(p)}`);
     pauseStatsEl.innerHTML = `
