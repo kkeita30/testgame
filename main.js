@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.83';
+  const GAME_VERSION = '1.36.84';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -385,23 +385,60 @@
   const JAMMING_BASE_DURATION = 0.4;
   function jammingDuration(p) { return p.slowLevel > 0 ? slowDurationForLevel(p.slowLevel) : JAMMING_BASE_DURATION; }
   function droneTargetCount(count) { return count; }
-  // Attack interval (v1.36.64, shortened v1.36.67): a drone originally
-  // applied its effect every single frame to anything in range - far
-  // stronger than intended (it effectively never let go once something
-  // wandered in). Gated to once every DRONE_ATK_INTERVAL seconds instead,
-  // like a real weapon's cooldown, rather than a continuous field. 1.0s
-  // (paired with the v1.36.66 wasted-cooldown fix) ended up feeling
-  // considerably weaker than the old always-on version, so shortened to
-  // 0.5s here, alongside widening the aura itself (see DRONE_RADIUS) to
-  // compensate from the other direction too.
-  const DRONE_ATK_INTERVAL = 0.5;
-  // Aura radius (v1.36.67): widened to 1.5x the original DRONE_RANGE_BASE.
-  // Kept as its own constant rather than just multiplying DRONE_RANGE_BASE
-  // itself, since WIDE_ATTACK_RANGE (the Pulse Wave weapon's range, below)
-  // piggybacks on DRONE_RANGE_BASE's original value - widening that
-  // constant directly would have silently also buffed Pulse Wave's range,
-  // which nobody asked for.
-  const DRONE_RADIUS = DRONE_RANGE_BASE * 1.5;
+  // Attack interval (v1.36.64, shortened v1.36.67, quadrupled v1.36.84): a
+  // drone originally applied its effect every single frame to anything in
+  // range - far stronger than intended (it effectively never let go once
+  // something wandered in). Gated to once every DRONE_ATK_INTERVAL seconds
+  // instead, like a real weapon's cooldown, rather than a continuous
+  // field. Shortened from 1.0s to 0.5s in v1.36.67 (alongside widening the
+  // aura itself, see DRONE_RADIUS_BASE) to compensate for the v1.36.66
+  // wasted-cooldown fix having made it feel weaker overall. Quadrupled
+  // again to 2.0s in v1.36.84 as an explicit balance pass once three drone
+  // types could be owned simultaneously (each firing on this same
+  // interval independently) - see droneAtkIntervalForRank below for how
+  // the new attack-speed upgrade buys some of this back per-run.
+  const DRONE_ATK_INTERVAL = 2.0;
+  // Attack-speed upgrade (v1.36.84): DRONE_ATK_INTERVAL_FLOOR is set to
+  // exactly half of DRONE_ATK_INTERVAL, so a maxed-out upgrade brings the
+  // interval back down to the pre-v1.36.84 0.5s baseline's 2x (not all the
+  // way back to 0.5s itself - the quadrupling above is a real, only
+  // partially-recoverable nerf, not just relocated behind an upgrade).
+  const DRONE_ATK_SPEED_UPGRADE_MAX_RANK = 3;
+  const DRONE_ATK_INTERVAL_FLOOR = DRONE_ATK_INTERVAL / 2;
+  const DRONE_ATK_INTERVAL_REDUCTION_PER_RANK = (DRONE_ATK_INTERVAL - DRONE_ATK_INTERVAL_FLOOR) / DRONE_ATK_SPEED_UPGRADE_MAX_RANK;
+  function droneAtkIntervalForRank(rank) { return DRONE_ATK_INTERVAL - DRONE_ATK_INTERVAL_REDUCTION_PER_RANK * rank; }
+  // Aura radius (v1.36.67, made a per-player upgradeable rank in v1.36.84):
+  // widened to 1.5x the original DRONE_RANGE_BASE. Kept as its own
+  // constant rather than just multiplying DRONE_RANGE_BASE itself, since
+  // WIDE_ATTACK_RANGE (the Pulse Wave weapon's range, below) piggybacks on
+  // DRONE_RANGE_BASE's original value - widening that constant directly
+  // would have silently also buffed Pulse Wave's range, which nobody
+  // asked for. DRONE_RADIUS_BASE (renamed from DRONE_RADIUS in v1.36.84)
+  // is still what WIDE_ATTACK_RANGE piggybacks on - only the drones'
+  // actual runtime range (droneRangeForRank below) grows with the new
+  // range upgrade, so that upgrade can never leak into Pulse Wave's reach.
+  const DRONE_RADIUS_BASE = DRONE_RANGE_BASE * 1.5;
+  // Range upgrade (v1.36.84): all three drone types already shared one
+  // identical detection radius (DRONE_RADIUS_BASE) even before this - what
+  // this adds is a per-player rank (0-3) that grows it further, landing
+  // at roughly DRONE_RANGE_MAX at max rank (chosen to land close to what
+  // the impact drone's knockback used to make its effective reach feel
+  // like pre-nerf, see IMPACT_DRONE_PUSH_DISTANCE below).
+  const DRONE_RANGE_UPGRADE_MAX_RANK = 3;
+  const DRONE_RANGE_MAX = 140;
+  const DRONE_RANGE_PER_RANK = (DRONE_RANGE_MAX - DRONE_RADIUS_BASE) / DRONE_RANGE_UPGRADE_MAX_RANK;
+  function droneRangeForRank(rank) { return DRONE_RADIUS_BASE + DRONE_RANGE_PER_RANK * rank; }
+  // Shared drone slot pool (v1.36.84): previously each drone type had its
+  // own independent maxLevel(5) with no cross-type cap at all, so a player
+  // could in principle own up to 15 drones total (5 of each type). Capped
+  // total ownership across all three types instead - DRONE_SLOTS_BASE is
+  // the starting cap, raised by the new slot upgrade (0-3 ranks, +1 each).
+  // Each type's own maxLevel(5, see DRONES) still applies on top of this
+  // shared cap, so dumping every slot into one type is still bounded.
+  const DRONE_SLOTS_BASE = 3;
+  const DRONE_SLOT_UPGRADE_MAX_RANK = 3;
+  function droneSlotCap(rank) { return DRONE_SLOTS_BASE + rank; }
+  function totalDroneCount(p) { return p.jammingDroneCount + p.impactDroneCount + p.attackDroneCount; }
   // Jamming drone's own activation flash/status-dot color - cyan, same as
   // the original intercept aux weapon's default ChainZap color, made
   // explicit here now that every drone type needs one for both its zap
@@ -413,8 +450,15 @@
   // knockback per "shot", not a continuous force - see v1.36.64 above).
   // Fixed push distance regardless of owned count - count only raises how
   // many enemies it can hit at once, exactly like jamming's own count only
-  // raises its target count rather than the slow's own strength.
-  const IMPACT_DRONE_PUSH_DISTANCE = 50;
+  // raises its target count rather than the slow's own strength. Reduced
+  // 50->20 in v1.36.84: since the knockback moves an already-affected
+  // enemy further away from the player, it made this drone's *felt* reach
+  // (how far away it visibly influences enemies) noticeably longer than
+  // jamming/attack's, even though all three shared the exact same
+  // detection radius underneath - shrinking the push keeps a real
+  // knockback while no longer making impact feel like the odd one out on
+  // range.
+  const IMPACT_DRONE_PUSH_DISTANCE = 20;
   // Impact drone's own activation flash color (v1.36.67) - same ChainZap
   // line effect the jamming drone already uses, just a different color so
   // the two read as visually distinct when either fires (orange for
@@ -428,21 +472,30 @@
   // used for offense-category upgrade cards, §4-5-3) rather than reusing
   // jamming/impact's cyan/orange, both already spoken for.
   const ATTACK_DRONE_ZAP_COLOR = '#ff5a5a';
+  // Empty drone-slot dot color (v1.36.84, see the above-player drone-dot
+  // UI in draw()) - neutral gray, distinct from any drone's own color, so
+  // an unused slot in the row reads as "not yet filled" rather than being
+  // mistaken for a 4th drone type.
+  const DRONE_SLOT_EMPTY_COLOR = '#5a5a66';
 
   // Wide weapon (v1.36.15): a short-range melee-style sweep that hits every
   // enemy inside a cone in front of the player in one go, instead of firing
-  // a traveling Projectile. WIDE_ATTACK_RANGE piggybacks on DRONE_RADIUS
-  // (v1.36.68, previously DRONE_RANGE_BASE - see DRONE_RADIUS above), just
-  // a bit longer, so this weapon's reach stays deliberately ahead of the
-  // drone auras' own range rather than merely equal to it - the tradeoff
-  // for guaranteed multi-target coverage and above-average damage is that
-  // the player has to get in close to use it at all. Its innate effect (see
-  // WEAPONS below) widens the cone with rank instead of adding more shots,
-  // so this weapon never gets multishot's raw shot-count scaling. Declared
-  // here (ahead of its usual position among the other bullet-effect
-  // constants) because WEAPONS' desc strings below reference it directly at
-  // module-load time, not just from inside a later-called function.
-  const WIDE_ATTACK_RANGE = DRONE_RADIUS + 30;
+  // a traveling Projectile. WIDE_ATTACK_RANGE piggybacks on DRONE_RADIUS_BASE
+  // (v1.36.68, previously DRONE_RANGE_BASE - see DRONE_RADIUS_BASE above),
+  // just a bit longer, so this weapon's reach stays deliberately ahead of
+  // the drones' own base range rather than merely equal to it - the
+  // tradeoff for guaranteed multi-target coverage and above-average
+  // damage is that the player has to get in close to use it at all. Its
+  // innate effect (see WEAPONS below) widens the cone with rank instead of
+  // adding more shots, so this weapon never gets multishot's raw
+  // shot-count scaling. Declared here (ahead of its usual position among
+  // the other bullet-effect constants) because WEAPONS' desc strings below
+  // reference it directly at module-load time, not just from inside a
+  // later-called function. Deliberately still anchored to the STATIC
+  // DRONE_RADIUS_BASE rather than the upgradeable droneRangeForRank() -
+  // the drone range upgrade (§4-3-3) must never leak into this unrelated
+  // weapon's reach.
+  const WIDE_ATTACK_RANGE = DRONE_RADIUS_BASE + 30;
   const WIDE_DAMAGE_MULT = 2.0;
   function wideHalfWidthForRank(rank) { return 16 + 10 * (rank - 1); }
 
@@ -709,6 +762,14 @@
       this.impactDroneCooldown = 0;
       this.attackDroneCount = 0;
       this.attackDroneCooldown = 0;
+      // Shared drone stat upgrades (v1.36.84, see droneSlotCap/
+      // droneRangeForRank/droneAtkIntervalForRank) - unlike the per-type
+      // counts above, these three apply identically to all drone types at
+      // once, so each is a single rank (0 to its own upgrade's max rank)
+      // rather than a per-type field.
+      this.droneSlotRank = 0;
+      this.droneRangeRank = 0;
+      this.droneAtkSpeedRank = 0;
       this.poisonLevel = 0;
       this.frenzyLevel = 0;
       // Named bombifyLevel (not "bomb") to avoid confusion with the
@@ -1506,6 +1567,39 @@
       // makes more sense as an investable upgrade than as a free baseline.
       apply: p => p.heartHealFrac = Math.min(STAT_LIMITS.maxHeartHealFrac, p.heartHealFrac * 1.1),
       available: p => p.heartHealFrac < STAT_LIMITS.maxHeartHealFrac,
+    },
+    // Shared drone stat upgrades (v1.36.84, see DRONE_SLOTS_BASE/
+    // droneRangeForRank/droneAtkIntervalForRank and their surrounding
+    // comments) - each applies identically to all three drone types at
+    // once, so these live here as capped-rank UPGRADE_POOL entries (same
+    // available-gated, fixed-max-rank shape as range/movespeed/pickup
+    // above) rather than in DRONES itself. No difficulty-feedback
+    // contribution, same as every existing drone-related upgrade
+    // (§6-2) - none of the three power-mult functions reference these
+    // rank fields.
+    {
+      id: 'droneslots',
+      title: 'ドローン保有上限増加',
+      desc: 'ドローンの同時保有数上限(全種合計)が増加する',
+      category: 'utility',
+      apply: p => p.droneSlotRank = Math.min(DRONE_SLOT_UPGRADE_MAX_RANK, p.droneSlotRank + 1),
+      available: p => p.droneSlotRank < DRONE_SLOT_UPGRADE_MAX_RANK,
+    },
+    {
+      id: 'dronerange',
+      title: 'ドローン射程増加',
+      desc: 'ドローンの索敵範囲が拡大する(全種共通)',
+      category: 'utility',
+      apply: p => p.droneRangeRank = Math.min(DRONE_RANGE_UPGRADE_MAX_RANK, p.droneRangeRank + 1),
+      available: p => p.droneRangeRank < DRONE_RANGE_UPGRADE_MAX_RANK,
+    },
+    {
+      id: 'droneatkspeed',
+      title: 'ドローン攻撃速度増加',
+      desc: 'ドローンの攻撃間隔が短縮する(全種共通)',
+      category: 'utility',
+      apply: p => p.droneAtkSpeedRank = Math.min(DRONE_ATK_SPEED_UPGRADE_MAX_RANK, p.droneAtkSpeedRank + 1),
+      available: p => p.droneAtkSpeedRank < DRONE_ATK_SPEED_UPGRADE_MAX_RANK,
     },
   ];
 
@@ -2333,12 +2427,18 @@
       // single currently-held aux weapon could offer a card this way, with
       // every other one offered unconditionally as a "switch" card
       // instead; that whole distinction is gone now that drone types
-      // coexist). Not part of the bullet-effect priority slot below (that's
+      // coexist). Also gated on the shared pool cap (v1.36.84, see
+      // droneSlotCap/totalDroneCount) - once total owned drones across all
+      // types hits the cap, no drone card is offered at all, regardless of
+      // whether any individual type is still under its own maxLevel(5).
+      // Not part of the bullet-effect priority slot below (that's
       // specifically for BULLET_EFFECTS) or the bullet-effect pity-weight
       // discount (pickWeightedIndex only discounts ids prefixed `bullet-`)
       // - these draw at the normal weight like UPGRADE_POOL/TRADEOFF_POOL
       // entries.
-      const notMaxedDrones = DRONES.filter(d => d.getLevel(this.player) < d.maxLevel);
+      const notMaxedDrones = totalDroneCount(this.player) < droneSlotCap(this.player.droneSlotRank)
+        ? DRONES.filter(d => d.getLevel(this.player) < d.maxLevel)
+        : [];
       return [
         ...UPGRADE_POOL.filter(up => !up.available || up.available(this.player)),
         ...TRADEOFF_POOL.filter(up => !up.available || up.available(this.player)),
@@ -2370,7 +2470,9 @@
       // already-favorable choice on its own and isn't what players are
       // missing out on).
       const ownedEffects = notMaxedEffects.filter(eff => eff.getLevel(this.player) > (eff.baseLevel || 0));
-      const notMaxedDrones = DRONES.filter(d => d.getLevel(this.player) < d.maxLevel);
+      const notMaxedDrones = totalDroneCount(this.player) < droneSlotCap(this.player.droneSlotRank)
+        ? DRONES.filter(d => d.getLevel(this.player) < d.maxLevel)
+        : [];
       const ownedDrones = notMaxedDrones.filter(d => d.getLevel(this.player) > 0);
       const missStreak = this.player.upgradeMissStreak;
       let firstPick;
@@ -3609,15 +3711,23 @@
       // the next real proc a further DRONE_ATK_INTERVAL out - exactly why
       // the aura could feel noticeably slower than the intended ~1/sec in
       // practice.
+      //
+      // Range and cooldown are both per-player runtime values now
+      // (v1.36.84, see droneRangeForRank/droneAtkIntervalForRank) rather
+      // than the flat DRONE_RADIUS_BASE/DRONE_ATK_INTERVAL constants -
+      // computed once here and shared by all three blocks below, since the
+      // range/attack-speed upgrades apply identically to every drone type.
+      const droneRange2 = droneRangeForRank(p.droneRangeRank) ** 2;
+      const droneAtkInterval = droneAtkIntervalForRank(p.droneAtkSpeedRank);
       if (p.jammingDroneCount > 0) {
         p.jammingDroneCooldown -= dt;
         if (p.jammingDroneCooldown <= 0) {
           const nearby = this.enemies
-            .filter(e => dist2(e.x, e.y, p.x, p.y) <= DRONE_RADIUS * DRONE_RADIUS)
+            .filter(e => dist2(e.x, e.y, p.x, p.y) <= droneRange2)
             .sort((a, b) => dist2(a.x, a.y, p.x, p.y) - dist2(b.x, b.y, p.x, p.y));
           const targets = nearby.slice(0, droneTargetCount(p.jammingDroneCount));
           if (targets.length > 0) {
-            p.jammingDroneCooldown += DRONE_ATK_INTERVAL;
+            p.jammingDroneCooldown += droneAtkInterval;
             const duration = jammingDuration(p);
             for (const e of targets) {
               // Now a genuinely periodic "shot" (once per
@@ -3634,11 +3744,11 @@
         p.impactDroneCooldown -= dt;
         if (p.impactDroneCooldown <= 0) {
           const nearby = this.enemies
-            .filter(e => dist2(e.x, e.y, p.x, p.y) <= DRONE_RADIUS * DRONE_RADIUS)
+            .filter(e => dist2(e.x, e.y, p.x, p.y) <= droneRange2)
             .sort((a, b) => dist2(a.x, a.y, p.x, p.y) - dist2(b.x, b.y, p.x, p.y));
           const targets = nearby.slice(0, droneTargetCount(p.impactDroneCount));
           if (targets.length > 0) {
-            p.impactDroneCooldown += DRONE_ATK_INTERVAL;
+            p.impactDroneCooldown += droneAtkInterval;
             // A discrete knockback per shot, not a continuous force - see
             // DRONE_ATK_INTERVAL/IMPACT_DRONE_PUSH_DISTANCE above.
             for (const e of targets) {
@@ -3659,11 +3769,11 @@
         p.attackDroneCooldown -= dt;
         if (p.attackDroneCooldown <= 0) {
           const nearby = this.enemies
-            .filter(e => dist2(e.x, e.y, p.x, p.y) <= DRONE_RADIUS * DRONE_RADIUS)
+            .filter(e => dist2(e.x, e.y, p.x, p.y) <= droneRange2)
             .sort((a, b) => dist2(a.x, a.y, p.x, p.y) - dist2(b.x, b.y, p.x, p.y));
           const targets = nearby.slice(0, droneTargetCount(p.attackDroneCount));
           if (targets.length > 0) {
-            p.attackDroneCooldown += DRONE_ATK_INTERVAL;
+            p.attackDroneCooldown += droneAtkInterval;
             // Direct damage instead of a status effect/knockback - same
             // formula as the old tank passive's reflect hit
             // (REFLECT_DMG_PCT_OF_ATTACK/OF_MAXHP), just fired proactively
@@ -4400,17 +4510,27 @@
       ctx.fill();
       ctx.restore();
 
-      // Drone dots (v1.36.82): one dot per owned drone in a row above the
-      // player, color-coded per type (DRONES' own `color`, the same one
-      // used for that drone's ChainZap flash) - same "one dot per stack"
-      // convention as the enemy status-effect dots above (STATUS_DOT_COLORS),
-      // so owned drones read at a glance without opening the pause screen.
+      // Drone slot dots (v1.36.82, changed to show the full slot pool in
+      // v1.36.84): one dot per available drone SLOT (droneSlotCap(p.droneSlotRank),
+      // not just per owned drone) in a row above the player, shown from
+      // the very start of a run so the player can see at a glance how many
+      // drones they can hold in total. Filled slots are colored per type
+      // (DRONES' own `color`, the same one used for that drone's ChainZap
+      // flash, iterated in DRONES' own order so which color fills first is
+      // stable); any remaining unfilled slots are shown as neutral gray
+      // dots (DRONE_SLOT_EMPTY_COLOR) rather than simply not being drawn -
+      // same "one dot per stack" convention as the enemy status-effect
+      // dots above (STATUS_DOT_COLORS), so both owned drones AND
+      // remaining capacity read at a glance without opening the pause
+      // screen.
+      const slotCap = droneSlotCap(p.droneSlotRank);
       const droneDots = [];
       for (const drone of DRONES) {
         const count = drone.getLevel(p);
         for (let i = 0; i < count; i++) droneDots.push(drone.color);
       }
-      if (droneDots.length > 0) {
+      while (droneDots.length < slotCap) droneDots.push(DRONE_SLOT_EMPTY_COLOR);
+      {
         const dotRadius = 3;
         const dotSpacing = 9;
         const dotY = p.y - p.radius - 8;
