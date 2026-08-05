@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.108';
+  const GAME_VERSION = '1.36.109';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -686,16 +686,18 @@
   const MISSILE_POSTFIRE_MULT = 3;
 
   // Sword & Shield (v1.36.99): the only weapon with no pierce concept and
-  // no atkCooldown-driven FIRING concept at all - both hitboxes are
-  // continuously active every frame (see Game.updateSwordShieldWeapon,
-  // dispatched unconditionally from fireWeapon() the same way charge beam
-  // bypasses the normal cooldown gate). atkCooldown itself still matters
-  // though (v1.36.106, see SWORD_TURN_RATE_BASE) - it drives how fast the
-  // player can turn to swing the weapon around. "Front" is
-  // Player.swordFacingAngle, a turn-rate-limited facing this weapon alone
-  // uses instead of the instant Player.moveDirAngle; "right side" (the
-  // sword) is that angle rotated +90 degrees (clockwise on this y-down
-  // canvas, matching the player's own right hand when facing forward).
+  // no atkCooldown concept at all - both hitboxes are continuously active
+  // every frame (see Game.updateSwordShieldWeapon, dispatched
+  // unconditionally from fireWeapon() the same way charge beam bypasses
+  // the normal cooldown gate). A turn-rate-limited facing (Player.
+  // swordFacingAngle) was tried in v1.36.106-108 to give attack-speed
+  // upgrades some effect on this weapon, but playtesting showed the lag
+  // between the player's actual turn and the weapon's own facing was
+  // mostly just awkward to play around rather than adding anything, so
+  // v1.36.109 removed it entirely - "front" is simply Player.moveDirAngle
+  // again, same as every other weapon; "right side" (the sword) is that
+  // angle rotated +90 degrees (clockwise on this y-down canvas, matching
+  // the player's own right hand when facing forward).
   //
   // Sword: a thin rectangle extending SWORD_BASE_LENGTH(+per-rank) out
   // from the player, SWORD_HALF_WIDTH wide. High single-target damage
@@ -721,31 +723,6 @@
   const SHIELD_RADIUS_PER_RANK = 10;
   const SHIELD_HALF_ANGLE = Math.PI / 3;
   const SHIELD_KNOCKBACK_SPEED = 150;
-  // Turn-rate cap (v1.36.106): every other weapon reads Player.moveDirAngle
-  // directly (it snaps instantly to the input direction), but Sword &
-  // Shield instead chases it via a separate, rate-limited
-  // Player.swordFacingAngle - deliberately making "spin the character
-  // around to sweep the sword through a wider arc of enemies" a real,
-  // actively-executed motion rather than an instant facing change. This
-  // also repurposes attack-speed for this weapon (which otherwise has no
-  // atkCooldown-driven concept at all, making every attack-speed upgrade a
-  // dead pick, or worse - see updateSwordShieldWeapon): the turn rate
-  // scales as (ATK_COOLDOWN_BASE / p.atkCooldown), the exact same
-  // rate-multiplier idiom charge beam already uses for its charge-up speed
-  // (see the ATK_COOLDOWN_BASE comment), so attack-speed upgrades directly
-  // translate into "how fast you can spin the sword around".
-  const SWORD_TURN_RATE_BASE = Math.PI;
-  // Ease-in acceleration (v1.36.108): a turn doesn't jump straight to
-  // SWORD_TURN_RATE_BASE the instant it starts - Player.swordTurnSpeed
-  // (the CURRENT instantaneous turn speed, separate from the rate cap
-  // itself) ramps up linearly from 0 to the current max rate over
-  // SWORD_TURN_RAMP_TIME seconds of continuous turning, so a swing visibly
-  // starts slow and accelerates into it rather than moving at a constant
-  // speed throughout. It resets back to 0 the moment the facing catches up
-  // (see SWORD_TURN_ALIGN_EPS), so the next turn eases in again from a
-  // stop rather than carrying over speed from the last one.
-  const SWORD_TURN_RAMP_TIME = 0.4;
-  const SWORD_TURN_ALIGN_EPS = 0.001;
 
   const WEAPONS = [
     {
@@ -953,15 +930,6 @@
       // unused by any other weapon, harmless defaults otherwise.
       this.swordLength = SWORD_BASE_LENGTH;
       this.shieldRadius = SHIELD_BASE_RADIUS;
-      // Turn-rate-limited facing this weapon's sword/shield hitboxes (and
-      // their rendering) use instead of the instant-snapping moveDirAngle -
-      // see SWORD_TURN_RATE_BASE. Starts matching moveDirAngle so there's
-      // no phantom initial spin-up before the player's first input.
-      this.swordFacingAngle = this.moveDirAngle;
-      // Current instantaneous turn speed (v1.36.108, see SWORD_TURN_RAMP_TIME)
-      // - ramps from 0 up to the turn-rate cap rather than snapping to it,
-      // for the ease-in "starts slow, speeds up" swing feel.
-      this.swordTurnSpeed = 0;
       // Raised from 70 (v1.35.0) to fold in exactly what one pickup-range
       // upgrade pick used to add, now that the upgrade itself is gone.
       this.pickupRadius = 100;
@@ -3723,51 +3691,14 @@
     // Sword & Shield (v1.36.99): both hitboxes are resolved every frame,
     // unconditionally (see the fireWeapon() dispatch, which calls this
     // instead of the normal atkTimer-gated path entirely). "Front" is
-    // Player.swordFacingAngle (v1.36.106 - a turn-rate-limited facing this
-    // weapon alone uses instead of the instant-snapping moveDirAngle every
-    // other weapon reads directly, see SWORD_TURN_RATE_BASE); the sword's
-    // direction is that angle +90 degrees (the player's right side).
+    // Player.moveDirAngle, same as every other weapon (a turn-rate-limited
+    // facing was tried in v1.36.106-108 and removed in v1.36.109 - see the
+    // comment above SWORD_BASE_LENGTH); the sword's direction is that angle
+    // +90 degrees (the player's right side).
     updateSwordShieldWeapon(dt) {
       const p = this.player;
       const buffDamageMult = p.specialBuffTimer > 0 && p.special && p.special.buffDamageMult != null
         ? p.special.buffDamageMult : 1;
-
-      // Turn-rate cap (v1.36.106) with ease-in acceleration (v1.36.108):
-      // swordFacingAngle chases moveDirAngle (the raw, instant input
-      // direction) rather than snapping straight to it, so sweeping the
-      // sword through a wide arc of enemies takes an actual,
-      // actively-executed spin - not an instant facing change. The rate
-      // cap scales with attack speed (ATK_COOLDOWN_BASE / p.atkCooldown,
-      // the same rate-multiplier idiom charge beam uses for its charge-up
-      // speed), which is what makes attack-speed upgrades do something
-      // meaningful for this weapon instead of being dead picks (or, for
-      // the tradeoffs that swap atkCooldown for damage in either
-      // direction, an unbalanced free lunch or a pure trap). Rather than
-      // moving at that capped rate constantly, swordTurnSpeed ramps up to
-      // it over SWORD_TURN_RAMP_TIME seconds of continuous turning (and
-      // resets to 0 once aligned), so a swing visibly starts slow and
-      // accelerates rather than moving at one constant speed throughout.
-      const maxTurnRate = SWORD_TURN_RATE_BASE * (ATK_COOLDOWN_BASE / p.atkCooldown);
-      let facingDiff = p.moveDirAngle - p.swordFacingAngle;
-      while (facingDiff > Math.PI) facingDiff -= TAU;
-      while (facingDiff < -Math.PI) facingDiff += TAU;
-      if (Math.abs(facingDiff) < SWORD_TURN_ALIGN_EPS) {
-        p.swordFacingAngle = p.moveDirAngle;
-        p.swordTurnSpeed = 0;
-      } else {
-        p.swordTurnSpeed = Math.min(maxTurnRate, p.swordTurnSpeed + (maxTurnRate / SWORD_TURN_RAMP_TIME) * dt);
-        const maxStep = p.swordTurnSpeed * dt;
-        if (Math.abs(facingDiff) <= maxStep) {
-          // Arrives exactly this frame - reset speed immediately (rather
-          // than waiting for next frame's alignment check) so an instant
-          // direction reversal on the very next frame still eases in from
-          // a stop instead of inheriting this turn's leftover speed.
-          p.swordFacingAngle = p.moveDirAngle;
-          p.swordTurnSpeed = 0;
-        } else {
-          p.swordFacingAngle += clamp(facingDiff, -maxStep, maxStep);
-        }
-      }
 
       // Sword: thin rectangle extending swordLength out to the right,
       // SWORD_HALF_WIDTH wide, gated per enemy by swordHitCd instead of a
@@ -3775,7 +3706,7 @@
       // is resolved exactly like a wide-sweep hit (virtual proj through
       // resolveProjectileHit), so bullet effects/chain/explosion all still
       // apply normally.
-      const swordAngle = p.swordFacingAngle + Math.PI / 2;
+      const swordAngle = p.moveDirAngle + Math.PI / 2;
       const cosA = Math.cos(-swordAngle), sinA = Math.sin(-swordAngle);
       const virtualProj = {
         damage: p.damage * buffDamageMult * SWORD_DAMAGE_MULT,
@@ -3801,10 +3732,10 @@
       }
 
       // Shield: wide arc in front, SHIELD_HALF_ANGLE either side of
-      // swordFacingAngle, out to shieldRadius. No damage - continuously
+      // moveDirAngle, out to shieldRadius. No damage - continuously
       // knocks back whatever's inside, and destroys any enemy projectile
       // caught in the same arc ("打ち消す", not a literal bounce-back).
-      const shieldAngle = p.swordFacingAngle;
+      const shieldAngle = p.moveDirAngle;
       for (const e of this.enemies) {
         const dx = e.x - p.x, dy = e.y - p.y;
         const d = Math.hypot(dx, dy) || 1;
@@ -5690,15 +5621,12 @@
       // in front, sword as a thin line to the player's right - purely
       // visual, drawn straight from the same angles/sizes the hit tests in
       // updateSwordShieldWeapon use, so what's on screen always matches the
-      // actual hitboxes. Drawn BEFORE the player body (v1.36.107, moved
-      // from after it) so the player's own facing dot stays visible on top
-      // - with the sword/shield layered above, the player's facing was
-      // hidden right when it mattered most (reading how far swordFacingAngle
-      // still lags behind the player's actual, instantly-updated
-      // moveDirAngle, see updateSwordShieldWeapon's turn-rate cap).
+      // actual hitboxes. Drawn BEFORE the player body (v1.36.107) so the
+      // player's own facing dot stays visible on top rather than being
+      // covered by the sword/shield.
       const p = this.player;
       if (p.weapon && p.weapon.id === 'swordshield') {
-        const shieldAngle = p.swordFacingAngle;
+        const shieldAngle = p.moveDirAngle;
         ctx.save();
         ctx.globalAlpha = 0.35;
         ctx.fillStyle = '#8ef0ff';
@@ -5709,7 +5637,7 @@
         ctx.fill();
         ctx.restore();
 
-        const swordAngle = p.swordFacingAngle + Math.PI / 2;
+        const swordAngle = p.moveDirAngle + Math.PI / 2;
         ctx.save();
         ctx.strokeStyle = '#eaeaea';
         ctx.lineWidth = SWORD_HALF_WIDTH * 2;
