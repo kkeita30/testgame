@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.103';
+  const GAME_VERSION = '1.36.104';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -673,6 +673,20 @@
   const MISSILE_LOCKON_END_PAD = 6; // ...and closes in to this far by the moment the volley fires
   const MISSILE_LOCKON_SPIN_SPEED = 4; // radians/sec the bracket set continuously rotates at, purely cosmetic
   const MISSILE_LOCKON_ARM_FRAC = 0.35; // each corner bracket's arm length, as a fraction of the marker's current half-size
+  // Post-fire wait (v1.36.104, see Player.missileWaitTimer): without this,
+  // firing immediately chained into the next lock-on the instant the
+  // volley launched, which (since the fired missiles are slow and take a
+  // while to actually connect) made the shrinking lock-on marker look like
+  // one continuous, never-ending animation rather than a readable
+  // "lock, fire, lock, fire" rhythm. This pause is deliberately
+  // unconditional - a fixed atkCooldown-scaled duration, not "wait until
+  // every missile from this volley has hit or expired" - because a single
+  // missile that outlives its target with nothing left to re-lock onto
+  // would otherwise stall the ENTIRE weapon for up to MISSILE_LIFE (6s)
+  // whenever the screen thins out, which is a worse player experience than
+  // the overlap this is fixing. Scales with p.atkCooldown exactly like
+  // missileLockDuration, so attack-speed upgrades shorten this too.
+  const MISSILE_POSTFIRE_MULT = 3;
 
   // Sword & Shield (v1.36.99): the only weapon with no atkCooldown/pierce
   // concept at all - both hitboxes are continuously active every frame
@@ -899,9 +913,16 @@
       // the total length of the CURRENT lock cycle, snapshotted when it
       // started, purely so the render side can compute how far along
       // (0..1) the lock animation is without redoing that math itself.
+      // missileWaitTimer (v1.36.104): seconds remaining in the unconditional
+      // pause after a volley fires and before the next lock-on is allowed to
+      // start - runs regardless of whether the fired missiles have actually
+      // landed or expired yet (deliberately NOT gated on their state, so a
+      // single stray missile that loses its target can't stall the weapon
+      // for its full remaining lifetime).
       this.missileLockTargets = [];
       this.missileLockTimer = 0;
       this.missileLockDuration = 0;
+      this.missileWaitTimer = 0;
       // Sword & Shield weapon only (see WEAPONS/updateSwordShieldWeapon) -
       // unused by any other weapon, harmless defaults otherwise.
       this.swordLength = SWORD_BASE_LENGTH;
@@ -3564,21 +3585,35 @@
     }
 
     // Multi Missile (v1.36.99, see WEAPONS/MISSILE_PROJ_SPEED, reworked into
-    // a lock-on-then-volley cycle in v1.36.103): reuses the standard
-    // weapon's own nearest-N-enemies targeting (weaponRange/p.projCount) to
-    // pick lock-on targets, but instead of firing the instant atkCooldown
-    // elapses, shows a marker on each target (Player.missileLockTargets,
-    // rendered separately - see the player-rendering block in draw()) for
+    // a lock-on-then-volley cycle in v1.36.103, with an added post-fire
+    // pause in v1.36.104): reuses the standard weapon's own
+    // nearest-N-enemies targeting (weaponRange/p.projCount) to pick lock-on
+    // targets, but instead of firing the instant atkCooldown elapses, shows
+    // a marker on each target (Player.missileLockTargets, rendered
+    // separately - see the player-rendering block in draw()) for
     // Player.missileLockDuration seconds (= p.atkCooldown *
     // MISSILE_COOLDOWN_MULT, so attack-speed upgrades shorten the LOCK, not
     // the fire moment itself), then fires the whole volley simultaneously
-    // the instant every marker finishes. Each shot is slow, homing (see the
-    // re-aim step in update()'s projectile-movement loop, which reads
-    // proj.homing/proj.target), pierce-less, and always triggers its own
-    // explosion (proj.explosionChance=1, see the Projectile constructor)
-    // regardless of the normal EXPLOSION_TRIGGER_CHANCE.
+    // the instant every marker finishes, then pauses for
+    // Player.missileWaitTimer (= p.atkCooldown * MISSILE_POSTFIRE_MULT)
+    // before the next lock-on is allowed to start - see MISSILE_POSTFIRE_MULT
+    // for why this pause is unconditional rather than waiting on the fired
+    // missiles' own state. Each shot is slow, homing (see the re-aim step in
+    // update()'s projectile-movement loop, which reads proj.homing/
+    // proj.target), pierce-less, and always triggers its own explosion
+    // (proj.explosionChance=1, see the Projectile constructor) regardless of
+    // the normal EXPLOSION_TRIGGER_CHANCE.
     updateMissileWeapon(dt) {
       const p = this.player;
+
+      // Unconditional post-fire pause (v1.36.104, see MISSILE_POSTFIRE_MULT)
+      // - runs down before anything else, so no lock attempt happens at all
+      // until it fully elapses, regardless of whether the previous volley's
+      // missiles have landed yet.
+      if (p.missileWaitTimer > 0) {
+        p.missileWaitTimer -= dt;
+        return;
+      }
 
       if (p.missileLockTimer <= 0) {
         // Idle between cycles (or just starting) - try to acquire a fresh
@@ -3634,13 +3669,14 @@
         }
       }
 
-      // Reset to idle - the very next frame's call re-enters the branch
-      // above and starts a new lock cycle immediately if a target is
-      // available, which is what makes the whole thing repeat
+      // Reset to idle and start the post-fire pause - the moment that pause
+      // elapses, the branch above starts a new lock cycle immediately if a
+      // target is available, which is what makes the whole thing repeat
       // automatically without any player input.
       p.missileLockTargets = [];
       p.missileLockTimer = 0;
       p.missileLockDuration = 0;
+      p.missileWaitTimer = p.atkCooldown * MISSILE_POSTFIRE_MULT;
     }
 
     // Sword & Shield (v1.36.99): both hitboxes are resolved every frame,
