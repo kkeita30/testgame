@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.104';
+  const GAME_VERSION = '1.36.105';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -650,28 +650,25 @@
   // 180 degrees in exactly 1 second - still fast enough to reliably
   // reacquire, but the turn now reads as a curve instead of a snap.
   const MISSILE_TURN_RATE = Math.PI;
-  // Attack cadence (v1.36.102): missile's homing means very little of its
-  // damage output goes to waste (unlike a straight-line shot that can miss
-  // a dodging enemy entirely), so its own atkCooldown is stretched longer
-  // than the shared baseline every other post-guard weapon fires on - a
-  // partial rather than full halving of fire rate (frequency x1/1.75, not
-  // x1/2), landing close to but short of "half as often". v1.36.103
-  // repurposed this same duration as the length of the lock-on phase (see
-  // Game.updateMissileWeapon) rather than a plain fire-and-forget cooldown -
-  // the overall pacing is unchanged, only how it's presented.
-  const MISSILE_COOLDOWN_MULT = 1.75;
-  // Lock-on volley presentation (v1.36.103): instead of firing the instant
-  // atkCooldown elapses, missile now shows a rotating corner-bracket marker
-  // on each of up to Player.projCount nearby targets (Player.missileLockTargets)
-  // for Player.missileLockDuration seconds (= p.atkCooldown *
-  // MISSILE_COOLDOWN_MULT, so attack-speed upgrades shorten the LOCK rather
-  // than the post-lock fire moment), then fires the whole volley
-  // simultaneously the instant every marker finishes - see
-  // Game.updateMissileWeapon and its render-side counterpart.
+  // Lock-on volley presentation (v1.36.103, animation duration shortened in
+  // v1.36.105): instead of firing the instant atkCooldown elapses, missile
+  // shows a rotating corner-bracket marker on each of up to Player.projCount
+  // nearby targets (Player.missileLockTargets) for Player.missileLockDuration
+  // seconds (= p.atkCooldown * MISSILE_LOCKON_MULT, so attack-speed upgrades
+  // shorten the LOCK rather than the post-lock fire moment), then fires the
+  // whole volley simultaneously the instant every marker finishes - see
+  // Game.updateMissileWeapon and its render-side counterpart. v1.36.105
+  // shortened this from 1.75 (its original value when this same duration
+  // WAS effectively the weapon's fire-rate cooldown, pre-v1.36.104) down to
+  // a quick 0.5 - now that MISSILE_POSTFIRE_MULT's pause is what actually
+  // paces the weapon, the lock-on itself only needs to last long enough to
+  // read as a deliberate "acquiring target" beat, not to also throttle fire
+  // rate.
+  const MISSILE_LOCKON_MULT = 0.5;
   const MISSILE_PROJCOUNT_BASE = 3; // rank 1 -> 3 simultaneous locks, +1 per rank thereafter (rank 5 -> 7)
   const MISSILE_LOCKON_START_PAD = 26; // marker starts this far outside the target's own radius...
-  const MISSILE_LOCKON_END_PAD = 6; // ...and closes in to this far by the moment the volley fires
-  const MISSILE_LOCKON_SPIN_SPEED = 4; // radians/sec the bracket set continuously rotates at, purely cosmetic
+  const MISSILE_LOCKON_END_PAD = 6; // ...and closes in to this far by the moment the volley fires - also the STATIC marker's fixed distance once locked (see MISSILE_POSTFIRE_MULT and the render-side "still-locked" marker)
+  const MISSILE_LOCKON_SPIN_SPEED = 4; // radians/sec the bracket set continuously rotates at, purely cosmetic (lock-phase marker only - the post-fire static marker doesn't spin)
   const MISSILE_LOCKON_ARM_FRAC = 0.35; // each corner bracket's arm length, as a fraction of the marker's current half-size
   // Post-fire wait (v1.36.104, see Player.missileWaitTimer): without this,
   // firing immediately chained into the next lock-on the instant the
@@ -3592,7 +3589,7 @@
     // a marker on each target (Player.missileLockTargets, rendered
     // separately - see the player-rendering block in draw()) for
     // Player.missileLockDuration seconds (= p.atkCooldown *
-    // MISSILE_COOLDOWN_MULT, so attack-speed upgrades shorten the LOCK, not
+    // MISSILE_LOCKON_MULT, so attack-speed upgrades shorten the LOCK, not
     // the fire moment itself), then fires the whole volley simultaneously
     // the instant every marker finishes, then pauses for
     // Player.missileWaitTimer (= p.atkCooldown * MISSILE_POSTFIRE_MULT)
@@ -3602,7 +3599,13 @@
     // update()'s projectile-movement loop, which reads proj.homing/
     // proj.target), pierce-less, and always triggers its own explosion
     // (proj.explosionChance=1, see the Projectile constructor) regardless of
-    // the normal EXPLOSION_TRIGGER_CHANCE.
+    // the normal EXPLOSION_TRIGGER_CHANCE. While any of this volley's
+    // missiles are still in flight (through the pause and beyond, until the
+    // next volley actually fires), the render side also shows a static,
+    // non-animating marker on whatever each live missile is currently
+    // chasing (see the "still-locked" render block) - see MISSILE_LOCKON_MULT
+    // for why the animated lock-on itself was shortened once this static
+    // marker took over conveying "a shot is still tracking this target".
     updateMissileWeapon(dt) {
       const p = this.player;
 
@@ -3629,7 +3632,7 @@
           .slice(0, Math.max(1, p.projCount));
         if (sorted.length === 0) { p.missileLockTargets = []; return; }
         p.missileLockTargets = sorted.map(o => o.e);
-        p.missileLockDuration = p.atkCooldown * MISSILE_COOLDOWN_MULT;
+        p.missileLockDuration = p.atkCooldown * MISSILE_LOCKON_MULT;
         p.missileLockTimer = p.missileLockDuration;
         return;
       }
@@ -5671,6 +5674,45 @@
           ctx.save();
           ctx.translate(target.x, target.y);
           ctx.rotate(spin);
+          ctx.strokeStyle = '#ff6a3d';
+          ctx.lineWidth = 2;
+          for (const sx of [-1, 1]) {
+            for (const sy of [-1, 1]) {
+              const cx = sx * half, cy = sy * half;
+              ctx.beginPath();
+              ctx.moveTo(cx - sx * armLen, cy);
+              ctx.lineTo(cx, cy);
+              ctx.lineTo(cx, cy - sy * armLen);
+              ctx.stroke();
+            }
+          }
+          ctx.restore();
+        }
+      }
+
+      // Multi Missile "still locked" markers (v1.36.105): once the animated
+      // lock-on above finishes and the volley fires, a static (non-spinning,
+      // non-shrinking) version of the same bracket marker keeps showing on
+      // whatever each currently-flying missile from this weapon is actually
+      // chasing - derived live from this.projectiles' proj.target (not from
+      // missileLockTargets), so it stays accurate even if a missile
+      // retargets mid-flight after its original target dies. Conveys "this
+      // shot is still tracking that enemy" through the post-fire pause and
+      // flight, disappearing on its own once that missile connects/expires
+      // (nothing left in this.projectiles to derive it from) or the target
+      // itself dies (filtered out below). Independent of the animated
+      // lock-on above - the two can overlap on screen if a still-flying
+      // missile happens to share a target with a freshly-forming lock.
+      if (p.weapon && p.weapon.id === 'missile') {
+        const stillLockedTargets = new Set();
+        for (const proj of this.projectiles) {
+          if (proj.homing && proj.target && this.enemies.includes(proj.target)) stillLockedTargets.add(proj.target);
+        }
+        for (const target of stillLockedTargets) {
+          const half = target.radius + MISSILE_LOCKON_END_PAD;
+          const armLen = half * MISSILE_LOCKON_ARM_FRAC;
+          ctx.save();
+          ctx.translate(target.x, target.y);
           ctx.strokeStyle = '#ff6a3d';
           ctx.lineWidth = 2;
           for (const sx of [-1, 1]) {
