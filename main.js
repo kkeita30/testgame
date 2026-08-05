@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.106';
+  const GAME_VERSION = '1.36.107';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -5651,26 +5651,17 @@
         ctx.restore();
       }
 
-      // player
-      const p = this.player;
-      ctx.save();
-      if (p.invulnTimer > 0 && Math.floor(this.time * 20) % 2 === 0) ctx.globalAlpha = 0.4;
-      ctx.beginPath();
-      ctx.fillStyle = '#3ad1ff';
-      ctx.arc(p.x, p.y, p.radius, 0, TAU);
-      ctx.fill();
-      // eyes to show facing
-      ctx.fillStyle = '#0d0d12';
-      ctx.beginPath();
-      ctx.arc(p.x + p.facing * 5, p.y - 4, 2.5, 0, TAU);
-      ctx.fill();
-      ctx.restore();
-
       // Sword & Shield (v1.36.99): shield as a translucent arc-shaped wedge
       // in front, sword as a thin line to the player's right - purely
       // visual, drawn straight from the same angles/sizes the hit tests in
       // updateSwordShieldWeapon use, so what's on screen always matches the
-      // actual hitboxes.
+      // actual hitboxes. Drawn BEFORE the player body (v1.36.107, moved
+      // from after it) so the player's own facing dot stays visible on top
+      // - with the sword/shield layered above, the player's facing was
+      // hidden right when it mattered most (reading how far swordFacingAngle
+      // still lags behind the player's actual, instantly-updated
+      // moveDirAngle, see updateSwordShieldWeapon's turn-rate cap).
+      const p = this.player;
       if (p.weapon && p.weapon.id === 'swordshield') {
         const shieldAngle = p.swordFacingAngle;
         ctx.save();
@@ -5694,6 +5685,20 @@
         ctx.stroke();
         ctx.restore();
       }
+
+      // player
+      ctx.save();
+      if (p.invulnTimer > 0 && Math.floor(this.time * 20) % 2 === 0) ctx.globalAlpha = 0.4;
+      ctx.beginPath();
+      ctx.fillStyle = '#3ad1ff';
+      ctx.arc(p.x, p.y, p.radius, 0, TAU);
+      ctx.fill();
+      // eyes to show facing
+      ctx.fillStyle = '#0d0d12';
+      ctx.beginPath();
+      ctx.arc(p.x + p.facing * 5, p.y - 4, 2.5, 0, TAU);
+      ctx.fill();
+      ctx.restore();
 
       // Multi Missile lock-on markers (v1.36.103): a rotating set of 4
       // corner brackets around each currently-locked target, closing in

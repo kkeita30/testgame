@@ -1,6 +1,6 @@
 # Survivor Bites 仕様書
 
-現在バージョン: **v1.36.106**
+現在バージョン: **v1.36.107**
 
 ブラウザで動作するシンプルな2Dヴァンサバ(Vampire Survivors)ライクゲーム。
 Canvas + バニラJS、ビルド不要、外部ライブラリ不使用。タッチ操作対応。
@@ -923,7 +923,7 @@ v1.36.22時点ではランクが「最大チャージ段階数(`Player.chargeMax
 - **強制100%爆発(`Projectile.explosionChance`、v1.36.99で追加した任意コンストラクタ引数)**: 取得した瞬間に武器固有の`apply`で「爆発」ランク1を内蔵付与する(`p.explosionLevel = Math.max(p.explosionLevel, 1)`)。加えて、この武器自身が生成する`Projectile`にのみ`explosionChance=1`を渡すことで、`Game.resolveProjectileHit()`内の爆発発動判定(本来は`EXPLOSION_TRIGGER_CHANCE`に従う確率抽選)を100%に固定している。この上書きは`Projectile`インスタンス単位(`proj.explosionChance`が未指定なら既存の`EXPLOSION_TRIGGER_CHANCE`にフォールバック)のため、他の武器の爆発発動率には一切影響しない
 - **武器固有効果「マルチショット」(v1.36.103でカーブを変更)**: `Player.projCount = MISSILE_PROJCOUNT_BASE(3) + (ランク - 1)`で、ランク1(初期状態)から3体・以降ランクアップごとに+1。武器固有効果の共有ランク上限(`WEAPON_INNATE_MAX_RANK=5`、§7-4)はこの武器も変えていないため、ランク5(最大)で7体が上限になる(初期実装のv1.36.99は他の武器と同じ「ランクがそのまま同時発射数」だったが、ロックオン演出化に合わせて「無駄弾が少ない武器なので発射数を増やしてもよい」という方針でベース値を引き上げた)
 
-### 7-4-6. ソード＆シールド武器の攻撃方式(常時展開の近接武器、v1.36.99で追加、v1.36.106で旋回速度制限を追加)
+### 7-4-6. ソード＆シールド武器の攻撃方式(常時展開の近接武器、v1.36.99で追加、v1.36.106で旋回速度制限を追加、v1.36.107で描画レイヤーを自機の下に変更)
 
 ソード＆シールド(`WEAPONS`の`id: 'swordshield'`)は他のどの武器とも異なり、`atkTimer`/`atkCooldown`によるクールダウン駆動の「発射」という動作自体を持たない。`Game.fireWeapon()`の冒頭、`atkTimer`のガードより前の位置で武器IDが`swordshield`かどうかを判定し、該当すれば毎フレーム無条件に`Game.updateSwordShieldWeapon(dt)`を呼んで即座に`return`する(チャージビームの溜め撃ち判定と同じ早期分岐の位置)。シールド・ソード双方の判定がこの1メソッド内で毎フレーム解決される
 
@@ -932,6 +932,7 @@ v1.36.22時点ではランクが「最大チャージ段階数(`Player.chargeMax
 - **シールド(前方、ノックバックのみでダメージなし)**: 前方(`swordFacingAngle`)を中心に左右`SHIELD_HALF_ANGLE=60度`(合計120度)の扇形範囲、半径`Player.shieldRadius`以内にいる敵を毎フレーム検出し、ダメージは与えず`SHIELD_KNOCKBACK_SPEED=150px/秒`で扇の外側方向へ押し出し続ける(`Game.resolveWallCollision()`で壁の中にめり込まないよう補正)。同じ扇形範囲に入った敵の射撃(`Game.enemyProjectiles`)は、消滅させる(`life = 0`)形で打ち消す(反射ではなく破壊)
 - **ソード(右側面、高威力)**: 前方から時計回りに90度回転した方向(`swordFacingAngle + Math.PI/2`、自機の右側)へ`Player.swordLength`px伸びる、幅`SWORD_HALF_WIDTH×2`の細長い長方形の当たり判定。命中した敵ごとに`SWORD_HIT_COOLDOWN=0.4秒`の専用クールダウン(`Enemy.swordHitCd`、`contactCd`とは別の独立したフィールド)を設け、連続フレームで同じ敵に何度もヒットしないようにしている。威力は`Player.damage × 特殊バフ倍率 × SWORD_DAMAGE_MULT(2.5倍)`で、命中判定を満たすたびに`Game.resolveProjectileHit()`(パルスウェーブの衝撃波と同じ「仮想`Projectile`経由」の呼び出し方)を通すため、爆発・連鎖・猛毒・狂乱・爆弾化・衰弱・脆弱などあらゆる弾丸効果がソードの一撃にもそのまま乗る。壁越しには判定が通らない(`Game.segmentHitsWall`で自機と対象を結ぶ線分を検査)
 - **武器固有効果「拡大」**: レベルアップに応じてランクが自動で上昇し、`Player.swordLength = SWORD_BASE_LENGTH(70) + SWORD_LENGTH_PER_RANK(15)×(ランク-1)`と`Player.shieldRadius = SHIELD_BASE_RADIUS(55) + SHIELD_RADIUS_PER_RANK(10)×(ランク-1)`を1つのランクアップ効果として同時に伸ばす(ソード・シールド別々のランクではなく、常に連動して大きくなる)
+- **描画レイヤーは自機の下(v1.36.107で変更)**: 初期実装(v1.36.99)ではソード・シールドの描画を自機本体(円+向きを示す「目」)より後に行っていたため、自機の上に重なって「目」が隠れ、`swordFacingAngle`が実際の入力方向(`moveDirAngle`)にどれだけ遅れて追従しているかが視覚的に分かりにくいという指摘を受けた。`draw()`内でソード・シールドの描画ブロックを自機本体の描画より前に移動し、自機本体(「目」を含む)が常に手前に表示されるようにした。当たり判定やその他の挙動には一切影響しない、純粋な描画順序の変更
 
 ### 7-5. 一時停止画面(v1.30.0で追加)
 
