@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.98';
+  const GAME_VERSION = '1.36.99';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -606,6 +606,63 @@
   // symmetric regardless of how many barrels are active.
   const RAPIDFIRE_BARREL_GAP = 14;
 
+  // Landmine (v1.36.99): unlike every other weapon, doesn't add a
+  // travelling Projectile at all - fireLandmine() places a stationary
+  // Landmine object directly at the player's current position instead
+  // (see Game.landmines/Game.fireLandmine). Detonates on MINE_FUSE_TIME
+  // seconds elapsed OR an enemy touching it, whichever comes first. Its
+  // damage area explicitly reuses killzone's own mechanic (ImpactEffect
+  // type 'killzone', same periodic-tick model) rather than inventing a
+  // new one - killzone's code was deliberately kept alive after being
+  // pulled from the upgrade pool (v1.36.96) specifically for this kind of
+  // reuse. Rank raises blast radius via the same killZoneRadiusForLevel
+  // curve killzone itself used.
+  const MINE_FUSE_TIME = 5;
+  const MINE_RADIUS = 10;
+
+  // Multi Missile (v1.36.99): much slower than every other weapon's
+  // projectile speed, and unlike them, keeps steering toward its locked
+  // target every frame after launch (see the homing re-aim step in
+  // update()) rather than flying a fixed straight line from the moment it
+  // was fired. MISSILE_LIFE is generous since a slow, homing shot can take
+  // a while to actually connect, especially if it has to re-path around a
+  // retarget.
+  const MISSILE_PROJ_SPEED = 150;
+  const MISSILE_LIFE = 6;
+
+  // Sword & Shield (v1.36.99): the only weapon with no atkCooldown/pierce
+  // concept at all - both hitboxes are continuously active every frame
+  // (see Game.updateSwordShieldWeapon, dispatched unconditionally from
+  // fireWeapon() the same way charge beam bypasses the normal cooldown
+  // gate). "Front" is Player.moveDirAngle; "right side" (the sword) is
+  // that angle rotated +90 degrees (clockwise on this y-down canvas,
+  // matching the player's own right hand when facing forward).
+  //
+  // Sword: a thin rectangle extending SWORD_BASE_LENGTH(+per-rank) out
+  // from the player, SWORD_HALF_WIDTH wide. High single-target damage
+  // (SWORD_DAMAGE_MULT), gated per enemy by its own cooldown
+  // (Enemy.swordHitCd, SWORD_HIT_COOLDOWN) rather than the shared
+  // atkCooldown this weapon doesn't have - without that gate a
+  // continuously-active hitbox would deal its damage every single frame.
+  // Each cooldown-gated hit is resolved exactly like a wide-sweep hit
+  // (Game.resolveProjectileHit with a virtual proj), so bullet effects/
+  // chain/explosion all apply normally.
+  //
+  // Shield: a wide arc (SHIELD_HALF_ANGLE either side of front) out to
+  // SHIELD_BASE_RADIUS(+per-rank). Deals no damage - it exists purely to
+  // continuously knock back (SHIELD_KNOCKBACK_SPEED) whatever's caught
+  // inside it, and to destroy ("打ち消す") any enemy projectile that
+  // enters the same arc, rather than to deal damage itself.
+  const SWORD_BASE_LENGTH = 70;
+  const SWORD_LENGTH_PER_RANK = 15;
+  const SWORD_HALF_WIDTH = 10;
+  const SWORD_DAMAGE_MULT = 2.5;
+  const SWORD_HIT_COOLDOWN = 0.4;
+  const SHIELD_BASE_RADIUS = 55;
+  const SHIELD_RADIUS_PER_RANK = 10;
+  const SHIELD_HALF_ANGLE = Math.PI / 3;
+  const SHIELD_KNOCKBACK_SPEED = 150;
+
   const WEAPONS = [
     {
       id: 'standard',
@@ -649,6 +706,42 @@
         name: '同時射撃数アップ',
         desc: 'レベルアップに応じて自動でランクが上昇し、進行方向に対して横一列に並ぶ形で同時発射数が増えていく',
         applyRank(p, rank) { p.rapidfireBarrels = rank; },
+      },
+    },
+    {
+      id: 'landmine',
+      name: 'ランドマイン',
+      desc: '弾は飛ばず、発射位置(自機の現在地点)にその場で設置される地雷。敵が接触するか、5秒経過すると起爆し、旧・キルゾーンと同じ仕様の持続ダメージエリアを形成する。マルチショットの概念はなく、常に1個ずつ設置される。',
+      apply: (p) => {},
+      innateEffect: {
+        name: '爆発範囲アップ',
+        desc: 'レベルアップに応じて自動でランクが上昇し、地雷の爆発範囲が広がっていく',
+        applyRank(p, rank) { p.landmineRank = rank; },
+      },
+    },
+    {
+      id: 'missile',
+      name: 'マルチミサイル',
+      desc: '弾速は遅いが、発射後も対象を追尾し続ける。対象が倒れた場合は別の敵に自動で再ロックオンする。貫通は持たない。取得した瞬間から「爆発」ランク1を内蔵しており、かつこの武器自身の弾に限り爆発の発動確率が常に100%になる。',
+      apply: (p) => { p.explosionLevel = Math.max(p.explosionLevel, 1); },
+      innateEffect: {
+        name: 'マルチショット',
+        desc: 'レベルアップに応じて自動でランクが上昇し、同時発射数が増えていく',
+        applyRank(p, rank) { p.projCount = rank; },
+      },
+    },
+    {
+      id: 'swordshield',
+      name: 'ソード＆シールド',
+      desc: '自機の前方(移動方向)にシールド、右横(移動方向に対して時計回り90度)にソードを常時展開する近接武器。貫通・攻撃速度の概念はなく、発射という動作もない。シールドはダメージがほぼない代わりに、触れた敵をノックバックさせ、射撃系の敵弾を打ち消す。ソードは高威力で、同じ敵に連続ヒットしないよう独自のクールダウンを持つ。',
+      apply: (p) => {},
+      innateEffect: {
+        name: '拡大',
+        desc: 'レベルアップに応じて自動でランクが上昇し、ソードとシールドの大きさが広がっていく',
+        applyRank(p, rank) {
+          p.swordLength = SWORD_BASE_LENGTH + SWORD_LENGTH_PER_RANK * (rank - 1);
+          p.shieldRadius = SHIELD_BASE_RADIUS + SHIELD_RADIUS_PER_RANK * (rank - 1);
+        },
       },
     },
   ];
@@ -750,6 +843,13 @@
       // Rapid Fire weapon only (see WEAPONS/fireRapidFire) - unused by any
       // other weapon, harmless default otherwise.
       this.rapidfireBarrels = 1;
+      // Landmine weapon only (see WEAPONS/fireLandmine) - unused by any
+      // other weapon, harmless default otherwise.
+      this.landmineRank = 1;
+      // Sword & Shield weapon only (see WEAPONS/updateSwordShieldWeapon) -
+      // unused by any other weapon, harmless defaults otherwise.
+      this.swordLength = SWORD_BASE_LENGTH;
+      this.shieldRadius = SHIELD_BASE_RADIUS;
       // Raised from 70 (v1.35.0) to fold in exactly what one pickup-range
       // upgrade pick used to add, now that the upgrade itself is gone.
       this.pickupRadius = 100;
@@ -1220,6 +1320,12 @@
       this.scoreValue = def.score;
       this.hitFlash = 0;
       this.contactCd = 0;
+      // Sword & Shield weapon only (see SWORD_HIT_COOLDOWN/
+      // updateSwordShieldWeapon) - a dedicated cooldown separate from
+      // contactCd so the sword's continuous hitbox doesn't interfere with
+      // (or get interfered with by) player-contact/frenzy-friendly-fire
+      // timing, which contactCd already handles.
+      this.swordHitCd = 0;
       this.slowTimer = 0;
       // Poison (v1.36.1): poisonTimer counts down from POISON_DURATION and
       // is never refreshed/extended by later hits - only poisonStacks goes
@@ -1308,7 +1414,13 @@
   }
 
   class Projectile {
-    constructor(x, y, vx, vy, damage, pierce, radius, explosionRadius, chainHops, slowDuration, poisons, frenzies, bombifies, weakens, vulnerable) {
+    // explosionChance (v1.36.99, optional, defaults to EXPLOSION_TRIGGER_CHANCE):
+    // lets a specific weapon's own shots override the normal explosion
+    // proc rate - Multi Missile passes 1 (always triggers) for its own
+    // projectiles without touching every other weapon's odds. Read via
+    // this.explosionChance at both explosion-trigger sites in
+    // resolveProjectileHit (primary hit and each chain hop/branch).
+    constructor(x, y, vx, vy, damage, pierce, radius, explosionRadius, chainHops, slowDuration, poisons, frenzies, bombifies, weakens, vulnerable, explosionChance) {
       this.x = x; this.y = y;
       this.vx = vx; this.vy = vy;
       this.damage = damage;
@@ -1324,6 +1436,7 @@
       this.bombifies = bombifies || false;
       this.weakens = weakens || false;
       this.vulnerable = vulnerable || false;
+      this.explosionChance = explosionChance != null ? explosionChance : EXPLOSION_TRIGGER_CHANCE;
     }
   }
 
@@ -1341,6 +1454,23 @@
       this.damage = damage;
       this.radius = radius;
       this.life = ENEMY_PROJ_LIFE;
+    }
+  }
+
+  // Landmine (v1.36.99, see WEAPONS/MINE_FUSE_TIME): a stationary hazard,
+  // not a Projectile - never travels, never enters this.projectiles.
+  // `damage`/`rank` are snapshotted at placement time (fireLandmine), and
+  // used at detonation to spawn a killzone-style ImpactEffect (radius via
+  // killZoneRadiusForLevel(rank), tick damage via
+  // killZoneDmgPctForLevel(rank) against this stored damage) - see the
+  // detonation-resolution block in update().
+  class Landmine {
+    constructor(x, y, damage, rank) {
+      this.x = x; this.y = y;
+      this.damage = damage;
+      this.rank = rank;
+      this.fuseTimer = MINE_FUSE_TIME;
+      this.radius = MINE_RADIUS;
     }
   }
 
@@ -2248,8 +2378,11 @@
       // beam already has unconditional infinite pierce baked in (§7-4-1,
       // §7-4-2) - both have no travel/pierce lifecycle at all, so pierce
       // would be a completely dead pick for either. Hide it entirely
-      // rather than presenting a choice that does nothing.
-      available: p => !p.weapon || (p.weapon.id !== 'wide' && p.weapon.id !== 'charge'),
+      // rather than presenting a choice that does nothing. Landmine never
+      // travels at all, Multi Missile is forced pierce-0 by design, and
+      // Sword & Shield has no travel/pierce lifecycle either (v1.36.99) -
+      // same reasoning extends to all three.
+      available: p => !p.weapon || !['wide', 'charge', 'landmine', 'missile', 'swordshield'].includes(p.weapon.id),
     },
     {
       id: 'poison',
@@ -2547,6 +2680,7 @@
       this.sweepEffects = [];
       this.beamEffects = [];
       this.impactEffects = [];
+      this.landmines = [];
       this.camX = 0;
       this.camY = 0;
       this.time = 0;
@@ -3136,8 +3270,12 @@
       // Charge beam isn't driven by atkTimer/atkCooldown as a per-shot
       // cooldown at all (see updateChargeBeam) - it needs to keep charging
       // even with zero enemies on screen, so it's branched off before
-      // either of the guards below would otherwise skip it.
+      // either of the guards below would otherwise skip it. Sword & Shield
+      // (v1.36.99) has no cooldown concept whatsoever either - both
+      // hitboxes are continuously active every frame regardless of
+      // atkTimer/enemy count, so it's branched off here too.
       if (p.weapon && p.weapon.id === 'charge') { this.updateChargeBeam(dt); return; }
+      if (p.weapon && p.weapon.id === 'swordshield') { this.updateSwordShieldWeapon(dt); return; }
 
       p.atkTimer -= dt;
       if (p.atkTimer > 0) return;
@@ -3145,6 +3283,8 @@
 
       if (p.weapon && p.weapon.id === 'wide') { this.fireWideSweep(); return; }
       if (p.weapon && p.weapon.id === 'rapidfire') { this.fireRapidFire(); return; }
+      if (p.weapon && p.weapon.id === 'landmine') { this.fireLandmine(); return; }
+      if (p.weapon && p.weapon.id === 'missile') { this.fireMissile(); return; }
 
       // find nearest N enemies within weapon range - out-of-range enemies
       // (typically still off-screen) are ignored entirely rather than
@@ -3318,6 +3458,135 @@
       this.sweepEffects.push(new SweepEffect(p.x, p.y, aimAngle, WIDE_ATTACK_RANGE, halfWidth));
       this.sweepEffects.push(new SweepEffect(p.x, p.y, aimAngle + Math.PI, WIDE_ATTACK_RANGE, halfWidth));
       this.shakeTime = Math.max(this.shakeTime, 0.08);
+    }
+
+    // Landmine (v1.36.99, see WEAPONS/MINE_FUSE_TIME): places a stationary
+    // mine at the player's own current position, on the normal atkCooldown
+    // - no targeting, no multishot (always exactly one mine per fire).
+    // Damage/radius are snapshotted at placement time (same "bakes in
+    // power at the moment of the hit" philosophy every other on-hit effect
+    // in this game follows), not re-read live at detonation.
+    fireLandmine() {
+      const p = this.player;
+      p.atkTimer = p.atkCooldown;
+      const buffDamageMult = p.specialBuffTimer > 0 && p.special && p.special.buffDamageMult != null
+        ? p.special.buffDamageMult : 1;
+      this.landmines.push(new Landmine(p.x, p.y, p.damage * buffDamageMult, p.landmineRank));
+    }
+
+    // Multi Missile (v1.36.99, see WEAPONS/MISSILE_PROJ_SPEED): reuses the
+    // standard weapon's own nearest-N-enemies targeting (weaponRange/
+    // p.projCount), but each shot is slow, homing (see the re-aim step in
+    // update()'s projectile-movement loop, which reads proj.homing/
+    // proj.target), pierce-less, and always triggers its own explosion
+    // (proj.explosionChance=1, see the Projectile constructor) regardless
+    // of the normal EXPLOSION_TRIGGER_CHANCE.
+    fireMissile() {
+      const p = this.player;
+      const range2 = weaponRange(p) ** 2;
+      const sorted = this.enemies
+        .map(e => ({ e, d: dist2(e.x, e.y, p.x, p.y) }))
+        .filter(o => o.d <= range2)
+        .sort((a, b) => a.d - b.d)
+        .slice(0, Math.max(1, p.projCount));
+      if (sorted.length === 0) return;
+      p.atkTimer = p.atkCooldown;
+
+      const explosionRadius = p.explosionLevel > 0 ? explosionRadiusForLevel(p.explosionLevel) : 0;
+      const chainHops = p.chainLevel;
+      const slowDuration = p.slowLevel > 0 ? slowDurationForLevel(p.slowLevel) : 0;
+      const poisons = p.poisonLevel > 0;
+      const frenzies = p.frenzyLevel > 0;
+      const bombifies = p.bombifyLevel > 0;
+      const weakens = p.weakenLevel > 0;
+      const vulnerable = p.vulnerableLevel > 0;
+      const buffDamageMult = p.specialBuffTimer > 0 && p.special && p.special.buffDamageMult != null
+        ? p.special.buffDamageMult : 1;
+      const shotDamage = p.damage * buffDamageMult;
+
+      for (let i = 0; i < p.projCount; i++) {
+        const target = sorted[i % sorted.length].e;
+        const ang = Math.atan2(target.y - p.y, target.x - p.x) + rand(-0.05, 0.05);
+        const vx = Math.cos(ang) * MISSILE_PROJ_SPEED;
+        const vy = Math.sin(ang) * MISSILE_PROJ_SPEED;
+        const proj = new Projectile(p.x, p.y, vx, vy, shotDamage, 0, 5, explosionRadius, chainHops, slowDuration, poisons, frenzies, bombifies, weakens, vulnerable, 1);
+        proj.life = MISSILE_LIFE;
+        proj.homing = true;
+        proj.target = target;
+        this.projectiles.push(proj);
+      }
+    }
+
+    // Sword & Shield (v1.36.99): both hitboxes are resolved every frame,
+    // unconditionally (see the fireWeapon() dispatch, which calls this
+    // instead of the normal atkTimer-gated path entirely). "Front" is
+    // Player.moveDirAngle; the sword's direction is that angle +90 degrees
+    // (the player's right side).
+    updateSwordShieldWeapon(dt) {
+      const p = this.player;
+      const buffDamageMult = p.specialBuffTimer > 0 && p.special && p.special.buffDamageMult != null
+        ? p.special.buffDamageMult : 1;
+
+      // Sword: thin rectangle extending swordLength out to the right,
+      // SWORD_HALF_WIDTH wide, gated per enemy by swordHitCd instead of a
+      // shared atkCooldown (see SWORD_HIT_COOLDOWN above). Each landed hit
+      // is resolved exactly like a wide-sweep hit (virtual proj through
+      // resolveProjectileHit), so bullet effects/chain/explosion all still
+      // apply normally.
+      const swordAngle = p.moveDirAngle + Math.PI / 2;
+      const cosA = Math.cos(-swordAngle), sinA = Math.sin(-swordAngle);
+      const virtualProj = {
+        damage: p.damage * buffDamageMult * SWORD_DAMAGE_MULT,
+        explosionRadius: p.explosionLevel > 0 ? explosionRadiusForLevel(p.explosionLevel) : 0,
+        chainHops: p.chainLevel,
+        slowDuration: p.slowLevel > 0 ? slowDurationForLevel(p.slowLevel) : 0,
+        poisons: p.poisonLevel > 0,
+        frenzies: p.frenzyLevel > 0,
+        bombifies: p.bombifyLevel > 0,
+        weakens: p.weakenLevel > 0,
+        vulnerable: p.vulnerableLevel > 0,
+      };
+      for (const e of this.enemies) {
+        if (e.swordHitCd > 0) continue;
+        const dx = e.x - p.x, dy = e.y - p.y;
+        const localX = dx * cosA - dy * sinA;
+        const localY = dx * sinA + dy * cosA;
+        if (localX < -e.radius || localX > p.swordLength + e.radius) continue;
+        if (Math.abs(localY) > SWORD_HALF_WIDTH + e.radius) continue;
+        if (this.segmentHitsWall(p.x, p.y, e.x, e.y)) continue;
+        e.swordHitCd = SWORD_HIT_COOLDOWN;
+        this.resolveProjectileHit(virtualProj, e);
+      }
+
+      // Shield: wide arc in front, SHIELD_HALF_ANGLE either side of
+      // moveDirAngle, out to shieldRadius. No damage - continuously
+      // knocks back whatever's inside, and destroys any enemy projectile
+      // caught in the same arc ("打ち消す", not a literal bounce-back).
+      const shieldAngle = p.moveDirAngle;
+      for (const e of this.enemies) {
+        const dx = e.x - p.x, dy = e.y - p.y;
+        const d = Math.hypot(dx, dy) || 1;
+        if (d > p.shieldRadius + e.radius) continue;
+        let angDiff = Math.atan2(dy, dx) - shieldAngle;
+        while (angDiff > Math.PI) angDiff -= Math.PI * 2;
+        while (angDiff < -Math.PI) angDiff += Math.PI * 2;
+        if (Math.abs(angDiff) > SHIELD_HALF_ANGLE) continue;
+        const push = SHIELD_KNOCKBACK_SPEED * dt;
+        e.x += (dx / d) * push;
+        e.y += (dy / d) * push;
+        this.resolveWallCollision(e);
+      }
+      for (const eproj of this.enemyProjectiles) {
+        if (eproj.life <= 0) continue;
+        const dx = eproj.x - p.x, dy = eproj.y - p.y;
+        const d = Math.hypot(dx, dy);
+        if (d > p.shieldRadius) continue;
+        let angDiff = Math.atan2(dy, dx) - shieldAngle;
+        while (angDiff > Math.PI) angDiff -= Math.PI * 2;
+        while (angDiff < -Math.PI) angDiff += Math.PI * 2;
+        if (Math.abs(angDiff) > SHIELD_HALF_ANGLE) continue;
+        eproj.life = 0;
+      }
     }
 
     // Charge beam's per-frame tick (see WEAPONS): accumulates p.chargeTime
@@ -3549,7 +3818,7 @@
       if (p.magnetstormLevel > 0) this.spawnImpactEffect('magnetstorm', e.x, e.y, magnetStormRadiusForLevel(p.magnetstormLevel), MAGNETSTORM_DURATION);
       if (p.killzoneLevel > 0) this.spawnImpactEffect('killzone', e.x, e.y, killZoneRadiusForLevel(p.killzoneLevel), KILLZONE_DURATION, proj.damage * killZoneDmgPctForLevel(p.killzoneLevel));
 
-      if (proj.explosionRadius > 0 && Math.random() < EXPLOSION_TRIGGER_CHANCE) {
+      if (proj.explosionRadius > 0 && Math.random() < (proj.explosionChance != null ? proj.explosionChance : EXPLOSION_TRIGGER_CHANCE)) {
         for (const other of this.enemies) {
           if (other === e) continue;
           if (dist(other.x, other.y, e.x, e.y) <= proj.explosionRadius) {
@@ -3584,7 +3853,7 @@
                 cand.hitFlash = 0.12;
                 this.applyOnHitStatuses(proj, cand);
                 this.chainZaps.push(new ChainZap(node.x, node.y, cand.x, cand.y));
-                if (proj.explosionRadius > 0 && Math.random() < EXPLOSION_TRIGGER_CHANCE) {
+                if (proj.explosionRadius > 0 && Math.random() < (proj.explosionChance != null ? proj.explosionChance : EXPLOSION_TRIGGER_CHANCE)) {
                   for (const other of this.enemies) {
                     if (other === cand || chained.has(other)) continue;
                     if (dist(other.x, other.y, cand.x, cand.y) <= proj.explosionRadius) {
@@ -3621,7 +3890,7 @@
             // EXPLOSION_TRIGGER_CHANCE roll to detonate too, using the
             // player's full attack power (proj.damage) rather than chain's
             // own reduced damage.
-            if (proj.explosionRadius > 0 && Math.random() < EXPLOSION_TRIGGER_CHANCE) {
+            if (proj.explosionRadius > 0 && Math.random() < (proj.explosionChance != null ? proj.explosionChance : EXPLOSION_TRIGGER_CHANCE)) {
               for (const other of this.enemies) {
                 if (other === nearest || chained.has(other)) continue;
                 if (dist(other.x, other.y, nearest.x, nearest.y) <= proj.explosionRadius) {
@@ -4412,6 +4681,7 @@
         this.resolveWallCollision(e);
         if (e.hitFlash > 0) e.hitFlash -= dt;
         if (e.contactCd > 0) e.contactCd -= dt;
+        if (e.swordHitCd > 0) e.swordHitCd -= dt;
         if (e.slowTimer > 0) e.slowTimer -= dt;
         if (e.poisonTimer > 0) {
           // Tick damage is a percent of the enemy's OWN maxHp at a flat
@@ -4488,9 +4758,32 @@
       }
 
       // projectiles - every entry in this.projectiles is a real traveling
-      // shot (standard/rapid fire; wide/charge never add one), so all of
-      // them are stopped by walls uniformly, no per-weapon exception needed
-      // here (that exception is charge beam's, and it isn't a Projectile).
+      // shot (standard/rapid fire/missile; wide/charge/landmine/swordshield
+      // never add one), so all of them are stopped by walls uniformly, no
+      // per-weapon exception needed here (that exception is charge beam's,
+      // and it isn't a Projectile).
+      // Multi Missile homing (v1.36.99): retarget only when the current
+      // target is gone (killed/removed - not on any timer), then re-aim
+      // toward wherever the target currently is every frame, so the missile
+      // "instant-turns" onto its target rather than gradually steering.
+      for (const proj of this.projectiles) {
+        if (!proj.homing || proj.life <= 0) continue;
+        if (!proj.target || !this.enemies.includes(proj.target)) {
+          let nearest = null, nearestD2 = Infinity;
+          for (const e of this.enemies) {
+            const d2 = dist2(proj.x, proj.y, e.x, e.y);
+            if (d2 < nearestD2) { nearestD2 = d2; nearest = e; }
+          }
+          proj.target = nearest;
+        }
+        if (proj.target) {
+          const speed = Math.hypot(proj.vx, proj.vy);
+          const ang = Math.atan2(proj.target.y - proj.y, proj.target.x - proj.x);
+          proj.vx = Math.cos(ang) * speed;
+          proj.vy = Math.sin(ang) * speed;
+        }
+      }
+
       for (const proj of this.projectiles) {
         const prevX = proj.x, prevY = proj.y;
         proj.x += proj.vx * dt;
@@ -4531,6 +4824,26 @@
           eproj.life = 0;
         }
       }
+
+      // Landmine detonation (v1.36.99): fuse timeout or enemy-contact,
+      // whichever comes first. Each detonation forms its own killzone-style
+      // lingering damage zone, pushed directly onto this.impactEffects
+      // rather than via spawnImpactEffect() - that method only allows one
+      // 'killzone' zone at a time, which would silently drop every mine
+      // after the first.
+      this.landmines = this.landmines.filter(mine => {
+        mine.fuseTimer -= dt;
+        let triggered = mine.fuseTimer <= 0;
+        if (!triggered) {
+          for (const e of this.enemies) {
+            const rr = mine.radius + e.radius;
+            if (dist2(mine.x, mine.y, e.x, e.y) < rr * rr) { triggered = true; break; }
+          }
+        }
+        if (!triggered) return true;
+        this.impactEffects.push(new ImpactEffect('killzone', mine.x, mine.y, killZoneRadiusForLevel(mine.rank), KILLZONE_DURATION, mine.damage * killZoneDmgPctForLevel(mine.rank)));
+        return false;
+      });
 
       // Bombify detonation: any bombified enemy that ends this frame at
       // hp<=0 (from a projectile, poison, frenzy friendly fire, or an
@@ -5016,6 +5329,20 @@
         ctx.fill();
       }
 
+      // landmines (v1.36.99) - a small pulsing disc so an armed mine reads
+      // clearly as a placed hazard rather than a stray dot; the pulse rate
+      // isn't tied to fuseTimer (no "about to blow" tell), matching that its
+      // other trigger (enemy contact) can fire at any point regardless.
+      for (const mine of this.landmines) {
+        const pulse = 0.7 + 0.3 * Math.sin(this.time * 6);
+        ctx.beginPath();
+        ctx.fillStyle = IMPACT_EFFECT_COLORS.killzone;
+        ctx.globalAlpha = pulse;
+        ctx.arc(mine.x, mine.y, mine.radius, 0, TAU);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+
       // enemy-fired projectiles (gunner) - reuses the gunner's own body
       // color directly (rather than a second hardcoded copy of it) so an
       // incoming shot always reads as coming from that enemy type and the
@@ -5087,6 +5414,35 @@
       ctx.arc(p.x + p.facing * 5, p.y - 4, 2.5, 0, TAU);
       ctx.fill();
       ctx.restore();
+
+      // Sword & Shield (v1.36.99): shield as a translucent arc-shaped wedge
+      // in front, sword as a thin line to the player's right - purely
+      // visual, drawn straight from the same angles/sizes the hit tests in
+      // updateSwordShieldWeapon use, so what's on screen always matches the
+      // actual hitboxes.
+      if (p.weapon && p.weapon.id === 'swordshield') {
+        const shieldAngle = p.moveDirAngle;
+        ctx.save();
+        ctx.globalAlpha = 0.35;
+        ctx.fillStyle = '#8ef0ff';
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y);
+        ctx.arc(p.x, p.y, p.shieldRadius, shieldAngle - SHIELD_HALF_ANGLE, shieldAngle + SHIELD_HALF_ANGLE);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+
+        const swordAngle = p.moveDirAngle + Math.PI / 2;
+        ctx.save();
+        ctx.strokeStyle = '#eaeaea';
+        ctx.lineWidth = SWORD_HALF_WIDTH * 2;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y);
+        ctx.lineTo(p.x + Math.cos(swordAngle) * p.swordLength, p.y + Math.sin(swordAngle) * p.swordLength);
+        ctx.stroke();
+        ctx.restore();
+      }
 
       // Drone slot dots (v1.36.82, changed to show the full slot pool in
       // v1.36.84): one dot per available drone SLOT (droneSlotCap(p.droneSlotRank),
