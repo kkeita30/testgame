@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.102';
+  const GAME_VERSION = '1.36.103';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -655,8 +655,24 @@
   // a dodging enemy entirely), so its own atkCooldown is stretched longer
   // than the shared baseline every other post-guard weapon fires on - a
   // partial rather than full halving of fire rate (frequency x1/1.75, not
-  // x1/2), landing close to but short of "half as often".
+  // x1/2), landing close to but short of "half as often". v1.36.103
+  // repurposed this same duration as the length of the lock-on phase (see
+  // Game.updateMissileWeapon) rather than a plain fire-and-forget cooldown -
+  // the overall pacing is unchanged, only how it's presented.
   const MISSILE_COOLDOWN_MULT = 1.75;
+  // Lock-on volley presentation (v1.36.103): instead of firing the instant
+  // atkCooldown elapses, missile now shows a rotating corner-bracket marker
+  // on each of up to Player.projCount nearby targets (Player.missileLockTargets)
+  // for Player.missileLockDuration seconds (= p.atkCooldown *
+  // MISSILE_COOLDOWN_MULT, so attack-speed upgrades shorten the LOCK rather
+  // than the post-lock fire moment), then fires the whole volley
+  // simultaneously the instant every marker finishes - see
+  // Game.updateMissileWeapon and its render-side counterpart.
+  const MISSILE_PROJCOUNT_BASE = 3; // rank 1 -> 3 simultaneous locks, +1 per rank thereafter (rank 5 -> 7)
+  const MISSILE_LOCKON_START_PAD = 26; // marker starts this far outside the target's own radius...
+  const MISSILE_LOCKON_END_PAD = 6; // ...and closes in to this far by the moment the volley fires
+  const MISSILE_LOCKON_SPIN_SPEED = 4; // radians/sec the bracket set continuously rotates at, purely cosmetic
+  const MISSILE_LOCKON_ARM_FRAC = 0.35; // each corner bracket's arm length, as a fraction of the marker's current half-size
 
   // Sword & Shield (v1.36.99): the only weapon with no atkCooldown/pierce
   // concept at all - both hitboxes are continuously active every frame
@@ -750,12 +766,12 @@
     {
       id: 'missile',
       name: 'マルチミサイル',
-      desc: '弾速は遅いが、発射後も対象を追尾し続ける。対象が倒れた場合は別の敵に自動で再ロックオンする。貫通は持たない。取得した瞬間から「爆発」ランク1を内蔵しており、かつこの武器自身の弾に限り爆発の発動確率が常に100%になる。',
+      desc: '付近の敵にロックオンマーカーを表示し、マルチショット数ぶんのロックオンが完了すると全弾一斉に発射する。弾速は遅いが、発射後も対象を追尾し続け、対象が倒れた場合は別の敵に自動で再ロックオンする。貫通は持たない。取得した瞬間から「爆発」ランク1を内蔵しており、かつこの武器自身の弾に限り爆発の発動確率が常に100%になる。攻撃速度アップグレードはロックオンにかかる時間を短縮する効果になり、発射自体は常にロックオン完了と同時に一斉に行われる。',
       apply: (p) => { p.explosionLevel = Math.max(p.explosionLevel, 1); },
       innateEffect: {
         name: 'マルチショット',
-        desc: 'レベルアップに応じて自動でランクが上昇し、同時発射数が増えていく',
-        applyRank(p, rank) { p.projCount = rank; },
+        desc: 'レベルアップに応じて自動でランクが上昇し、同時ロックオン数(=同時発射数)が増えていく',
+        applyRank(p, rank) { p.projCount = MISSILE_PROJCOUNT_BASE + (rank - 1); },
       },
     },
     {
@@ -874,6 +890,18 @@
       // Landmine weapon only (see WEAPONS/fireLandmine) - unused by any
       // other weapon, harmless default otherwise.
       this.landmineRank = 1;
+      // Multi Missile weapon only (see WEAPONS/Game.updateMissileWeapon) -
+      // unused by any other weapon, harmless defaults otherwise.
+      // missileLockTargets: the enemies currently being locked onto for the
+      // in-progress volley cycle. missileLockTimer: seconds remaining until
+      // that lock completes and the volley fires (<=0 means idle/between
+      // cycles, not currently locking onto anything). missileLockDuration:
+      // the total length of the CURRENT lock cycle, snapshotted when it
+      // started, purely so the render side can compute how far along
+      // (0..1) the lock animation is without redoing that math itself.
+      this.missileLockTargets = [];
+      this.missileLockTimer = 0;
+      this.missileLockDuration = 0;
       // Sword & Shield weapon only (see WEAPONS/updateSwordShieldWeapon) -
       // unused by any other weapon, harmless defaults otherwise.
       this.swordLength = SWORD_BASE_LENGTH;
@@ -3307,9 +3335,15 @@
       // either of the guards below would otherwise skip it. Sword & Shield
       // (v1.36.99) has no cooldown concept whatsoever either - both
       // hitboxes are continuously active every frame regardless of
-      // atkTimer/enemy count, so it's branched off here too.
+      // atkTimer/enemy count, so it's branched off here too. Multi Missile
+      // (v1.36.103) is driven by its own lock-on timer (Player.missileLockTimer)
+      // rather than atkTimer, and needs to keep updating that timer/marker
+      // state even with zero enemies on screen (so it can immediately start
+      // locking the moment one wanders into range), so it's branched off
+      // here as well.
       if (p.weapon && p.weapon.id === 'charge') { this.updateChargeBeam(dt); return; }
       if (p.weapon && p.weapon.id === 'swordshield') { this.updateSwordShieldWeapon(dt); return; }
+      if (p.weapon && p.weapon.id === 'missile') { this.updateMissileWeapon(dt); return; }
 
       p.atkTimer -= dt;
       if (p.atkTimer > 0) return;
@@ -3318,7 +3352,6 @@
       if (p.weapon && p.weapon.id === 'wide') { this.fireWideSweep(); return; }
       if (p.weapon && p.weapon.id === 'rapidfire') { this.fireRapidFire(); return; }
       if (p.weapon && p.weapon.id === 'landmine') { this.fireLandmine(); return; }
-      if (p.weapon && p.weapon.id === 'missile') { this.fireMissile(); return; }
 
       // find nearest N enemies within weapon range - out-of-range enemies
       // (typically still off-screen) are ignored entirely rather than
@@ -3530,51 +3563,84 @@
       this.landmines.push(new Landmine(p.x, p.y, p.damage * buffDamageMult, p.landmineRank, effects));
     }
 
-    // Multi Missile (v1.36.99, see WEAPONS/MISSILE_PROJ_SPEED): reuses the
-    // standard weapon's own nearest-N-enemies targeting (weaponRange/
-    // p.projCount), but each shot is slow, homing (see the re-aim step in
-    // update()'s projectile-movement loop, which reads proj.homing/
-    // proj.target), pierce-less, and always triggers its own explosion
-    // (proj.explosionChance=1, see the Projectile constructor) regardless
-    // of the normal EXPLOSION_TRIGGER_CHANCE.
-    fireMissile() {
+    // Multi Missile (v1.36.99, see WEAPONS/MISSILE_PROJ_SPEED, reworked into
+    // a lock-on-then-volley cycle in v1.36.103): reuses the standard
+    // weapon's own nearest-N-enemies targeting (weaponRange/p.projCount) to
+    // pick lock-on targets, but instead of firing the instant atkCooldown
+    // elapses, shows a marker on each target (Player.missileLockTargets,
+    // rendered separately - see the player-rendering block in draw()) for
+    // Player.missileLockDuration seconds (= p.atkCooldown *
+    // MISSILE_COOLDOWN_MULT, so attack-speed upgrades shorten the LOCK, not
+    // the fire moment itself), then fires the whole volley simultaneously
+    // the instant every marker finishes. Each shot is slow, homing (see the
+    // re-aim step in update()'s projectile-movement loop, which reads
+    // proj.homing/proj.target), pierce-less, and always triggers its own
+    // explosion (proj.explosionChance=1, see the Projectile constructor)
+    // regardless of the normal EXPLOSION_TRIGGER_CHANCE.
+    updateMissileWeapon(dt) {
       const p = this.player;
-      const range2 = weaponRange(p) ** 2;
-      const sorted = this.enemies
-        .map(e => ({ e, d: dist2(e.x, e.y, p.x, p.y) }))
-        .filter(o => o.d <= range2)
-        .sort((a, b) => a.d - b.d)
-        .slice(0, Math.max(1, p.projCount));
-      if (sorted.length === 0) return;
-      // Slower cadence than the shared baseline (v1.36.102, see
-      // MISSILE_COOLDOWN_MULT) - homing wastes very little of its damage,
-      // so it doesn't need to fire as often as a straight-line weapon to
-      // deal comparable damage.
-      p.atkTimer = p.atkCooldown * MISSILE_COOLDOWN_MULT;
 
-      const explosionRadius = p.explosionLevel > 0 ? explosionRadiusForLevel(p.explosionLevel) : 0;
-      const chainHops = p.chainLevel;
-      const slowDuration = p.slowLevel > 0 ? slowDurationForLevel(p.slowLevel) : 0;
-      const poisons = p.poisonLevel > 0;
-      const frenzies = p.frenzyLevel > 0;
-      const bombifies = p.bombifyLevel > 0;
-      const weakens = p.weakenLevel > 0;
-      const vulnerable = p.vulnerableLevel > 0;
-      const buffDamageMult = p.specialBuffTimer > 0 && p.special && p.special.buffDamageMult != null
-        ? p.special.buffDamageMult : 1;
-      const shotDamage = p.damage * buffDamageMult;
-
-      for (let i = 0; i < p.projCount; i++) {
-        const target = sorted[i % sorted.length].e;
-        const ang = Math.atan2(target.y - p.y, target.x - p.x) + rand(-0.05, 0.05);
-        const vx = Math.cos(ang) * MISSILE_PROJ_SPEED;
-        const vy = Math.sin(ang) * MISSILE_PROJ_SPEED;
-        const proj = new Projectile(p.x, p.y, vx, vy, shotDamage, 0, 5, explosionRadius, chainHops, slowDuration, poisons, frenzies, bombifies, weakens, vulnerable, 1);
-        proj.life = MISSILE_LIFE;
-        proj.homing = true;
-        proj.target = target;
-        this.projectiles.push(proj);
+      if (p.missileLockTimer <= 0) {
+        // Idle between cycles (or just starting) - try to acquire a fresh
+        // set of lock-on targets. Stays idle (no markers, no countdown)
+        // if nothing is in range yet, so the moment something wanders into
+        // weaponRange(p) locking begins immediately rather than waiting out
+        // any leftover cooldown.
+        const range2 = weaponRange(p) ** 2;
+        const sorted = this.enemies
+          .map(e => ({ e, d: dist2(e.x, e.y, p.x, p.y) }))
+          .filter(o => o.d <= range2)
+          .sort((a, b) => a.d - b.d)
+          .slice(0, Math.max(1, p.projCount));
+        if (sorted.length === 0) { p.missileLockTargets = []; return; }
+        p.missileLockTargets = sorted.map(o => o.e);
+        p.missileLockDuration = p.atkCooldown * MISSILE_COOLDOWN_MULT;
+        p.missileLockTimer = p.missileLockDuration;
+        return;
       }
+
+      p.missileLockTimer -= dt;
+      if (p.missileLockTimer > 0) return;
+
+      // Lock complete - fire the whole volley at once. A target that died
+      // or otherwise left the enemy list mid-lock is simply skipped (a
+      // smaller volley) rather than replaced, since swapping mid-lock would
+      // either restart that slot's marker animation partway through or fire
+      // at a target with no warning marker at all - neither reads fairly.
+      const liveTargets = p.missileLockTargets.filter(e => this.enemies.includes(e));
+      if (liveTargets.length > 0) {
+        const explosionRadius = p.explosionLevel > 0 ? explosionRadiusForLevel(p.explosionLevel) : 0;
+        const chainHops = p.chainLevel;
+        const slowDuration = p.slowLevel > 0 ? slowDurationForLevel(p.slowLevel) : 0;
+        const poisons = p.poisonLevel > 0;
+        const frenzies = p.frenzyLevel > 0;
+        const bombifies = p.bombifyLevel > 0;
+        const weakens = p.weakenLevel > 0;
+        const vulnerable = p.vulnerableLevel > 0;
+        const buffDamageMult = p.specialBuffTimer > 0 && p.special && p.special.buffDamageMult != null
+          ? p.special.buffDamageMult : 1;
+        const shotDamage = p.damage * buffDamageMult;
+
+        for (let i = 0; i < p.projCount; i++) {
+          const target = liveTargets[i % liveTargets.length];
+          const ang = Math.atan2(target.y - p.y, target.x - p.x) + rand(-0.05, 0.05);
+          const vx = Math.cos(ang) * MISSILE_PROJ_SPEED;
+          const vy = Math.sin(ang) * MISSILE_PROJ_SPEED;
+          const proj = new Projectile(p.x, p.y, vx, vy, shotDamage, 0, 5, explosionRadius, chainHops, slowDuration, poisons, frenzies, bombifies, weakens, vulnerable, 1);
+          proj.life = MISSILE_LIFE;
+          proj.homing = true;
+          proj.target = target;
+          this.projectiles.push(proj);
+        }
+      }
+
+      // Reset to idle - the very next frame's call re-enters the branch
+      // above and starts a new lock cycle immediately if a target is
+      // available, which is what makes the whole thing repeat
+      // automatically without any player input.
+      p.missileLockTargets = [];
+      p.missileLockTimer = 0;
+      p.missileLockDuration = 0;
     }
 
     // Sword & Shield (v1.36.99): both hitboxes are resolved every frame,
@@ -5546,6 +5612,43 @@
         ctx.lineTo(p.x + Math.cos(swordAngle) * p.swordLength, p.y + Math.sin(swordAngle) * p.swordLength);
         ctx.stroke();
         ctx.restore();
+      }
+
+      // Multi Missile lock-on markers (v1.36.103): a rotating set of 4
+      // corner brackets around each currently-locked target, closing in
+      // from MISSILE_LOCKON_START_PAD to MISSILE_LOCKON_END_PAD outside the
+      // target's own radius as Player.missileLockTimer counts down to 0 -
+      // purely cosmetic, drawn straight from the same
+      // missileLockTargets/missileLockTimer/missileLockDuration state
+      // Game.updateMissileWeapon maintains, so the marker's progress always
+      // matches how close the volley actually is to firing. A target that
+      // died mid-lock (still in missileLockTargets until the volley
+      // resolves, see updateMissileWeapon) is simply skipped here rather
+      // than drawn at its last known position.
+      if (p.weapon && p.weapon.id === 'missile' && p.missileLockTimer > 0 && p.missileLockDuration > 0) {
+        const progress = clamp(1 - p.missileLockTimer / p.missileLockDuration, 0, 1);
+        const spin = this.time * MISSILE_LOCKON_SPIN_SPEED;
+        for (const target of p.missileLockTargets) {
+          if (!this.enemies.includes(target)) continue;
+          const half = target.radius + MISSILE_LOCKON_START_PAD + (MISSILE_LOCKON_END_PAD - MISSILE_LOCKON_START_PAD) * progress;
+          const armLen = half * MISSILE_LOCKON_ARM_FRAC;
+          ctx.save();
+          ctx.translate(target.x, target.y);
+          ctx.rotate(spin);
+          ctx.strokeStyle = '#ff6a3d';
+          ctx.lineWidth = 2;
+          for (const sx of [-1, 1]) {
+            for (const sy of [-1, 1]) {
+              const cx = sx * half, cy = sy * half;
+              ctx.beginPath();
+              ctx.moveTo(cx - sx * armLen, cy);
+              ctx.lineTo(cx, cy);
+              ctx.lineTo(cx, cy - sy * armLen);
+              ctx.stroke();
+            }
+          }
+          ctx.restore();
+        }
       }
 
       // Drone slot dots (v1.36.82, changed to show the full slot pool in
