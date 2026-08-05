@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.109';
+  const GAME_VERSION = '1.36.110';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -686,18 +686,17 @@
   const MISSILE_POSTFIRE_MULT = 3;
 
   // Sword & Shield (v1.36.99): the only weapon with no pierce concept and
-  // no atkCooldown concept at all - both hitboxes are continuously active
-  // every frame (see Game.updateSwordShieldWeapon, dispatched
-  // unconditionally from fireWeapon() the same way charge beam bypasses
-  // the normal cooldown gate). A turn-rate-limited facing (Player.
-  // swordFacingAngle) was tried in v1.36.106-108 to give attack-speed
-  // upgrades some effect on this weapon, but playtesting showed the lag
-  // between the player's actual turn and the weapon's own facing was
-  // mostly just awkward to play around rather than adding anything, so
-  // v1.36.109 removed it entirely - "front" is simply Player.moveDirAngle
-  // again, same as every other weapon; "right side" (the sword) is that
+  // no atkCooldown-driven FIRING concept at all - both hitboxes are
+  // continuously active every frame (see Game.updateSwordShieldWeapon,
+  // dispatched unconditionally from fireWeapon() the same way charge beam
+  // bypasses the normal cooldown gate). "Front" is simply
+  // Player.moveDirAngle, same as every other weapon (a turn-rate-limited
+  // facing was tried in v1.36.106-108 and reverted in v1.36.109 - see the
+  // history note in §7-4-6 of SPEC.md); "right side" (the sword) is that
   // angle rotated +90 degrees (clockwise on this y-down canvas, matching
-  // the player's own right hand when facing forward).
+  // the player's own right hand when facing forward). atkCooldown still
+  // matters for this weapon though - see SWORD_CRIT_CHANCE_BASE, its
+  // v1.36.110 replacement for making attack-speed upgrades meaningful here.
   //
   // Sword: a thin rectangle extending SWORD_BASE_LENGTH(+per-rank) out
   // from the player, SWORD_HALF_WIDTH wide. High single-target damage
@@ -723,6 +722,20 @@
   const SHIELD_RADIUS_PER_RANK = 10;
   const SHIELD_HALF_ANGLE = Math.PI / 3;
   const SHIELD_KNOCKBACK_SPEED = 150;
+  // Critical hits (v1.36.110): after the turn-rate-limited facing
+  // (v1.36.106-108) was tried and reverted (v1.36.109) for making
+  // attack-speed upgrades matter on this weapon, this is the replacement -
+  // scoped entirely to this one weapon rather than a game-wide crit system
+  // (which would mean new upgrade cards on top of an offense category
+  // that's already dense), so it's just an internal reinterpretation of
+  // p.atkCooldown, the same idiom charge beam's charge-rate and the old
+  // turn-rate both used. Each individual sword hit independently rolls for
+  // a crit (not once per frame), so multiple enemies caught by the same
+  // sweep can crit independently of each other.
+  const SWORD_CRIT_CHANCE_BASE = 0.15; // crit chance at the baseline (unmodified) atkCooldown
+  const SWORD_CRIT_CHANCE_MAX = 0.5; // hard cap regardless of how much atkCooldown is lowered
+  const SWORD_CRIT_DAMAGE_MULT = 2; // flat multiplier on a hit that crits, stacking on top of SWORD_DAMAGE_MULT
+  function swordCritChance(p) { return clamp(SWORD_CRIT_CHANCE_BASE * (ATK_COOLDOWN_BASE / p.atkCooldown), 0, SWORD_CRIT_CHANCE_MAX); }
 
   const WEAPONS = [
     {
@@ -3705,11 +3718,20 @@
       // shared atkCooldown (see SWORD_HIT_COOLDOWN above). Each landed hit
       // is resolved exactly like a wide-sweep hit (virtual proj through
       // resolveProjectileHit), so bullet effects/chain/explosion all still
-      // apply normally.
+      // apply normally. Critical hits (v1.36.110, see SWORD_CRIT_CHANCE_BASE)
+      // are rolled independently per landed hit, not once per frame, so a
+      // sweep that catches several enemies at once can crit some and not
+      // others; a crit doubles virtualProj.damage before resolveProjectileHit
+      // runs, so it also carries through to any explosion/chain splash that
+      // hit triggers (same "the whole downstream effect scales with the
+      // triggering hit's own damage" logic explosion/chain/killzone already
+      // use elsewhere).
       const swordAngle = p.moveDirAngle + Math.PI / 2;
       const cosA = Math.cos(-swordAngle), sinA = Math.sin(-swordAngle);
+      const baseDamage = p.damage * buffDamageMult * SWORD_DAMAGE_MULT;
+      const critChance = swordCritChance(p);
       const virtualProj = {
-        damage: p.damage * buffDamageMult * SWORD_DAMAGE_MULT,
+        damage: baseDamage,
         explosionRadius: p.explosionLevel > 0 ? explosionRadiusForLevel(p.explosionLevel) : 0,
         chainHops: p.chainLevel,
         slowDuration: p.slowLevel > 0 ? slowDurationForLevel(p.slowLevel) : 0,
@@ -3728,7 +3750,12 @@
         if (Math.abs(localY) > SWORD_HALF_WIDTH + e.radius) continue;
         if (this.segmentHitsWall(p.x, p.y, e.x, e.y)) continue;
         e.swordHitCd = SWORD_HIT_COOLDOWN;
+        const isCrit = Math.random() < critChance;
+        virtualProj.damage = isCrit ? baseDamage * SWORD_CRIT_DAMAGE_MULT : baseDamage;
         this.resolveProjectileHit(virtualProj, e);
+        if (isCrit) {
+          for (let i = 0; i < 6; i++) this.particles.push(new Particle(e.x, e.y, '#ffd700', 3));
+        }
       }
 
       // Shield: wide arc in front, SHIELD_HALF_ANGLE either side of
@@ -5936,6 +5963,7 @@
       <p>HP: ${Math.ceil(p.hp)} / ${p.maxHp}</p>
       <p>レベル: ${p.level}</p>
       <p>ダメージ: ${p.damage} / 攻撃間隔: ${p.atkCooldown.toFixed(2)}秒</p>
+      ${p.weapon && p.weapon.id === 'swordshield' ? `<p>クリティカル率: ${Math.round(swordCritChance(p) * 100)}% (倍率${SWORD_CRIT_DAMAGE_MULT}倍)</p>` : ''}
       <p>同時発射数: ${p.projCount} / 射程: ${Math.round(p.rangeMult * 100)}%</p>
       <p>移動速度: ${Math.round(p.speed)}</p>
       <p>HP自然回復: ${p.regen}/秒 / 回収範囲: ${Math.round(p.pickupRadius)}</p>
