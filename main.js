@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.99';
+  const GAME_VERSION = '1.36.100';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -1459,16 +1459,22 @@
 
   // Landmine (v1.36.99, see WEAPONS/MINE_FUSE_TIME): a stationary hazard,
   // not a Projectile - never travels, never enters this.projectiles.
-  // `damage`/`rank` are snapshotted at placement time (fireLandmine), and
-  // used at detonation to spawn a killzone-style ImpactEffect (radius via
-  // killZoneRadiusForLevel(rank), tick damage via
-  // killZoneDmgPctForLevel(rank) against this stored damage) - see the
-  // detonation-resolution block in update().
+  // `damage`/`rank`/`effects` are all snapshotted at placement time
+  // (fireLandmine), same as a normal shot's Projectile fields are locked in
+  // at the moment it's fired. At detonation (the resolution block in
+  // update()), `effects` is used to build a virtual proj passed through
+  // resolveProjectileHit() for every enemy caught in the blast (v1.36.100 -
+  // this is what lets bullet effects apply to landmine hits at all), and
+  // `damage`/`rank` additionally seed a killzone-style ImpactEffect (radius
+  // via killZoneRadiusForLevel(rank), tick damage via
+  // killZoneDmgPctForLevel(rank) against this stored damage) for the
+  // lingering scorch-zone half of the detonation.
   class Landmine {
-    constructor(x, y, damage, rank) {
+    constructor(x, y, damage, rank, effects) {
       this.x = x; this.y = y;
       this.damage = damage;
       this.rank = rank;
+      this.effects = effects;
       this.fuseTimer = MINE_FUSE_TIME;
       this.radius = MINE_RADIUS;
     }
@@ -3463,15 +3469,31 @@
     // Landmine (v1.36.99, see WEAPONS/MINE_FUSE_TIME): places a stationary
     // mine at the player's own current position, on the normal atkCooldown
     // - no targeting, no multishot (always exactly one mine per fire).
-    // Damage/radius are snapshotted at placement time (same "bakes in
-    // power at the moment of the hit" philosophy every other on-hit effect
-    // in this game follows), not re-read live at detonation.
+    // Damage/rank/bullet-effect flags are all snapshotted at placement time
+    // (same "bakes in power at the moment of the hit" philosophy every
+    // other on-hit effect in this game follows, and the same reason a
+    // normal Projectile's fields are locked in when it's fired rather than
+    // read live later), not re-read live at detonation.
     fireLandmine() {
       const p = this.player;
       p.atkTimer = p.atkCooldown;
       const buffDamageMult = p.specialBuffTimer > 0 && p.special && p.special.buffDamageMult != null
         ? p.special.buffDamageMult : 1;
-      this.landmines.push(new Landmine(p.x, p.y, p.damage * buffDamageMult, p.landmineRank));
+      // Same field set as Sword & Shield's virtualProj (v1.36.99) - used at
+      // detonation to run the blast as a real resolveProjectileHit() burst
+      // (v1.36.100) so bullet effects apply to landmine hits like any other
+      // weapon.
+      const effects = {
+        explosionRadius: p.explosionLevel > 0 ? explosionRadiusForLevel(p.explosionLevel) : 0,
+        chainHops: p.chainLevel,
+        slowDuration: p.slowLevel > 0 ? slowDurationForLevel(p.slowLevel) : 0,
+        poisons: p.poisonLevel > 0,
+        frenzies: p.frenzyLevel > 0,
+        bombifies: p.bombifyLevel > 0,
+        weakens: p.weakenLevel > 0,
+        vulnerable: p.vulnerableLevel > 0,
+      };
+      this.landmines.push(new Landmine(p.x, p.y, p.damage * buffDamageMult, p.landmineRank, effects));
     }
 
     // Multi Missile (v1.36.99, see WEAPONS/MISSILE_PROJ_SPEED): reuses the
@@ -4825,9 +4847,17 @@
         }
       }
 
-      // Landmine detonation (v1.36.99): fuse timeout or enemy-contact,
-      // whichever comes first. Each detonation forms its own killzone-style
-      // lingering damage zone, pushed directly onto this.impactEffects
+      // Landmine detonation (v1.36.99, reworked in v1.36.100 to carry bullet
+      // effects): fuse timeout or enemy-contact, whichever comes first.
+      // Detonation is two things at once: (1) an instant burst hit - every
+      // enemy caught in the blast radius (same radius the lingering zone
+      // below uses) is run through resolveProjectileHit() with a virtual
+      // proj built from the effects snapshotted at placement (fireLandmine)
+      // - the same "hit every target in an area via resolveProjectileHit"
+      // pattern the wide sweep and Sword & Shield already use, so
+      // explosion/chain/poison/frenzy/bombify/weaken/vulnerable all apply
+      // exactly like any other weapon's hit - and (2) the killzone-style
+      // lingering zone as before, pushed directly onto this.impactEffects
       // rather than via spawnImpactEffect() - that method only allows one
       // 'killzone' zone at a time, which would silently drop every mine
       // after the first.
@@ -4841,7 +4871,14 @@
           }
         }
         if (!triggered) return true;
-        this.impactEffects.push(new ImpactEffect('killzone', mine.x, mine.y, killZoneRadiusForLevel(mine.rank), KILLZONE_DURATION, mine.damage * killZoneDmgPctForLevel(mine.rank)));
+        const blastRadius = killZoneRadiusForLevel(mine.rank);
+        const virtualProj = { damage: mine.damage, ...mine.effects };
+        for (const e of this.enemies) {
+          if (dist2(e.x, e.y, mine.x, mine.y) <= blastRadius * blastRadius) {
+            this.resolveProjectileHit(virtualProj, e);
+          }
+        }
+        this.impactEffects.push(new ImpactEffect('killzone', mine.x, mine.y, blastRadius, KILLZONE_DURATION, mine.damage * killZoneDmgPctForLevel(mine.rank)));
         return false;
       });
 
@@ -4994,6 +5031,25 @@
       for (const b of this.beamEffects) b.life -= dt;
       this.beamEffects = this.beamEffects.filter(b => b.life > 0);
 
+      // Killzone overlap (v1.36.100): with landmine able to carpet multiple
+      // independent killzone-style zones at once (see the detonation block
+      // above), a naive per-zone tick would let overlapping zones stack
+      // additively on any enemy standing in the overlap. Instead, for each
+      // enemy, only the single strongest zone currently covering it (by
+      // dmgPerSec) actually ticks - every other zone it's also standing in
+      // is shadowed (its own tickTimers entry for that enemy is simply left
+      // untouched/frozen this frame, not deleted, so it resumes from where
+      // it paused rather than firing immediately once it becomes dominant).
+      const dominantKillzone = new Map();
+      for (const fx of this.impactEffects) {
+        if (fx.type !== 'killzone' || fx.life <= 0) continue;
+        for (const e of this.enemies) {
+          if (dist2(e.x, e.y, fx.x, fx.y) > fx.radius * fx.radius) continue;
+          const current = dominantKillzone.get(e);
+          if (!current || fx.dmgPerSec > current.dmgPerSec) dominantKillzone.set(e, fx);
+        }
+      }
+
       // impact effects: per-type behavior while alive, then drop expired
       // ones. magnetstorm's pull is continuous (every frame, whoever's
       // currently inside). killzone instead uses a periodic-tick model: an
@@ -5026,6 +5082,7 @@
           for (const e of this.enemies) {
             if (dist2(e.x, e.y, fx.x, fx.y) > fx.radius * fx.radius) continue;
             inside.add(e);
+            if (fx.type === 'killzone' && dominantKillzone.get(e) !== fx) continue; // shadowed by a stronger overlapping zone this frame
             let t = fx.tickTimers.has(e) ? fx.tickTimers.get(e) - dt : IMPACT_EFFECT_TICK_INTERVAL - dt;
             if (t <= 0) {
               t += IMPACT_EFFECT_TICK_INTERVAL;
