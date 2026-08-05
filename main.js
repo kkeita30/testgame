@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.100';
+  const GAME_VERSION = '1.36.101';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -616,9 +616,22 @@
   // new one - killzone's code was deliberately kept alive after being
   // pulled from the upgrade pool (v1.36.96) specifically for this kind of
   // reuse. Rank raises blast radius via the same killZoneRadiusForLevel
-  // curve killzone itself used.
-  const MINE_FUSE_TIME = 5;
+  // curve killzone itself used. Fuse shortened 5s->3s and the zone's own
+  // life shortened to a dedicated MINE_ZONE_DURATION (1s, deliberately much
+  // shorter than the general-purpose KILLZONE_DURATION) in v1.36.101, both
+  // alongside the new MINE_MAX_CONCURRENT placement cap - the intent is a
+  // fast "lay a trap, it flashes and clears, lay another" rhythm rather
+  // than zones lingering and piling up.
+  const MINE_FUSE_TIME = 3;
   const MINE_RADIUS = 10;
+  const MINE_ZONE_DURATION = 1;
+  // Placement cap (v1.36.101, see fireLandmine): once this many of the
+  // player's own mines are alive at once, fireLandmine() simply declines to
+  // place another (and does NOT reset atkTimer, so it retries every frame
+  // rather than waiting out a full atkCooldown) - a freed slot (from a mine
+  // detonating) gets claimed on the very next frame instead of after a
+  // fresh cooldown, keeping the field near the cap continuously.
+  const MINE_MAX_CONCURRENT = 5;
 
   // Multi Missile (v1.36.99): much slower than every other weapon's
   // projectile speed, and unlike them, keeps steering toward its locked
@@ -3476,6 +3489,12 @@
     // read live later), not re-read live at detonation.
     fireLandmine() {
       const p = this.player;
+      // Placement cap (v1.36.101, see MINE_MAX_CONCURRENT): deliberately
+      // does NOT reset atkTimer here, so fireWeapon() calls back in again
+      // next frame instead of waiting out a fresh atkCooldown - the moment
+      // a mine detonates and frees a slot, the very next frame places a new
+      // one rather than idling for up to a full cooldown first.
+      if (this.landmines.length >= MINE_MAX_CONCURRENT) return;
       p.atkTimer = p.atkCooldown;
       const buffDamageMult = p.specialBuffTimer > 0 && p.special && p.special.buffDamageMult != null
         ? p.special.buffDamageMult : 1;
@@ -4878,7 +4897,7 @@
             this.resolveProjectileHit(virtualProj, e);
           }
         }
-        this.impactEffects.push(new ImpactEffect('killzone', mine.x, mine.y, blastRadius, KILLZONE_DURATION, mine.damage * killZoneDmgPctForLevel(mine.rank)));
+        this.impactEffects.push(new ImpactEffect('killzone', mine.x, mine.y, blastRadius, MINE_ZONE_DURATION, mine.damage * killZoneDmgPctForLevel(mine.rank)));
         return false;
       });
 
