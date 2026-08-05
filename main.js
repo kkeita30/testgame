@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.101';
+  const GAME_VERSION = '1.36.102';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -642,6 +642,21 @@
   // retarget.
   const MISSILE_PROJ_SPEED = 150;
   const MISSILE_LIFE = 6;
+  // Max turn rate (v1.36.102, radians/sec) the homing re-aim step is
+  // allowed to rotate a missile's velocity by in one second - replaced the
+  // original "snap directly onto the target's bearing every frame" steering,
+  // which looked like a sharp kink whenever a retarget picked a target in a
+  // very different direction. At Math.PI rad/s a missile can reverse a full
+  // 180 degrees in exactly 1 second - still fast enough to reliably
+  // reacquire, but the turn now reads as a curve instead of a snap.
+  const MISSILE_TURN_RATE = Math.PI;
+  // Attack cadence (v1.36.102): missile's homing means very little of its
+  // damage output goes to waste (unlike a straight-line shot that can miss
+  // a dodging enemy entirely), so its own atkCooldown is stretched longer
+  // than the shared baseline every other post-guard weapon fires on - a
+  // partial rather than full halving of fire rate (frequency x1/1.75, not
+  // x1/2), landing close to but short of "half as often".
+  const MISSILE_COOLDOWN_MULT = 1.75;
 
   // Sword & Shield (v1.36.99): the only weapon with no atkCooldown/pierce
   // concept at all - both hitboxes are continuously active every frame
@@ -3531,7 +3546,11 @@
         .sort((a, b) => a.d - b.d)
         .slice(0, Math.max(1, p.projCount));
       if (sorted.length === 0) return;
-      p.atkTimer = p.atkCooldown;
+      // Slower cadence than the shared baseline (v1.36.102, see
+      // MISSILE_COOLDOWN_MULT) - homing wastes very little of its damage,
+      // so it doesn't need to fire as often as a straight-line weapon to
+      // deal comparable damage.
+      p.atkTimer = p.atkCooldown * MISSILE_COOLDOWN_MULT;
 
       const explosionRadius = p.explosionLevel > 0 ? explosionRadiusForLevel(p.explosionLevel) : 0;
       const chainHops = p.chainLevel;
@@ -4804,9 +4823,12 @@
       // per-weapon exception needed here (that exception is charge beam's,
       // and it isn't a Projectile).
       // Multi Missile homing (v1.36.99): retarget only when the current
-      // target is gone (killed/removed - not on any timer), then re-aim
-      // toward wherever the target currently is every frame, so the missile
-      // "instant-turns" onto its target rather than gradually steering.
+      // target is gone (killed/removed - not on any timer). Steering itself
+      // (v1.36.102) is turn-rate limited (MISSILE_TURN_RATE) rather than
+      // snapping straight onto the target's bearing every frame - a
+      // retarget used to read as a sharp kink in the flight path when the
+      // new target was in a very different direction; now the missile
+      // gradually curves onto its new heading instead.
       for (const proj of this.projectiles) {
         if (!proj.homing || proj.life <= 0) continue;
         if (!proj.target || !this.enemies.includes(proj.target)) {
@@ -4819,9 +4841,15 @@
         }
         if (proj.target) {
           const speed = Math.hypot(proj.vx, proj.vy);
-          const ang = Math.atan2(proj.target.y - proj.y, proj.target.x - proj.x);
-          proj.vx = Math.cos(ang) * speed;
-          proj.vy = Math.sin(ang) * speed;
+          const currentAngle = Math.atan2(proj.vy, proj.vx);
+          const targetAngle = Math.atan2(proj.target.y - proj.y, proj.target.x - proj.x);
+          let diff = targetAngle - currentAngle;
+          while (diff > Math.PI) diff -= TAU;
+          while (diff < -Math.PI) diff += TAU;
+          const turn = clamp(diff, -MISSILE_TURN_RATE * dt, MISSILE_TURN_RATE * dt);
+          const newAngle = currentAngle + turn;
+          proj.vx = Math.cos(newAngle) * speed;
+          proj.vy = Math.sin(newAngle) * speed;
         }
       }
 
