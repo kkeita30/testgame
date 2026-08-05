@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.107';
+  const GAME_VERSION = '1.36.108';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -735,6 +735,17 @@
   // (see the ATK_COOLDOWN_BASE comment), so attack-speed upgrades directly
   // translate into "how fast you can spin the sword around".
   const SWORD_TURN_RATE_BASE = Math.PI;
+  // Ease-in acceleration (v1.36.108): a turn doesn't jump straight to
+  // SWORD_TURN_RATE_BASE the instant it starts - Player.swordTurnSpeed
+  // (the CURRENT instantaneous turn speed, separate from the rate cap
+  // itself) ramps up linearly from 0 to the current max rate over
+  // SWORD_TURN_RAMP_TIME seconds of continuous turning, so a swing visibly
+  // starts slow and accelerates into it rather than moving at a constant
+  // speed throughout. It resets back to 0 the moment the facing catches up
+  // (see SWORD_TURN_ALIGN_EPS), so the next turn eases in again from a
+  // stop rather than carrying over speed from the last one.
+  const SWORD_TURN_RAMP_TIME = 0.4;
+  const SWORD_TURN_ALIGN_EPS = 0.001;
 
   const WEAPONS = [
     {
@@ -947,6 +958,10 @@
       // see SWORD_TURN_RATE_BASE. Starts matching moveDirAngle so there's
       // no phantom initial spin-up before the player's first input.
       this.swordFacingAngle = this.moveDirAngle;
+      // Current instantaneous turn speed (v1.36.108, see SWORD_TURN_RAMP_TIME)
+      // - ramps from 0 up to the turn-rate cap rather than snapping to it,
+      // for the ease-in "starts slow, speeds up" swing feel.
+      this.swordTurnSpeed = 0;
       // Raised from 70 (v1.35.0) to fold in exactly what one pickup-range
       // upgrade pick used to add, now that the upgrade itself is gone.
       this.pickupRadius = 100;
@@ -3717,22 +3732,42 @@
       const buffDamageMult = p.specialBuffTimer > 0 && p.special && p.special.buffDamageMult != null
         ? p.special.buffDamageMult : 1;
 
-      // Turn-rate cap (v1.36.106): swordFacingAngle chases moveDirAngle
-      // (the raw, instant input direction) at a capped angular speed rather
-      // than snapping straight to it, so sweeping the sword through a wide
-      // arc of enemies takes an actual, actively-executed spin - not an
-      // instant facing change. The rate scales with attack speed
-      // (ATK_COOLDOWN_BASE / p.atkCooldown, the same rate-multiplier idiom
-      // charge beam uses for its charge-up speed), which is what makes
-      // attack-speed upgrades do something meaningful for this weapon
-      // instead of being dead picks (or, for the tradeoffs that swap
-      // atkCooldown for damage in either direction, an unbalanced free
-      // lunch or a pure trap).
-      const turnRate = SWORD_TURN_RATE_BASE * (ATK_COOLDOWN_BASE / p.atkCooldown);
+      // Turn-rate cap (v1.36.106) with ease-in acceleration (v1.36.108):
+      // swordFacingAngle chases moveDirAngle (the raw, instant input
+      // direction) rather than snapping straight to it, so sweeping the
+      // sword through a wide arc of enemies takes an actual,
+      // actively-executed spin - not an instant facing change. The rate
+      // cap scales with attack speed (ATK_COOLDOWN_BASE / p.atkCooldown,
+      // the same rate-multiplier idiom charge beam uses for its charge-up
+      // speed), which is what makes attack-speed upgrades do something
+      // meaningful for this weapon instead of being dead picks (or, for
+      // the tradeoffs that swap atkCooldown for damage in either
+      // direction, an unbalanced free lunch or a pure trap). Rather than
+      // moving at that capped rate constantly, swordTurnSpeed ramps up to
+      // it over SWORD_TURN_RAMP_TIME seconds of continuous turning (and
+      // resets to 0 once aligned), so a swing visibly starts slow and
+      // accelerates rather than moving at one constant speed throughout.
+      const maxTurnRate = SWORD_TURN_RATE_BASE * (ATK_COOLDOWN_BASE / p.atkCooldown);
       let facingDiff = p.moveDirAngle - p.swordFacingAngle;
       while (facingDiff > Math.PI) facingDiff -= TAU;
       while (facingDiff < -Math.PI) facingDiff += TAU;
-      p.swordFacingAngle += clamp(facingDiff, -turnRate * dt, turnRate * dt);
+      if (Math.abs(facingDiff) < SWORD_TURN_ALIGN_EPS) {
+        p.swordFacingAngle = p.moveDirAngle;
+        p.swordTurnSpeed = 0;
+      } else {
+        p.swordTurnSpeed = Math.min(maxTurnRate, p.swordTurnSpeed + (maxTurnRate / SWORD_TURN_RAMP_TIME) * dt);
+        const maxStep = p.swordTurnSpeed * dt;
+        if (Math.abs(facingDiff) <= maxStep) {
+          // Arrives exactly this frame - reset speed immediately (rather
+          // than waiting for next frame's alignment check) so an instant
+          // direction reversal on the very next frame still eases in from
+          // a stop instead of inheriting this turn's leftover speed.
+          p.swordFacingAngle = p.moveDirAngle;
+          p.swordTurnSpeed = 0;
+        } else {
+          p.swordFacingAngle += clamp(facingDiff, -maxStep, maxStep);
+        }
+      }
 
       // Sword: thin rectangle extending swordLength out to the right,
       // SWORD_HALF_WIDTH wide, gated per enemy by swordHitCd instead of a
