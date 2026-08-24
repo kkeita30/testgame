@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.110';
+  const GAME_VERSION = '1.36.111';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -1287,10 +1287,9 @@
   // keeps enemy HP on the slow time-based curve instead of also compounding
   // with a build that never got stronger.
   function offensePowerMult(p) {
-    const base = (p.damage / BASELINE_STATS.damage) * (BASELINE_STATS.atkCooldown / p.atkCooldown);
-    // Explosion is effectively bonus AoE damage, so it counts toward
-    // offense power the same way raw damage/attack-speed does.
-    return base * (1 + p.explosionLevel * 0.15);
+    // Explosion moved to crowdPowerMult (v1.36.111, alongside its own
+    // category moving offense -> crowd) - see crowdPowerMult below.
+    return (p.damage / BASELINE_STATS.damage) * (BASELINE_STATS.atkCooldown / p.atkCooldown);
   }
   // Reassigned (v1.36.72) to line up with the upgrade categories (§4-5-2):
   // crowdPowerMult now feeds off the same 5 upgrades as the "クラウド"
@@ -1300,6 +1299,17 @@
   // (previously counted here) has no clear read as "more enemies handled at
   // once" on its own (its payoff depends entirely on already having
   // explosion built up) and now has no difficulty feedback at all.
+  //
+  // v1.36.111: 爆発/爆弾化/暴走 joined the crowd category (see their entries
+  // in BULLET_EFFECTS) to fill out a category that had grown thin relative
+  // to offense/defense/utility, and their feedback moved here to match -
+  // explosion and bombify are both AoE (hit multiple enemies per
+  // trigger, the same trait pierce/chain/lightning already feed on), and
+  // bombify's re-inclusion deliberately reverses the v1.36.72 exclusion
+  // above now that it's treated as core crowd investment rather than a
+  // side effect of explosion. Rampage joins for consistency with its
+  // sibling mastery-tier effects (雷撃/猛毒解放), which already inherit
+  // their parent's category/feedback treatment - rampage previously didn't.
   function crowdPowerMult(p) {
     // Multishot no longer counts here - it's now the standard weapon's
     // innate effect (auto-ranks with player level, see WEAPONS) rather
@@ -1323,9 +1333,11 @@
     const withMagnetstorm = withKillzone * (1 + p.magnetstormLevel * 0.15);
     // Lightning (v1.36.95): turns chain's single line into a branching
     // tree that reaches far more enemies per proc - explicitly requested to
-    // feed spawn-frequency difficulty feedback (unlike rampage/poison burst,
-    // its two sibling "mastery tier" effects, which don't), same role as
-    // pierce/chain/killzone/magnetstorm above.
+    // feed spawn-frequency difficulty feedback (poison burst, its remaining
+    // sibling "mastery tier" effect, still doesn't - see poisonburst),
+    // same role as pierce/chain/killzone/magnetstorm above. Rampage joined
+    // this function too (below), once a straggler among the "mastery tier"
+    // effects for feedback purposes.
     const withLightning = withMagnetstorm * (1 + p.lightningLevel * 0.15);
     // Range (v1.36.72): more reach means more enemies are simultaneously
     // in engagement range at once (weaponRange/enemyEngagementRadius both
@@ -1334,7 +1346,13 @@
     // survivalPowerMult's maxHp term below (only half the overshoot
     // counts).
     const rangeExtra = Math.max(0, p.rangeMult - 1) * 0.5;
-    return withLightning * (1 + rangeExtra);
+    const withRange = withLightning * (1 + rangeExtra);
+    // Explosion/bombify/rampage (v1.36.111): same 0.15-per-level full-weight
+    // treatment as pierce/chain/lightning above - see the comment above this
+    // function for why each joined.
+    const withExplosion = withRange * (1 + p.explosionLevel * 0.15);
+    const withBombify = withExplosion * (1 + p.bombifyLevel * 0.15);
+    return withBombify * (1 + p.rampageLevel * 0.15);
   }
   // Reassigned (v1.36.72): now covers 最大HPアップ/ハート回復量増加/
   // 鉄壁の構え(all p.maxHp)/低速 - the upgrades whose payoff is "take
@@ -1791,7 +1809,12 @@
       id: 'range',
       title: '射程アップ',
       desc: '射程が上昇する(視界も拡大)',
-      category: 'utility',
+      // Moved utility -> crowd (v1.36.111): its difficulty feedback was
+      // already routed into crowdPowerMult (see below), so the card's
+      // visible category had drifted out of sync with what it actually
+      // scales. This just brings the label in line with the existing
+      // feedback wiring.
+      category: 'crowd',
       // rangeMult drives both weaponRange() (standard/charge weapons'
       // auto-aim reach) and viewScale() (camera zoom, see draw()) - the
       // two are deliberately the same multiplier, so a longer reach never
@@ -2424,7 +2447,12 @@
       id: 'explosion',
       name: '爆発',
       maxLevel: 5,
-      category: 'offense',
+      // Moved offense -> crowd (v1.36.111): AoE damage that hits multiple
+      // enemies at once is exactly the "handle a crowd, not just one
+      // target" trait the crowd category is defined by (same reasoning as
+      // pierce/chain). Its difficulty feedback moved from offensePowerMult
+      // to crowdPowerMult to match (see those functions).
+      category: 'crowd',
       getLevel: p => p.explosionLevel,
       levelUp: p => { p.explosionLevel++; },
       introDesc: '着弾時、一定確率で着弾地点の周囲に範囲ダメージを与えるようになる',
@@ -2523,7 +2551,12 @@
       id: 'rampage',
       name: '暴走',
       maxLevel: 1,
-      category: 'defense',
+      // Moved defense -> crowd (v1.36.111): rampage is 狂乱's mastery tier,
+      // and 狂乱 itself is crowd - the other two mastery effects (雷撃/
+      // 猛毒解放) already inherit their parent's category, so this brings
+      // rampage in line with that pattern. Now also feeds crowdPowerMult
+      // (see that function) for the same reason.
+      category: 'crowd',
       getLevel: p => p.rampageLevel,
       levelUp: p => { p.rampageLevel++; },
       // Gated behind 狂乱 being fully ranked up - same "mastery tier"
@@ -2542,7 +2575,13 @@
       id: 'bombify',
       name: '爆弾化',
       maxLevel: 1,
-      category: 'offense',
+      // Moved offense -> crowd (v1.36.111), following 爆発's own move -
+      // bombify is explosion's mastery tier and its payoff (AoE death-
+      // explosion damage to nearby enemies) is the same crowd-clearing
+      // trait. This also re-adds it to crowdPowerMult, reversing the
+      // v1.36.72 exclusion (see crowdPowerMult) now that it's deliberately
+      // being treated as part of the crowd axis again.
+      category: 'crowd',
       getLevel: p => p.bombifyLevel,
       levelUp: p => { p.bombifyLevel++; },
       // Gated behind 爆発 being fully ranked up (v1.36.7) - on its own,
