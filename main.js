@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.111';
+  const GAME_VERSION = '1.36.112';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -737,6 +737,47 @@
   const SWORD_CRIT_DAMAGE_MULT = 2; // flat multiplier on a hit that crits, stacking on top of SWORD_DAMAGE_MULT
   function swordCritChance(p) { return clamp(SWORD_CRIT_CHANCE_BASE * (ATK_COOLDOWN_BASE / p.atkCooldown), 0, SWORD_CRIT_CHANCE_MAX); }
 
+  // Turret (v1.36.112): reuses landmine's "place at the player's current
+  // position" pattern (see Game.fireTurret) but instead of detonating, a
+  // placed turret persists for TURRET_LIFESPAN seconds as a second
+  // stationary shooter with its own attack timer, auto-firing real
+  // Projectiles (this.projectiles) at the nearest enemy within its own
+  // weaponRange(p) - see the turret-update block in update(). Unlike
+  // Landmine (which only exists for a few seconds and snapshots its damage/
+  // bullet-effects at placement), a turret lives long enough that it reads
+  // the player's CURRENT damage/pierce/atkCooldown/bullet-effects live on
+  // every shot instead - the same "always up to date" treatment Drones get
+  // (see the drone attack blocks in update()), rather than Landmine's
+  // "bake in power at the moment placed" treatment.
+  const TURRET_LIFESPAN = 8;
+  const TURRET_RADIUS = 11; // visual size only - no collision body of its own, enemies pass through it freely
+  const TURRET_COUNT_BASE = 2; // rank 1 -> 2 simultaneous turrets, +1 per rank thereafter (rank 5 -> 6)
+  const TURRET_COLOR = '#94a3b8';
+
+  // Anchor Shot / アンカーショット (v1.36.112): a single giant, slow
+  // projectile with no multishot concept (always exactly 1 shot regardless
+  // of rank - see fireAnchorShot) that embeds in the first enemy it hits
+  // instead of piercing through or disappearing on impact. Once embedded it
+  // stops travelling and rides along with its target (see the anchor-tick
+  // block in update()), re-hitting it every ANCHOR_HIT_INTERVAL seconds
+  // through the normal resolveProjectileHit() (so bullet effects/chain/
+  // explosion apply on every tick like any other hit) until either the
+  // target dies or its hit budget - ANCHOR_BASE_HITS + Player.pierce, the
+  // 貫通 upgrade repurposed here as "extra hits on the one embedded target"
+  // rather than its usual "extra enemies pierced through" meaning - runs
+  // out. Forces a strong slow on the embedded target (reusing the existing
+  // SLOW_MULT speed reduction rather than a dedicated full-stop mechanic,
+  // refreshed every tick while embedded so it lapses shortly after the
+  // anchor detaches instead of persisting).
+  const ANCHOR_PROJ_SPEED_MULT = 0.55;
+  const ANCHOR_BASE_RADIUS = 16; // matches the player's own radius (Player.radius) - "自機と同程度のサイズ"
+  const ANCHOR_RADIUS_PER_RANK = 4; // rank1=16px -> rank5=32px
+  const ANCHOR_BASE_HITS = 4; // + Player.pierce (capped at 5 by 貫通's own maxLevel) = 4-9 total hits
+  const ANCHOR_HIT_INTERVAL = 0.35;
+  const ANCHOR_SLOW_DURATION = 0.5; // refreshed every tick while embedded
+  const ANCHOR_TRAVEL_LIFE = 3; // generous pre-embed travel window so a shot at a distant target doesn't expire before reaching it (embedded anchors don't decay via life at all - see the movement-loop skip)
+  const ANCHOR_COLOR = '#e8823c';
+
   const WEAPONS = [
     {
       id: 'standard',
@@ -816,6 +857,28 @@
           p.swordLength = SWORD_BASE_LENGTH + SWORD_LENGTH_PER_RANK * (rank - 1);
           p.shieldRadius = SHIELD_BASE_RADIUS + SHIELD_RADIUS_PER_RANK * (rank - 1);
         },
+      },
+    },
+    {
+      id: 'turret',
+      name: 'タレット',
+      desc: 'ランドマインと同じく、発射位置(自機の現在地点)にその場で据え置かれる武器。爆発はせず、設置から一定時間、周囲の敵へ自動で射撃を続ける。マルチショットの概念はなく、ランクアップで同時に設置できるタレットの数が増えていく(初期値2基)。',
+      apply: (p) => {},
+      innateEffect: {
+        name: '同時設置数アップ',
+        desc: 'レベルアップに応じて自動でランクが上昇し、同時に設置できるタレットの数が増えていく',
+        applyRank(p, rank) { p.turretMaxCount = TURRET_COUNT_BASE + (rank - 1); },
+      },
+    },
+    {
+      id: 'anchor',
+      name: 'アンカーショット',
+      desc: '自機と同程度の大きさの巨大な弾丸を1発だけ発射する(マルチショットの概念はなし)。命中すると弾丸はそのまま敵に食いつき、対象を大きく減速させながら一定間隔で連続ヒットを与え続ける。規定のヒット数(貫通アップグレードで増加)を消化するか対象を倒すと弾丸は消える。',
+      apply: (p) => {},
+      innateEffect: {
+        name: '弾丸拡大',
+        desc: 'レベルアップに応じて自動でランクが上昇し、弾丸のサイズが大きくなっていく',
+        applyRank(p, rank) { p.anchorRadius = ANCHOR_BASE_RADIUS + ANCHOR_RADIUS_PER_RANK * (rank - 1); },
       },
     },
   ];
@@ -943,6 +1006,12 @@
       // unused by any other weapon, harmless defaults otherwise.
       this.swordLength = SWORD_BASE_LENGTH;
       this.shieldRadius = SHIELD_BASE_RADIUS;
+      // Turret weapon only (see WEAPONS/Game.fireTurret) - unused by any
+      // other weapon, harmless default otherwise.
+      this.turretMaxCount = TURRET_COUNT_BASE;
+      // Anchor Shot weapon only (see WEAPONS/Game.fireAnchorShot) - unused
+      // by any other weapon, harmless default otherwise.
+      this.anchorRadius = ANCHOR_BASE_RADIUS;
       // Raised from 70 (v1.35.0) to fold in exactly what one pickup-range
       // upgrade pick used to add, now that the upgrade itself is gone.
       this.pickupRadius = 100;
@@ -1588,6 +1657,22 @@
       this.effects = effects;
       this.fuseTimer = MINE_FUSE_TIME;
       this.radius = MINE_RADIUS;
+    }
+  }
+
+  // Turret (v1.36.112, see TURRET_LIFESPAN above for the "reads live
+  // player stats" rationale): no damage/effects snapshot fields, unlike
+  // Landmine - each shot pulls the player's current stats fresh (see the
+  // turret-update block in update()).
+  class Turret {
+    constructor(x, y) {
+      this.x = x; this.y = y;
+      this.life = TURRET_LIFESPAN;
+      // Starts at 0, not p.atkCooldown, so a freshly placed turret can fire
+      // the very frame a target wanders into range rather than waiting out
+      // a full interval first - same idiom drone cooldowns use.
+      this.atkTimer = 0;
+      this.radius = TURRET_RADIUS;
     }
   }
 
@@ -2819,6 +2904,7 @@
       this.beamEffects = [];
       this.impactEffects = [];
       this.landmines = [];
+      this.turrets = [];
       this.camX = 0;
       this.camY = 0;
       this.time = 0;
@@ -3428,6 +3514,8 @@
       if (p.weapon && p.weapon.id === 'wide') { this.fireWideSweep(); return; }
       if (p.weapon && p.weapon.id === 'rapidfire') { this.fireRapidFire(); return; }
       if (p.weapon && p.weapon.id === 'landmine') { this.fireLandmine(); return; }
+      if (p.weapon && p.weapon.id === 'turret') { this.fireTurret(); return; }
+      if (p.weapon && p.weapon.id === 'anchor') { this.fireAnchorShot(); return; }
 
       // find nearest N enemies within weapon range - out-of-range enemies
       // (typically still off-screen) are ignored entirely rather than
@@ -3637,6 +3725,67 @@
         vulnerable: p.vulnerableLevel > 0,
       };
       this.landmines.push(new Landmine(p.x, p.y, p.damage * buffDamageMult, p.landmineRank, effects));
+    }
+
+    // Turret (v1.36.112, see WEAPONS/TURRET_*): places a stationary turret
+    // at the player's own current position, on the normal atkCooldown - no
+    // targeting, no multishot (always exactly one turret per placement).
+    // Unlike fireLandmine(), doesn't snapshot damage/bullet-effect flags at
+    // all - the placed Turret reads the player's current stats live every
+    // time it fires (see the turret-update block in update()).
+    fireTurret() {
+      const p = this.player;
+      // Placement cap (see Player.turretMaxCount): deliberately does NOT
+      // reset atkTimer here, same reasoning as fireLandmine's own cap check
+      // - the moment a turret's lifespan runs out and frees a slot, the
+      // very next frame places a new one instead of idling for up to a
+      // full cooldown first.
+      if (this.turrets.length >= p.turretMaxCount) return;
+      p.atkTimer = p.atkCooldown;
+      this.turrets.push(new Turret(p.x, p.y));
+    }
+
+    // Anchor Shot (v1.36.112, see WEAPONS/ANCHOR_*): targets only the
+    // single nearest enemy in range (no multishot - always exactly one
+    // shot regardless of p.projCount) and fires a slow, oversized
+    // Projectile at it. The projectile-enemy collision loop and the
+    // dedicated anchor-tick block in update() handle everything from the
+    // first hit onward (embedding, the slow, and the repeated multi-hit
+    // tick) - this method only ever fires the initial shot.
+    fireAnchorShot() {
+      const p = this.player;
+      const range2 = weaponRange(p) ** 2;
+      let nearest = null, nearestD2 = range2;
+      for (const e of this.enemies) {
+        const d2 = dist2(e.x, e.y, p.x, p.y);
+        if (d2 <= nearestD2) { nearest = e; nearestD2 = d2; }
+      }
+      if (!nearest) return;
+      p.atkTimer = p.atkCooldown;
+
+      const explosionRadius = p.explosionLevel > 0 ? explosionRadiusForLevel(p.explosionLevel) : 0;
+      const chainHops = p.chainLevel;
+      const slowDuration = p.slowLevel > 0 ? slowDurationForLevel(p.slowLevel) : 0;
+      const poisons = p.poisonLevel > 0;
+      const frenzies = p.frenzyLevel > 0;
+      const bombifies = p.bombifyLevel > 0;
+      const weakens = p.weakenLevel > 0;
+      const vulnerable = p.vulnerableLevel > 0;
+      const buffDamageMult = p.specialBuffTimer > 0 && p.special && p.special.buffDamageMult != null
+        ? p.special.buffDamageMult : 1;
+      const shotDamage = p.damage * buffDamageMult;
+
+      const ang = Math.atan2(nearest.y - p.y, nearest.x - p.x);
+      const speed = p.projSpeed * ANCHOR_PROJ_SPEED_MULT;
+      const vx = Math.cos(ang) * speed;
+      const vy = Math.sin(ang) * speed;
+      const proj = new Projectile(p.x, p.y, vx, vy, shotDamage, 0, p.anchorRadius, explosionRadius, chainHops, slowDuration, poisons, frenzies, bombifies, weakens, vulnerable);
+      proj.life = ANCHOR_TRAVEL_LIFE;
+      proj.anchor = true;
+      proj.anchorTarget = null;
+      proj.anchorHitsRemaining = ANCHOR_BASE_HITS + p.pierce;
+      proj.anchorTickTimer = ANCHOR_HIT_INTERVAL;
+      this.projectiles.push(proj);
     }
 
     // Multi Missile (v1.36.99, see WEAPONS/MISSILE_PROJ_SPEED, reworked into
@@ -5033,6 +5182,12 @@
       }
 
       for (const proj of this.projectiles) {
+        // Anchor Shot (v1.36.112): once embedded (anchorTarget set below),
+        // position is glued to its target in the anchor-tick block further
+        // down instead of integrated from vx/vy, and life no longer decays
+        // via time at all - only the anchor-tick block's hit-budget/target-
+        // death checks end it from this point on.
+        if (proj.anchor && proj.anchorTarget) continue;
         const prevX = proj.x, prevY = proj.y;
         proj.x += proj.vx * dt;
         proj.y += proj.vy * dt;
@@ -5043,6 +5198,29 @@
       // projectile-enemy collision
       for (const proj of this.projectiles) {
         if (proj.life <= 0) continue;
+        if (proj.anchor) {
+          // Not embedded yet - find the first enemy touched, hit it once,
+          // then either embed onto it (further hits + the forced slow are
+          // handled by the anchor-tick block below) or, if the very first
+          // hit already exhausted the hit budget, just disappear. Already-
+          // embedded anchors skip this loop entirely (handled below).
+          if (proj.anchorTarget) continue;
+          for (const e of this.enemies) {
+            if (dist2(proj.x, proj.y, e.x, e.y) < (proj.radius + e.radius) * (proj.radius + e.radius)) {
+              this.resolveProjectileHit(proj, e);
+              proj.anchorHitsRemaining -= 1;
+              if (proj.anchorHitsRemaining > 0) {
+                proj.anchorTarget = e;
+                proj.vx = 0; proj.vy = 0;
+                e.slowTimer = Math.max(e.slowTimer, ANCHOR_SLOW_DURATION);
+              } else {
+                proj.life = 0;
+              }
+              break;
+            }
+          }
+          continue;
+        }
         for (const e of this.enemies) {
           if (proj.hitSet.has(e)) continue;
           if (dist2(proj.x, proj.y, e.x, e.y) < (proj.radius + e.radius) * (proj.radius + e.radius)) {
@@ -5051,6 +5229,30 @@
             if (proj.pierce <= 0) { proj.life = 0; break; }
             proj.pierce -= 1;
           }
+        }
+      }
+
+      // Anchor Shot tick (v1.36.112, see WEAPONS/ANCHOR_*): an embedded
+      // anchor rides along with its target (glued position, refreshed every
+      // frame) and re-hits it every ANCHOR_HIT_INTERVAL seconds through the
+      // normal resolveProjectileHit() - so bullet effects/chain/explosion
+      // apply on every tick like any other hit - until either the target
+      // leaves this.enemies (killed by this or any other source) or the
+      // hit budget set in fireAnchorShot()/the collision loop above runs
+      // out.
+      for (const proj of this.projectiles) {
+        if (!proj.anchor || !proj.anchorTarget || proj.life <= 0) continue;
+        const target = proj.anchorTarget;
+        if (!this.enemies.includes(target)) { proj.life = 0; continue; }
+        proj.x = target.x;
+        proj.y = target.y;
+        target.slowTimer = Math.max(target.slowTimer, ANCHOR_SLOW_DURATION);
+        proj.anchorTickTimer -= dt;
+        if (proj.anchorTickTimer <= 0) {
+          proj.anchorTickTimer += ANCHOR_HIT_INTERVAL;
+          this.resolveProjectileHit(proj, target);
+          proj.anchorHitsRemaining -= 1;
+          if (proj.anchorHitsRemaining <= 0) proj.life = 0;
         }
       }
 
@@ -5106,6 +5308,47 @@
         }
         this.impactEffects.push(new ImpactEffect('killzone', mine.x, mine.y, blastRadius, MINE_ZONE_DURATION, mine.damage * killZoneDmgPctForLevel(mine.rank)));
         return false;
+      });
+
+      // Turret update (v1.36.112, see WEAPONS/TURRET_*): each placed turret
+      // counts down its own lifespan and, independently, its own attack
+      // timer - once a target is within weaponRange(p) of the TURRET's own
+      // position (not the player's), it fires a real Projectile there, read
+      // live off the player's current stats every shot (see TURRET_LIFESPAN
+      // above for why, unlike Landmine, nothing is snapshotted at
+      // placement). No target in range simply leaves atkTimer at 0 so it
+      // re-checks every frame instead of idling out a cooldown against
+      // nothing, the same idiom fireWeapon()'s own empty-enemies guard uses.
+      this.turrets = this.turrets.filter(t => {
+        t.life -= dt;
+        if (t.life <= 0) return false;
+        t.atkTimer -= dt;
+        if (t.atkTimer > 0) return true;
+
+        const range2 = weaponRange(p) ** 2;
+        let nearest = null, nearestD2 = range2;
+        for (const e of this.enemies) {
+          const d2 = dist2(e.x, e.y, t.x, t.y);
+          if (d2 <= nearestD2) { nearest = e; nearestD2 = d2; }
+        }
+        if (!nearest) return true;
+        t.atkTimer = p.atkCooldown;
+
+        const explosionRadius = p.explosionLevel > 0 ? explosionRadiusForLevel(p.explosionLevel) : 0;
+        const chainHops = p.chainLevel;
+        const slowDuration = p.slowLevel > 0 ? slowDurationForLevel(p.slowLevel) : 0;
+        const poisons = p.poisonLevel > 0;
+        const frenzies = p.frenzyLevel > 0;
+        const bombifies = p.bombifyLevel > 0;
+        const weakens = p.weakenLevel > 0;
+        const vulnerable = p.vulnerableLevel > 0;
+        const buffDamageMult = p.specialBuffTimer > 0 && p.special && p.special.buffDamageMult != null
+          ? p.special.buffDamageMult : 1;
+        const ang = Math.atan2(nearest.y - t.y, nearest.x - t.x);
+        const vx = Math.cos(ang) * p.projSpeed;
+        const vy = Math.sin(ang) * p.projSpeed;
+        this.projectiles.push(new Projectile(t.x, t.y, vx, vy, p.damage * buffDamageMult, p.pierce, 5, explosionRadius, chainHops, slowDuration, poisons, frenzies, bombifies, weakens, vulnerable));
+        return true;
       });
 
       // Bombify detonation: any bombified enemy that ends this frame at
@@ -5604,10 +5847,12 @@
         ctx.globalAlpha = 1;
       }
 
-      // projectiles
+      // projectiles (Anchor Shot's oversized bullet gets its own color -
+      // ANCHOR_COLOR - so it reads as distinct from a normal shot even
+      // before its size alone gives it away)
       for (const proj of this.projectiles) {
         ctx.beginPath();
-        ctx.fillStyle = '#ffe45a';
+        ctx.fillStyle = proj.anchor ? ANCHOR_COLOR : '#ffe45a';
         ctx.arc(proj.x, proj.y, proj.radius, 0, TAU);
         ctx.fill();
       }
@@ -5624,6 +5869,21 @@
         ctx.arc(mine.x, mine.y, mine.radius, 0, TAU);
         ctx.fill();
         ctx.globalAlpha = 1;
+      }
+
+      // turrets (v1.36.112) - an outer ring (its detection/firing presence)
+      // plus a small solid core, distinct from the landmine's single pulsing
+      // disc so the two placed-weapon types don't read as the same hazard.
+      for (const t of this.turrets) {
+        ctx.beginPath();
+        ctx.strokeStyle = TURRET_COLOR;
+        ctx.lineWidth = 2;
+        ctx.arc(t.x, t.y, t.radius, 0, TAU);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.fillStyle = TURRET_COLOR;
+        ctx.arc(t.x, t.y, t.radius * 0.4, 0, TAU);
+        ctx.fill();
       }
 
       // enemy-fired projectiles (gunner) - reuses the gunner's own body
@@ -6003,6 +6263,8 @@
       <p>レベル: ${p.level}</p>
       <p>ダメージ: ${p.damage} / 攻撃間隔: ${p.atkCooldown.toFixed(2)}秒</p>
       ${p.weapon && p.weapon.id === 'swordshield' ? `<p>クリティカル率: ${Math.round(swordCritChance(p) * 100)}% (倍率${SWORD_CRIT_DAMAGE_MULT}倍)</p>` : ''}
+      ${p.weapon && p.weapon.id === 'turret' ? `<p>タレット同時設置数: ${p.turretMaxCount}</p>` : ''}
+      ${p.weapon && p.weapon.id === 'anchor' ? `<p>アンカー弾丸ヒット数: ${ANCHOR_BASE_HITS + p.pierce} / サイズ: ${Math.round(p.anchorRadius)}</p>` : ''}
       <p>同時発射数: ${p.projCount} / 射程: ${Math.round(p.rangeMult * 100)}%</p>
       <p>移動速度: ${Math.round(p.speed)}</p>
       <p>HP自然回復: ${p.regen}/秒 / 回収範囲: ${Math.round(p.pickupRadius)}</p>
