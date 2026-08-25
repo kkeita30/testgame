@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.114';
+  const GAME_VERSION = '1.36.115';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -754,50 +754,6 @@
   const TURRET_COUNT_BASE = 2; // rank 1 -> 2 simultaneous turrets, +1 per rank thereafter (rank 5 -> 6)
   const TURRET_COLOR = '#94a3b8';
 
-  // Anchor Shot / アンカーショット (v1.36.112): a single giant, slow
-  // projectile with no multishot concept (always exactly 1 shot regardless
-  // of rank - see fireAnchorShot) that embeds in the first enemy it hits
-  // instead of piercing through or disappearing on impact. Once embedded it
-  // stops travelling and rides along with its target (see the anchor-tick
-  // block in update()), re-hitting it every ANCHOR_HIT_INTERVAL seconds
-  // through the normal resolveProjectileHit() (so bullet effects/chain/
-  // explosion apply on every tick like any other hit) until either the
-  // target dies or its hit budget - ANCHOR_BASE_HITS + Player.pierce, the
-  // 貫通 upgrade repurposed here as "extra hits on the one embedded target"
-  // rather than its usual "extra enemies pierced through" meaning - runs
-  // out. While embedded it also keeps a 磁気嵐/magnetstorm ImpactEffect
-  // (v1.36.114, see MAGNETSTORM_DURATION/magnetStormRadiusForLevel further
-  // down) glued to the target's position, pulling any other nearby enemies
-  // in toward the pinned target for as long as the anchor stays attached -
-  // reusing magnetstorm's existing pull-zone code wholesale rather than the
-  // dedicated full-stop mechanics of a new mechanic, the same kind of reuse
-  // Landmine already does for killzone (see the killzone/magnetstorm reuse
-  // note near Player.killzoneLevel). Replaces v1.36.112's original "force a
-  // strong slow on the embedded target" behavior entirely.
-  const ANCHOR_PROJ_SPEED_MULT = 0.55;
-  const ANCHOR_BASE_RADIUS = 16; // matches the player's own radius (Player.radius) - "自機と同程度のサイズ"
-  const ANCHOR_RADIUS_PER_RANK = 4; // rank1=16px -> rank5=32px
-  const ANCHOR_BASE_HITS = 4; // + Player.pierce (capped at 5 by 貫通's own maxLevel) = 4-9 total hits
-  const ANCHOR_HIT_INTERVAL = 0.35;
-  // Each individual tick (including the embedding hit) only deals this
-  // fraction of a normal shot's damage (v1.36.113) - at full weight, a
-  // single hit already threatened to kill/nearly kill most enemies before
-  // the remaining ticks in the sequence had a chance to land, defeating the
-  // whole point of "multiple hits over time". Comparable in spirit to
-  // CHAIN_DAMAGE_PCT (0.5), set a bit lower since every anchor tick lands
-  // unconditionally (no CHAIN_TRIGGER_CHANCE-style roll) - total damage
-  // across a full sequence still comes out to 1.6x-3.6x a normal hit
-  // (ANCHOR_BASE_HITS(4) to 4+pierce(9) hits x 0.4), just spread out.
-  const ANCHOR_DAMAGE_PCT_PER_HIT = 0.4;
-  // Refreshed every frame while embedded (see the anchor-tick block in
-  // update()) rather than the zone's own full MAGNETSTORM_DURATION, so the
-  // pull lapses within this long of the anchor detaching instead of
-  // lingering for a further few seconds afterward - same short-tail idiom
-  // v1.36.112's now-removed forced slow used.
-  const ANCHOR_MAGNETSTORM_LIFE_BUFFER = 0.5;
-  const ANCHOR_TRAVEL_LIFE = 3; // generous pre-embed travel window so a shot at a distant target doesn't expire before reaching it (embedded anchors don't decay via life at all - see the movement-loop skip)
-  const ANCHOR_COLOR = '#e8823c';
-
   const WEAPONS = [
     {
       id: 'standard',
@@ -888,17 +844,6 @@
         name: '同時設置数アップ',
         desc: 'レベルアップに応じて自動でランクが上昇し、同時に設置できるタレットの数が増えていく',
         applyRank(p, rank) { p.turretMaxCount = TURRET_COUNT_BASE + (rank - 1); },
-      },
-    },
-    {
-      id: 'anchor',
-      name: 'アンカーショット',
-      desc: '自機と同程度の大きさの巨大な弾丸を1発だけ発射する(マルチショットの概念はなし)。命中すると弾丸はそのまま敵に食いつき、磁気嵐を展開して周囲の敵を引き寄せながら一定間隔で連続ヒットを与え続ける。規定のヒット数(貫通アップグレードで増加)を消化するか対象を倒すと弾丸は消える。',
-      apply: (p) => {},
-      innateEffect: {
-        name: '弾丸拡大',
-        desc: 'レベルアップに応じて自動でランクが上昇し、弾丸のサイズが大きくなっていく',
-        applyRank(p, rank) { p.anchorRadius = ANCHOR_BASE_RADIUS + ANCHOR_RADIUS_PER_RANK * (rank - 1); },
       },
     },
   ];
@@ -1029,9 +974,6 @@
       // Turret weapon only (see WEAPONS/Game.fireTurret) - unused by any
       // other weapon, harmless default otherwise.
       this.turretMaxCount = TURRET_COUNT_BASE;
-      // Anchor Shot weapon only (see WEAPONS/Game.fireAnchorShot) - unused
-      // by any other weapon, harmless default otherwise.
-      this.anchorRadius = ANCHOR_BASE_RADIUS;
       // Raised from 70 (v1.35.0) to fold in exactly what one pickup-range
       // upgrade pick used to add, now that the upgrade itself is gone.
       this.pickupRadius = 100;
@@ -3535,7 +3477,6 @@
       if (p.weapon && p.weapon.id === 'rapidfire') { this.fireRapidFire(); return; }
       if (p.weapon && p.weapon.id === 'landmine') { this.fireLandmine(); return; }
       if (p.weapon && p.weapon.id === 'turret') { this.fireTurret(); return; }
-      if (p.weapon && p.weapon.id === 'anchor') { this.fireAnchorShot(); return; }
 
       // find nearest N enemies within weapon range - out-of-range enemies
       // (typically still off-screen) are ignored entirely rather than
@@ -3763,50 +3704,6 @@
       if (this.turrets.length >= p.turretMaxCount) return;
       p.atkTimer = p.atkCooldown;
       this.turrets.push(new Turret(p.x, p.y));
-    }
-
-    // Anchor Shot (v1.36.112, see WEAPONS/ANCHOR_*): targets only the
-    // single nearest enemy in range (no multishot - always exactly one
-    // shot regardless of p.projCount) and fires a slow, oversized
-    // Projectile at it. The projectile-enemy collision loop and the
-    // dedicated anchor-tick block in update() handle everything from the
-    // first hit onward (embedding, the slow, and the repeated multi-hit
-    // tick) - this method only ever fires the initial shot.
-    fireAnchorShot() {
-      const p = this.player;
-      const range2 = weaponRange(p) ** 2;
-      let nearest = null, nearestD2 = range2;
-      for (const e of this.enemies) {
-        const d2 = dist2(e.x, e.y, p.x, p.y);
-        if (d2 <= nearestD2) { nearest = e; nearestD2 = d2; }
-      }
-      if (!nearest) return;
-      p.atkTimer = p.atkCooldown;
-
-      const explosionRadius = p.explosionLevel > 0 ? explosionRadiusForLevel(p.explosionLevel) : 0;
-      const chainHops = p.chainLevel;
-      const slowDuration = p.slowLevel > 0 ? slowDurationForLevel(p.slowLevel) : 0;
-      const poisons = p.poisonLevel > 0;
-      const frenzies = p.frenzyLevel > 0;
-      const bombifies = p.bombifyLevel > 0;
-      const weakens = p.weakenLevel > 0;
-      const vulnerable = p.vulnerableLevel > 0;
-      const buffDamageMult = p.specialBuffTimer > 0 && p.special && p.special.buffDamageMult != null
-        ? p.special.buffDamageMult : 1;
-      const shotDamage = p.damage * buffDamageMult * ANCHOR_DAMAGE_PCT_PER_HIT;
-
-      const ang = Math.atan2(nearest.y - p.y, nearest.x - p.x);
-      const speed = p.projSpeed * ANCHOR_PROJ_SPEED_MULT;
-      const vx = Math.cos(ang) * speed;
-      const vy = Math.sin(ang) * speed;
-      const proj = new Projectile(p.x, p.y, vx, vy, shotDamage, 0, p.anchorRadius, explosionRadius, chainHops, slowDuration, poisons, frenzies, bombifies, weakens, vulnerable);
-      proj.life = ANCHOR_TRAVEL_LIFE;
-      proj.anchor = true;
-      proj.anchorTarget = null;
-      proj.anchorStorm = null;
-      proj.anchorHitsRemaining = ANCHOR_BASE_HITS + p.pierce;
-      proj.anchorTickTimer = ANCHOR_HIT_INTERVAL;
-      this.projectiles.push(proj);
     }
 
     // Multi Missile (v1.36.99, see WEAPONS/MISSILE_PROJ_SPEED, reworked into
@@ -5203,12 +5100,6 @@
       }
 
       for (const proj of this.projectiles) {
-        // Anchor Shot (v1.36.112): once embedded (anchorTarget set below),
-        // position is glued to its target in the anchor-tick block further
-        // down instead of integrated from vx/vy, and life no longer decays
-        // via time at all - only the anchor-tick block's hit-budget/target-
-        // death checks end it from this point on.
-        if (proj.anchor && proj.anchorTarget) continue;
         const prevX = proj.x, prevY = proj.y;
         proj.x += proj.vx * dt;
         proj.y += proj.vy * dt;
@@ -5219,38 +5110,6 @@
       // projectile-enemy collision
       for (const proj of this.projectiles) {
         if (proj.life <= 0) continue;
-        if (proj.anchor) {
-          // Not embedded yet - find the first enemy touched, hit it once,
-          // then either embed onto it (further hits + the magnetstorm pull
-          // are handled by the anchor-tick block below) or, if the very
-          // first hit already exhausted the hit budget, just disappear.
-          // Already-embedded anchors skip this loop entirely (handled
-          // below).
-          if (proj.anchorTarget) continue;
-          for (const e of this.enemies) {
-            if (dist2(proj.x, proj.y, e.x, e.y) < (proj.radius + e.radius) * (proj.radius + e.radius)) {
-              this.resolveProjectileHit(proj, e);
-              proj.anchorHitsRemaining -= 1;
-              if (proj.anchorHitsRemaining > 0) {
-                proj.anchorTarget = e;
-                proj.vx = 0; proj.vy = 0;
-                // 磁気嵐/magnetstorm reuse (v1.36.114): pushed directly onto
-                // this.impactEffects rather than via spawnImpactEffect(), the
-                // same bypass Landmine uses for killzone - spawnImpactEffect
-                // only allows one zone of a given type at a time, which would
-                // silently drop every anchor's own storm after the first if
-                // two are embedded simultaneously.
-                const fx = new ImpactEffect('magnetstorm', e.x, e.y, magnetStormRadiusForLevel(1), MAGNETSTORM_DURATION);
-                this.impactEffects.push(fx);
-                proj.anchorStorm = fx;
-              } else {
-                proj.life = 0;
-              }
-              break;
-            }
-          }
-          continue;
-        }
         for (const e of this.enemies) {
           if (proj.hitSet.has(e)) continue;
           if (dist2(proj.x, proj.y, e.x, e.y) < (proj.radius + e.radius) * (proj.radius + e.radius)) {
@@ -5259,36 +5118,6 @@
             if (proj.pierce <= 0) { proj.life = 0; break; }
             proj.pierce -= 1;
           }
-        }
-      }
-
-      // Anchor Shot tick (v1.36.112, see WEAPONS/ANCHOR_*): an embedded
-      // anchor rides along with its target (glued position, refreshed every
-      // frame) and re-hits it every ANCHOR_HIT_INTERVAL seconds through the
-      // normal resolveProjectileHit() - so bullet effects/chain/explosion
-      // apply on every tick like any other hit - until either the target
-      // leaves this.enemies (killed by this or any other source) or the
-      // hit budget set in fireAnchorShot()/the collision loop above runs
-      // out. Also keeps its magnetstorm zone (v1.36.114, see
-      // ANCHOR_MAGNETSTORM_LIFE_BUFFER) glued to the target and alive for as
-      // long as the anchor stays embedded.
-      for (const proj of this.projectiles) {
-        if (!proj.anchor || !proj.anchorTarget || proj.life <= 0) continue;
-        const target = proj.anchorTarget;
-        if (!this.enemies.includes(target)) { proj.life = 0; continue; }
-        proj.x = target.x;
-        proj.y = target.y;
-        if (proj.anchorStorm) {
-          proj.anchorStorm.x = target.x;
-          proj.anchorStorm.y = target.y;
-          proj.anchorStorm.life = Math.max(proj.anchorStorm.life, ANCHOR_MAGNETSTORM_LIFE_BUFFER);
-        }
-        proj.anchorTickTimer -= dt;
-        if (proj.anchorTickTimer <= 0) {
-          proj.anchorTickTimer += ANCHOR_HIT_INTERVAL;
-          this.resolveProjectileHit(proj, target);
-          proj.anchorHitsRemaining -= 1;
-          if (proj.anchorHitsRemaining <= 0) proj.life = 0;
         }
       }
 
@@ -5883,26 +5712,12 @@
         ctx.globalAlpha = 1;
       }
 
-      // projectiles (Anchor Shot's oversized bullet gets its own color -
-      // ANCHOR_COLOR - so it reads as distinct from a normal shot even
-      // before its size alone gives it away). Once embedded (v1.36.113),
-      // it switches from a filled disc to a hollow ring - filled, its own
-      // radius (up to 32px) completely hid the enemy underneath (including
-      // its hitFlash white pulse on each tick), making it impossible to
-      // tell whether the multi-hit was actually landing. A ring leaves the
-      // enemy fully visible while still reading clearly as "something is
-      // attached to this enemy".
+      // projectiles
       for (const proj of this.projectiles) {
         ctx.beginPath();
+        ctx.fillStyle = '#ffe45a';
         ctx.arc(proj.x, proj.y, proj.radius, 0, TAU);
-        if (proj.anchor && proj.anchorTarget) {
-          ctx.strokeStyle = ANCHOR_COLOR;
-          ctx.lineWidth = 3;
-          ctx.stroke();
-        } else {
-          ctx.fillStyle = proj.anchor ? ANCHOR_COLOR : '#ffe45a';
-          ctx.fill();
-        }
+        ctx.fill();
       }
 
       // landmines (v1.36.99) - a small pulsing disc so an armed mine reads
@@ -6312,7 +6127,6 @@
       <p>ダメージ: ${p.damage} / 攻撃間隔: ${p.atkCooldown.toFixed(2)}秒</p>
       ${p.weapon && p.weapon.id === 'swordshield' ? `<p>クリティカル率: ${Math.round(swordCritChance(p) * 100)}% (倍率${SWORD_CRIT_DAMAGE_MULT}倍)</p>` : ''}
       ${p.weapon && p.weapon.id === 'turret' ? `<p>タレット同時設置数: ${p.turretMaxCount}</p>` : ''}
-      ${p.weapon && p.weapon.id === 'anchor' ? `<p>アンカー弾丸ヒット数: ${ANCHOR_BASE_HITS + p.pierce} / サイズ: ${Math.round(p.anchorRadius)}</p>` : ''}
       <p>同時発射数: ${p.projCount} / 射程: ${Math.round(p.rangeMult * 100)}%</p>
       <p>移動速度: ${Math.round(p.speed)}</p>
       <p>HP自然回復: ${p.regen}/秒 / 回収範囲: ${Math.round(p.pickupRadius)}</p>
