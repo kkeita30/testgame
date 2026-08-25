@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.112';
+  const GAME_VERSION = '1.36.113';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -774,6 +774,16 @@
   const ANCHOR_RADIUS_PER_RANK = 4; // rank1=16px -> rank5=32px
   const ANCHOR_BASE_HITS = 4; // + Player.pierce (capped at 5 by 貫通's own maxLevel) = 4-9 total hits
   const ANCHOR_HIT_INTERVAL = 0.35;
+  // Each individual tick (including the embedding hit) only deals this
+  // fraction of a normal shot's damage (v1.36.113) - at full weight, a
+  // single hit already threatened to kill/nearly kill most enemies before
+  // the remaining ticks in the sequence had a chance to land, defeating the
+  // whole point of "multiple hits over time". Comparable in spirit to
+  // CHAIN_DAMAGE_PCT (0.5), set a bit lower since every anchor tick lands
+  // unconditionally (no CHAIN_TRIGGER_CHANCE-style roll) - total damage
+  // across a full sequence still comes out to 1.6x-3.6x a normal hit
+  // (ANCHOR_BASE_HITS(4) to 4+pierce(9) hits x 0.4), just spread out.
+  const ANCHOR_DAMAGE_PCT_PER_HIT = 0.4;
   const ANCHOR_SLOW_DURATION = 0.5; // refreshed every tick while embedded
   const ANCHOR_TRAVEL_LIFE = 3; // generous pre-embed travel window so a shot at a distant target doesn't expire before reaching it (embedded anchors don't decay via life at all - see the movement-loop skip)
   const ANCHOR_COLOR = '#e8823c';
@@ -3773,7 +3783,7 @@
       const vulnerable = p.vulnerableLevel > 0;
       const buffDamageMult = p.specialBuffTimer > 0 && p.special && p.special.buffDamageMult != null
         ? p.special.buffDamageMult : 1;
-      const shotDamage = p.damage * buffDamageMult;
+      const shotDamage = p.damage * buffDamageMult * ANCHOR_DAMAGE_PCT_PER_HIT;
 
       const ang = Math.atan2(nearest.y - p.y, nearest.x - p.x);
       const speed = p.projSpeed * ANCHOR_PROJ_SPEED_MULT;
@@ -5849,12 +5859,24 @@
 
       // projectiles (Anchor Shot's oversized bullet gets its own color -
       // ANCHOR_COLOR - so it reads as distinct from a normal shot even
-      // before its size alone gives it away)
+      // before its size alone gives it away). Once embedded (v1.36.113),
+      // it switches from a filled disc to a hollow ring - filled, its own
+      // radius (up to 32px) completely hid the enemy underneath (including
+      // its hitFlash white pulse on each tick), making it impossible to
+      // tell whether the multi-hit was actually landing. A ring leaves the
+      // enemy fully visible while still reading clearly as "something is
+      // attached to this enemy".
       for (const proj of this.projectiles) {
         ctx.beginPath();
-        ctx.fillStyle = proj.anchor ? ANCHOR_COLOR : '#ffe45a';
         ctx.arc(proj.x, proj.y, proj.radius, 0, TAU);
-        ctx.fill();
+        if (proj.anchor && proj.anchorTarget) {
+          ctx.strokeStyle = ANCHOR_COLOR;
+          ctx.lineWidth = 3;
+          ctx.stroke();
+        } else {
+          ctx.fillStyle = proj.anchor ? ANCHOR_COLOR : '#ffe45a';
+          ctx.fill();
+        }
       }
 
       // landmines (v1.36.99) - a small pulsing disc so an armed mine reads
