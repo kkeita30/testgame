@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.113';
+  const GAME_VERSION = '1.36.114';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -765,10 +765,15 @@
   // target dies or its hit budget - ANCHOR_BASE_HITS + Player.pierce, the
   // 貫通 upgrade repurposed here as "extra hits on the one embedded target"
   // rather than its usual "extra enemies pierced through" meaning - runs
-  // out. Forces a strong slow on the embedded target (reusing the existing
-  // SLOW_MULT speed reduction rather than a dedicated full-stop mechanic,
-  // refreshed every tick while embedded so it lapses shortly after the
-  // anchor detaches instead of persisting).
+  // out. While embedded it also keeps a 磁気嵐/magnetstorm ImpactEffect
+  // (v1.36.114, see MAGNETSTORM_DURATION/magnetStormRadiusForLevel further
+  // down) glued to the target's position, pulling any other nearby enemies
+  // in toward the pinned target for as long as the anchor stays attached -
+  // reusing magnetstorm's existing pull-zone code wholesale rather than the
+  // dedicated full-stop mechanics of a new mechanic, the same kind of reuse
+  // Landmine already does for killzone (see the killzone/magnetstorm reuse
+  // note near Player.killzoneLevel). Replaces v1.36.112's original "force a
+  // strong slow on the embedded target" behavior entirely.
   const ANCHOR_PROJ_SPEED_MULT = 0.55;
   const ANCHOR_BASE_RADIUS = 16; // matches the player's own radius (Player.radius) - "自機と同程度のサイズ"
   const ANCHOR_RADIUS_PER_RANK = 4; // rank1=16px -> rank5=32px
@@ -784,7 +789,12 @@
   // across a full sequence still comes out to 1.6x-3.6x a normal hit
   // (ANCHOR_BASE_HITS(4) to 4+pierce(9) hits x 0.4), just spread out.
   const ANCHOR_DAMAGE_PCT_PER_HIT = 0.4;
-  const ANCHOR_SLOW_DURATION = 0.5; // refreshed every tick while embedded
+  // Refreshed every frame while embedded (see the anchor-tick block in
+  // update()) rather than the zone's own full MAGNETSTORM_DURATION, so the
+  // pull lapses within this long of the anchor detaching instead of
+  // lingering for a further few seconds afterward - same short-tail idiom
+  // v1.36.112's now-removed forced slow used.
+  const ANCHOR_MAGNETSTORM_LIFE_BUFFER = 0.5;
   const ANCHOR_TRAVEL_LIFE = 3; // generous pre-embed travel window so a shot at a distant target doesn't expire before reaching it (embedded anchors don't decay via life at all - see the movement-loop skip)
   const ANCHOR_COLOR = '#e8823c';
 
@@ -883,7 +893,7 @@
     {
       id: 'anchor',
       name: 'アンカーショット',
-      desc: '自機と同程度の大きさの巨大な弾丸を1発だけ発射する(マルチショットの概念はなし)。命中すると弾丸はそのまま敵に食いつき、対象を大きく減速させながら一定間隔で連続ヒットを与え続ける。規定のヒット数(貫通アップグレードで増加)を消化するか対象を倒すと弾丸は消える。',
+      desc: '自機と同程度の大きさの巨大な弾丸を1発だけ発射する(マルチショットの概念はなし)。命中すると弾丸はそのまま敵に食いつき、磁気嵐を展開して周囲の敵を引き寄せながら一定間隔で連続ヒットを与え続ける。規定のヒット数(貫通アップグレードで増加)を消化するか対象を倒すと弾丸は消える。',
       apply: (p) => {},
       innateEffect: {
         name: '弾丸拡大',
@@ -3793,6 +3803,7 @@
       proj.life = ANCHOR_TRAVEL_LIFE;
       proj.anchor = true;
       proj.anchorTarget = null;
+      proj.anchorStorm = null;
       proj.anchorHitsRemaining = ANCHOR_BASE_HITS + p.pierce;
       proj.anchorTickTimer = ANCHOR_HIT_INTERVAL;
       this.projectiles.push(proj);
@@ -5210,10 +5221,11 @@
         if (proj.life <= 0) continue;
         if (proj.anchor) {
           // Not embedded yet - find the first enemy touched, hit it once,
-          // then either embed onto it (further hits + the forced slow are
-          // handled by the anchor-tick block below) or, if the very first
-          // hit already exhausted the hit budget, just disappear. Already-
-          // embedded anchors skip this loop entirely (handled below).
+          // then either embed onto it (further hits + the magnetstorm pull
+          // are handled by the anchor-tick block below) or, if the very
+          // first hit already exhausted the hit budget, just disappear.
+          // Already-embedded anchors skip this loop entirely (handled
+          // below).
           if (proj.anchorTarget) continue;
           for (const e of this.enemies) {
             if (dist2(proj.x, proj.y, e.x, e.y) < (proj.radius + e.radius) * (proj.radius + e.radius)) {
@@ -5222,7 +5234,15 @@
               if (proj.anchorHitsRemaining > 0) {
                 proj.anchorTarget = e;
                 proj.vx = 0; proj.vy = 0;
-                e.slowTimer = Math.max(e.slowTimer, ANCHOR_SLOW_DURATION);
+                // 磁気嵐/magnetstorm reuse (v1.36.114): pushed directly onto
+                // this.impactEffects rather than via spawnImpactEffect(), the
+                // same bypass Landmine uses for killzone - spawnImpactEffect
+                // only allows one zone of a given type at a time, which would
+                // silently drop every anchor's own storm after the first if
+                // two are embedded simultaneously.
+                const fx = new ImpactEffect('magnetstorm', e.x, e.y, magnetStormRadiusForLevel(1), MAGNETSTORM_DURATION);
+                this.impactEffects.push(fx);
+                proj.anchorStorm = fx;
               } else {
                 proj.life = 0;
               }
@@ -5249,14 +5269,20 @@
       // apply on every tick like any other hit - until either the target
       // leaves this.enemies (killed by this or any other source) or the
       // hit budget set in fireAnchorShot()/the collision loop above runs
-      // out.
+      // out. Also keeps its magnetstorm zone (v1.36.114, see
+      // ANCHOR_MAGNETSTORM_LIFE_BUFFER) glued to the target and alive for as
+      // long as the anchor stays embedded.
       for (const proj of this.projectiles) {
         if (!proj.anchor || !proj.anchorTarget || proj.life <= 0) continue;
         const target = proj.anchorTarget;
         if (!this.enemies.includes(target)) { proj.life = 0; continue; }
         proj.x = target.x;
         proj.y = target.y;
-        target.slowTimer = Math.max(target.slowTimer, ANCHOR_SLOW_DURATION);
+        if (proj.anchorStorm) {
+          proj.anchorStorm.x = target.x;
+          proj.anchorStorm.y = target.y;
+          proj.anchorStorm.life = Math.max(proj.anchorStorm.life, ANCHOR_MAGNETSTORM_LIFE_BUFFER);
+        }
         proj.anchorTickTimer -= dt;
         if (proj.anchorTickTimer <= 0) {
           proj.anchorTickTimer += ANCHOR_HIT_INTERVAL;
