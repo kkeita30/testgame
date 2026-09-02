@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const GAME_VERSION = '1.36.115';
+  const GAME_VERSION = '1.36.116';
   const versionTag = document.getElementById('version-tag');
   if (versionTag) versionTag.textContent = 'v' + GAME_VERSION;
 
@@ -738,9 +738,9 @@
   function swordCritChance(p) { return clamp(SWORD_CRIT_CHANCE_BASE * (ATK_COOLDOWN_BASE / p.atkCooldown), 0, SWORD_CRIT_CHANCE_MAX); }
 
   // Turret (v1.36.112): reuses landmine's "place at the player's current
-  // position" pattern (see Game.fireTurret) but instead of detonating, a
-  // placed turret persists for TURRET_LIFESPAN seconds as a second
-  // stationary shooter with its own attack timer, auto-firing real
+  // position" pattern (see Game.updateTurretWeapon) but instead of
+  // detonating, a placed turret persists for TURRET_LIFESPAN seconds as a
+  // second stationary shooter with its own attack timer, auto-firing real
   // Projectiles (this.projectiles) at the nearest enemy within its own
   // weaponRange(p) - see the turret-update block in update(). Unlike
   // Landmine (which only exists for a few seconds and snapshots its damage/
@@ -753,6 +753,21 @@
   const TURRET_RADIUS = 11; // visual size only - no collision body of its own, enemies pass through it freely
   const TURRET_COUNT_BASE = 2; // rank 1 -> 2 simultaneous turrets, +1 per rank thereafter (rank 5 -> 6)
   const TURRET_COLOR = '#94a3b8';
+  // Placement cadence (v1.36.116): deliberately a fixed interval, NOT
+  // Player.atkCooldown. Placement used to share the same atkCooldown gate
+  // every other weapon's fireWeapon() dispatch uses, which meant attack-
+  // speed upgrades sped up how fast new turrets went down rather than how
+  // fast each already-placed turret fires (which already reads
+  // Player.atkCooldown live every shot - see the turret-update block) -
+  // the two got muddled together under one stat. Splitting placement onto
+  // its own fixed timer (Player.turretPlaceTimer, decremented in
+  // Game.updateTurretWeapon rather than through fireWeapon()'s shared
+  // atkTimer) makes attack speed matter only for each turret's own fire
+  // rate, the more intuitive reading of what that upgrade should affect
+  // for a "place a gun, then it does the shooting" weapon. Set equal to
+  // ATK_COOLDOWN_BASE so an unupgraded run's placement cadence is
+  // unchanged from before this split.
+  const TURRET_PLACEMENT_INTERVAL = ATK_COOLDOWN_BASE;
 
   const WEAPONS = [
     {
@@ -971,9 +986,13 @@
       // unused by any other weapon, harmless defaults otherwise.
       this.swordLength = SWORD_BASE_LENGTH;
       this.shieldRadius = SHIELD_BASE_RADIUS;
-      // Turret weapon only (see WEAPONS/Game.fireTurret) - unused by any
-      // other weapon, harmless default otherwise.
+      // Turret weapon only (see WEAPONS/Game.updateTurretWeapon) - unused by
+      // any other weapon, harmless defaults otherwise. turretPlaceTimer is
+      // independent of atkTimer (see TURRET_PLACEMENT_INTERVAL) - starts at
+      // 0, same idiom atkTimer itself uses, so the first turret can be
+      // placed immediately rather than waiting out a full interval first.
       this.turretMaxCount = TURRET_COUNT_BASE;
+      this.turretPlaceTimer = 0;
       // Raised from 70 (v1.35.0) to fold in exactly what one pickup-range
       // upgrade pick used to add, now that the upgrade itself is gone.
       this.pickupRadius = 100;
@@ -3464,10 +3483,17 @@
       // rather than atkTimer, and needs to keep updating that timer/marker
       // state even with zero enemies on screen (so it can immediately start
       // locking the moment one wanders into range), so it's branched off
-      // here as well.
+      // here as well. Turret (v1.36.116) is driven by its own fixed
+      // placement timer (Player.turretPlaceTimer, see
+      // TURRET_PLACEMENT_INTERVAL) rather than atkTimer - branched off here
+      // too so placement cadence stays fixed regardless of attack-speed
+      // upgrades (each already-placed turret's own fire rate still reads
+      // Player.atkCooldown live - see the turret-update block in update()),
+      // and so it can place even with zero enemies on screen.
       if (p.weapon && p.weapon.id === 'charge') { this.updateChargeBeam(dt); return; }
       if (p.weapon && p.weapon.id === 'swordshield') { this.updateSwordShieldWeapon(dt); return; }
       if (p.weapon && p.weapon.id === 'missile') { this.updateMissileWeapon(dt); return; }
+      if (p.weapon && p.weapon.id === 'turret') { this.updateTurretWeapon(dt); return; }
 
       p.atkTimer -= dt;
       if (p.atkTimer > 0) return;
@@ -3476,7 +3502,6 @@
       if (p.weapon && p.weapon.id === 'wide') { this.fireWideSweep(); return; }
       if (p.weapon && p.weapon.id === 'rapidfire') { this.fireRapidFire(); return; }
       if (p.weapon && p.weapon.id === 'landmine') { this.fireLandmine(); return; }
-      if (p.weapon && p.weapon.id === 'turret') { this.fireTurret(); return; }
 
       // find nearest N enemies within weapon range - out-of-range enemies
       // (typically still off-screen) are ignored entirely rather than
@@ -3689,20 +3714,27 @@
     }
 
     // Turret (v1.36.112, see WEAPONS/TURRET_*): places a stationary turret
-    // at the player's own current position, on the normal atkCooldown - no
-    // targeting, no multishot (always exactly one turret per placement).
-    // Unlike fireLandmine(), doesn't snapshot damage/bullet-effect flags at
-    // all - the placed Turret reads the player's current stats live every
-    // time it fires (see the turret-update block in update()).
-    fireTurret() {
+    // at the player's own current position - no targeting, no multishot
+    // (always exactly one turret per placement). Unlike fireLandmine(),
+    // doesn't snapshot damage/bullet-effect flags at all - the placed
+    // Turret reads the player's current stats live every time it fires
+    // (see the turret-update block in update()). Dispatched unconditionally
+    // every frame from fireWeapon() (v1.36.116, like updateChargeBeam/
+    // updateSwordShieldWeapon/updateMissileWeapon), driven by its own fixed
+    // Player.turretPlaceTimer rather than the shared atkTimer/atkCooldown -
+    // see TURRET_PLACEMENT_INTERVAL for why placement cadence was split off
+    // from each turret's own (still atkCooldown-scaled) fire rate.
+    updateTurretWeapon(dt) {
       const p = this.player;
+      p.turretPlaceTimer -= dt;
+      if (p.turretPlaceTimer > 0) return;
       // Placement cap (see Player.turretMaxCount): deliberately does NOT
-      // reset atkTimer here, same reasoning as fireLandmine's own cap check
-      // - the moment a turret's lifespan runs out and frees a slot, the
-      // very next frame places a new one instead of idling for up to a
-      // full cooldown first.
+      // reset turretPlaceTimer here, same reasoning as fireLandmine's own
+      // cap check - the moment a turret's lifespan runs out and frees a
+      // slot, the very next frame places a new one instead of idling for up
+      // to a full interval first.
       if (this.turrets.length >= p.turretMaxCount) return;
-      p.atkTimer = p.atkCooldown;
+      p.turretPlaceTimer = TURRET_PLACEMENT_INTERVAL;
       this.turrets.push(new Turret(p.x, p.y));
     }
 
